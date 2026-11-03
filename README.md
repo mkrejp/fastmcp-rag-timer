@@ -21,8 +21,18 @@ On Railway, mount a volume at `/data` (service `rag-timer-00001` already does). 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `RAG_DATA_ROOT` | `/data/rag` | Persistent originals, processed text, Qdrant |
+| `RAG_API_TOKEN` | unset | Shared secret for uploads / write mutations (recommended in prod) |
 | `OPENAI_TOKEN` | unset | Preferred OpenAI API credential for embeddings |
 | `OPENAI_API_KEY` | unset | Fallback embedding credential |
+
+### Write auth
+
+When `RAG_API_TOKEN` is set, mutating operations require it:
+
+- HTTP uploads (`POST /upload`, `/upload-pdf`, `/upload-media`): `Authorization: Bearer <token>` or `X-API-Key: <token>`
+- MCP `ingest_text`: pass `auth_token`
+
+Reads (`GET /documents`, `/health`, MCP list/get/search) stay open for AI clients. If `RAG_API_TOKEN` is unset, writes are allowed (local/dev).
 
 ## HTTP API
 

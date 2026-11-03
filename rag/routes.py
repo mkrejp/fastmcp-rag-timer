@@ -5,9 +5,10 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from qdrant_client import QdrantClient
 
+from rag.auth import require_write_access
 from rag.config import COLLECTION_NAME
 from rag.ingest import ingest_bytes, meta_to_public
 from rag.processing import is_supported_filename
@@ -53,7 +54,7 @@ def health(request: Request) -> dict[str, str]:
     return {"status": "ok", "rag_data_root": _rag_data_root(request)}
 
 
-@router.post("/upload")
+@router.post("/upload", dependencies=[Depends(require_write_access)])
 async def upload_document(
     request: Request, file: UploadFile = File(...)
 ) -> dict[str, Any]:
@@ -68,7 +69,7 @@ async def upload_document(
     return _ingest_upload(request, filename, data)
 
 
-@router.post("/upload-pdf")
+@router.post("/upload-pdf", dependencies=[Depends(require_write_access)])
 async def upload_pdf(request: Request, file: UploadFile = File(...)) -> dict[str, Any]:
     """Compatibility alias for PDF uploads."""
     filename = file.filename or ""
@@ -81,7 +82,7 @@ async def upload_pdf(request: Request, file: UploadFile = File(...)) -> dict[str
     return _ingest_upload(request, filename, data)
 
 
-@router.post("/upload-media")
+@router.post("/upload-media", dependencies=[Depends(require_write_access)])
 async def upload_media(
     request: Request, file: UploadFile = File(...)
 ) -> dict[str, Any]:

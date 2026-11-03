@@ -7,6 +7,7 @@ import json
 from mcp.server.fastmcp import FastMCP
 from qdrant_client import QdrantClient
 
+from rag.auth import verify_write_token
 from rag.config import COLLECTION_NAME
 from rag.embeddings import get_embedding
 from rag.ingest import ingest_bytes
@@ -48,8 +49,12 @@ def register_mcp_tools(
         return json.dumps(chunks, ensure_ascii=False, indent=2)
 
     @mcp.tool()
-    def ingest_text(filename: str, content: str) -> str:
-        """Ingest a plain-text or markdown document via MCP without multipart upload."""
+    def ingest_text(filename: str, content: str, auth_token: str = "") -> str:
+        """Ingest text/markdown into RAG storage (requires auth_token when RAG_API_TOKEN is set)."""
+        try:
+            verify_write_token(auth_token or None)
+        except PermissionError as exc:
+            return f"Unauthorized: {exc}"
         safe_name = filename if is_supported_filename(filename) else f"{filename}.txt"
         try:
             result = ingest_bytes(
