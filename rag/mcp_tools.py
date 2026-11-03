@@ -10,8 +10,11 @@ from qdrant_client import QdrantClient
 from rag.config import COLLECTION_NAME
 from rag.embeddings import get_embedding
 from rag.ingest import ingest_bytes
+from rag.logging_setup import get_logger
 from rag.processing import is_supported_filename
 from rag.storage import RagStorage
+
+logger = get_logger("rag.mcp")
 
 
 def register_mcp_tools(
@@ -67,12 +70,14 @@ def register_mcp_tools(
     def search_domain_knowledge(query: str, limit: int = 3) -> str:
         """Query local RAG vector storage for contextual facts."""
         try:
+            logger.info("MCP search_domain_knowledge query_chars=%s limit=%s", len(query), limit)
             query_vector = get_embedding(query)
             results = qdrant.search(
                 collection_name=collection_name,
                 query_vector=query_vector,
                 limit=limit,
             )
+            logger.info("MCP search returned %s hits", len(results))
             context_blocks: list[str] = []
             for res in results:
                 payload = res.payload or {}

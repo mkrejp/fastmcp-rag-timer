@@ -10,10 +10,12 @@ from qdrant_client import QdrantClient
 from qdrant_client.models import PointStruct
 
 from rag.embeddings import get_embedding
+from rag.logging_setup import get_logger
 from rag.processing import guess_mime, is_supported_filename, process_document
 from rag.storage import DocumentMeta, RagStorage
 
 EmbedFn = Callable[[str], list[float]]
+logger = get_logger("rag.ingest")
 
 
 def content_sha256(data: bytes) -> str:
@@ -57,9 +59,22 @@ def ingest_bytes(
             }
             if source_url:
                 reused["source_url"] = source_url
+            logger.info(
+                "Ingest reused existing doc_id=%s filename=%s chunks=%s",
+                existing.doc_id,
+                existing.filename,
+                existing.chunk_count,
+            )
             return reused
 
     doc_id = str(uuid.uuid4())
+    logger.info(
+        "Ingesting filename=%s bytes=%s source_url=%s doc_id=%s",
+        filename,
+        len(data),
+        source_url,
+        doc_id,
+    )
     storage.save_original(doc_id, filename, data)
     fulltext, chunks = process_document(filename, data)
     mime = guess_mime(filename)
@@ -105,6 +120,12 @@ def ingest_bytes(
     }
     if source_url:
         result["source_url"] = source_url
+    logger.info(
+        "Ingest complete doc_id=%s filename=%s chunks_indexed=%s",
+        meta.doc_id,
+        meta.filename,
+        meta.chunk_count,
+    )
     return result
 
 
