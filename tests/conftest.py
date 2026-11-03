@@ -13,8 +13,8 @@ import pytest
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams
 
-from embeddings import EMBEDDING_DIM
-from storage import RagStorage
+from rag.embeddings import EMBEDDING_DIM
+from rag.storage import RagStorage
 
 if TYPE_CHECKING:
     from _pytest.monkeypatch import MonkeyPatch

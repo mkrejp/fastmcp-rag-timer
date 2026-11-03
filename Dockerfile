@@ -19,7 +19,8 @@ RUN uv pip install --system \
     requests \
     python-multipart
 
-COPY main.py storage.py processing.py embeddings.py ingest.py ./
+COPY main.py ./
+COPY rag ./rag
 
 # Expose Web Interface Port
 EXPOSE 8080

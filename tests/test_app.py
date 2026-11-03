@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Callable
 from unittest.mock import patch
 
 import pytest
@@ -17,10 +16,10 @@ if TYPE_CHECKING:
 @pytest.fixture()
 def client(rag_root: Path, fake_embed: Callable[[str], list[float]]):
     """Build a TestClient with temp storage and mocked embeddings."""
-    with patch("main.get_embedding", side_effect=fake_embed), patch(
-        "ingest.get_embedding", side_effect=fake_embed
-    ):
-        from main import create_app
+    with patch("rag.embeddings.get_embedding", side_effect=fake_embed), patch(
+        "rag.ingest.get_embedding", side_effect=fake_embed
+    ), patch("rag.mcp_tools.get_embedding", side_effect=fake_embed):
+        from rag.app import create_app
 
         app = create_app(str(rag_root))
         with TestClient(app) as test_client:
@@ -61,11 +60,11 @@ def test_processed_text_available_after_upload(
     fake_embed: Callable[[str], list[float]],
 ) -> None:
     """After upload, processed fulltext should be readable without embeddings."""
-    with patch("main.get_embedding", side_effect=fake_embed), patch(
-        "ingest.get_embedding", side_effect=fake_embed
-    ):
-        from main import create_app
-        from storage import RagStorage
+    with patch("rag.embeddings.get_embedding", side_effect=fake_embed), patch(
+        "rag.ingest.get_embedding", side_effect=fake_embed
+    ), patch("rag.mcp_tools.get_embedding", side_effect=fake_embed):
+        from rag.app import create_app
+        from rag.storage import RagStorage
 
         app = create_app(str(rag_root))
         with TestClient(app) as client:
@@ -90,10 +89,10 @@ def test_mcp_mount_registered(
     rag_root: Path, fake_embed: Callable[[str], list[float]]
 ) -> None:
     """create_app should mount the MCP ASGI app at ``/mcp``."""
-    with patch("main.get_embedding", side_effect=fake_embed), patch(
-        "ingest.get_embedding", side_effect=fake_embed
-    ):
-        from main import create_app
+    with patch("rag.embeddings.get_embedding", side_effect=fake_embed), patch(
+        "rag.ingest.get_embedding", side_effect=fake_embed
+    ), patch("rag.mcp_tools.get_embedding", side_effect=fake_embed):
+        from rag.app import create_app
 
         app = create_app(str(rag_root))
         mount_paths = [

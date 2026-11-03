@@ -9,9 +9,9 @@ from typing import Any, Callable
 from qdrant_client import QdrantClient
 from qdrant_client.models import PointStruct
 
-from embeddings import get_embedding
-from processing import guess_mime, is_supported_filename, process_document
-from storage import DocumentMeta, RagStorage
+from rag.embeddings import get_embedding
+from rag.processing import guess_mime, is_supported_filename, process_document
+from rag.storage import DocumentMeta, RagStorage
 
 EmbedFn = Callable[[str], list[float]]
 

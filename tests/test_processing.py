@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from processing import chunk_text, is_supported_filename, process_document
+from rag.processing import chunk_text, is_supported_filename, process_document
 
 
 def test_supported_filenames() -> None:

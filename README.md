@@ -48,6 +48,22 @@ Streamable HTTP MCP is mounted at **`/mcp`**. Tools:
 - [Architecture](docs/ARCHITECTURE.md) — system context, components, MCP surface, RAG pipeline, runtime, configuration, security.
 - [Connectivity](docs/CONNECTIVITY.md) — trust boundaries, inbound/outbound paths, ports, auth points, connection inventory.
 
+## Package layout
+
+```text
+main.py                 # entrypoint (uvicorn / python main.py)
+rag/
+  app.py                # create_app()
+  routes.py             # HTTP API
+  mcp_tools.py          # FastMCP tools
+  storage.py            # /data/rag originals + processed + index
+  processing.py         # PDF/text extract + chunk
+  embeddings.py         # OpenAI embeddings
+  ingest.py             # persist + index pipeline
+  vectorstore.py        # local Qdrant
+  config.py             # env defaults
+```
+
 ## Local run
 
 ```bash

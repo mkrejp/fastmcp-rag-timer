@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Callable
 
-from ingest import ingest_bytes
-from storage import RagStorage
+from rag.ingest import ingest_bytes
+from rag.storage import RagStorage
 
 if TYPE_CHECKING:
     from qdrant_client import QdrantClient
