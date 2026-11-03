@@ -35,18 +35,19 @@ def ingest_bytes(
     data: bytes,
     embed_fn: EmbedFn | None = None,
     skip_duplicate: bool = True,
+    source_url: str | None = None,
 ) -> dict[str, Any]:
     """Persist, process, and index a document from raw bytes."""
     if not filename:
         raise ValueError("filename is required")
     if not is_supported_filename(filename):
-        raise ValueError("Only PDF, TXT, and Markdown files are supported.")
+        raise ValueError("Only PDF, TXT, Markdown, JSON, and GeoJSON files are supported.")
 
     digest = content_sha256(data)
     if skip_duplicate:
         existing = storage.find_by_sha256(digest)
         if existing is not None:
-            return {
+            reused = {
                 "status": "exists",
                 "doc_id": existing.doc_id,
                 "filename": existing.filename,
@@ -54,6 +55,9 @@ def ingest_bytes(
                 "sha256": existing.sha256,
                 "reused": True,
             }
+            if source_url:
+                reused["source_url"] = source_url
+            return reused
 
     doc_id = str(uuid.uuid4())
     storage.save_original(doc_id, filename, data)
@@ -84,13 +88,14 @@ def ingest_bytes(
                     "doc_id": doc_id,
                     "page": int(chunk.get("page", 0)),
                     "chunk_index": int(chunk["index"]),
+                    **({"source_url": source_url} if source_url else {}),
                 },
             )
         )
     if points:
         qdrant.upsert(collection_name=collection_name, points=points)
 
-    return {
+    result = {
         "status": "Success",
         "doc_id": meta.doc_id,
         "filename": meta.filename,
@@ -98,6 +103,9 @@ def ingest_bytes(
         "sha256": meta.sha256,
         "reused": False,
     }
+    if source_url:
+        result["source_url"] = source_url
+    return result
 
 
 def meta_to_public(meta: DocumentMeta) -> dict[str, Any]:

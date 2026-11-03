@@ -26,20 +26,39 @@ On Railway, mount a volume at `/data`. The app creates `/data/rag` at startup.
 | `OPENAI_TOKEN` | unset | Embedding credential if both Novita-named vars are empty |
 | `OPENAI_API_KEY` | unset | Embedding credential checked last |
 | `RAG_SKIP_DEFAULT_APP` | unset | Set to `1` to skip module-level `create_app()` (used by tests) |
+| `RAG_API_TOKEN` | unset | Bearer token required by `POST /ingest-json` |
+| `RAG_MAX_REMOTE_JSON_BYTES` | `134217728` (128 MiB) | Remote GeoJSON download cap (`obce.json` is ~95 MiB) |
+| `RAG_REMOTE_FETCH_TIMEOUT` | `120` | Remote fetch timeout in seconds |
 
 Embeddings use Novita's OpenAI-compatible API (`baai/bge-m3`, 1024 dimensions). See [embedding provider](docs/embedding-provider.md). Keep the key in runtime variables; never commit it.
 
 ## HTTP API
 
-- `POST /upload` — PDF, TXT, or Markdown → persist + index
+- `POST /upload` — PDF, TXT, Markdown, JSON, or GeoJSON → persist + index
 - `POST /upload-pdf` — PDF-only alias
 - `POST /upload-media` — store bytes under `originals/` (not indexed)
+- `POST /ingest-json` — Bearer-auth fetch of remote GeoJSON/JSON by URL → persist + index
 - `GET /documents` — catalog
 - `GET /documents/{doc_id}` — metadata
 - `GET /documents/{doc_id}/text` — processed full text (no re-parse)
 - `GET /health` — liveness
 
-Listen address is `0.0.0.0:8080` (not configurable via `PORT`). No inbound HTTP authentication.
+Listen address is `0.0.0.0:8080` (not configurable via `PORT`). Most routes have no inbound auth; `POST /ingest-json` requires `Authorization: Bearer $RAG_API_TOKEN`.
+
+### Remote GeoJSON (`POST /ingest-json`)
+
+Body is `{"url": "<http(s) URL>"}`. GitHub blob pages are rewritten to `raw.githubusercontent.com`. Any similar GeoJSON is accepted (FeatureCollection, Feature, geometry, or a list of those). Feature attributes (`name`, `id`, `nationalCode`, `properties`, …) are indexed; coordinate rings are not.
+
+```bash
+export RAG_API_TOKEN=your-api-token
+
+curl -sS -X POST http://127.0.0.1:8080/ingest-json \
+  -H "Authorization: Bearer $RAG_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"url":"https://github.com/siwekm/czech-geojson/blob/master/kraje.json"}'
+```
+
+`obce.json` is large (~95 MiB); ingest embeds attribute chunks and may take several minutes.
 
 ## MCP (AI clients)
 
@@ -69,7 +88,10 @@ rag/
   routes.py             # HTTP API
   mcp_tools.py          # FastMCP tools
   storage.py            # /data/rag originals + processed + index
-  processing.py         # PDF/text extract + chunk
+  processing.py         # PDF/text/GeoJSON extract + chunk
+  geojson.py            # generic GeoJSON → RAG text
+  remote.py             # fetch remote JSON (GitHub blob → raw)
+  auth.py               # inbound bearer token for /ingest-json
   embeddings.py         # Novita BGE-M3 embeddings
   ingest.py             # persist + index pipeline
   vectorstore.py        # local Qdrant
@@ -81,6 +103,7 @@ rag/
 ```bash
 export RAG_DATA_ROOT=./data/rag
 export BGE_M3_NOVITA_API_KEY=your-novita-key
+export RAG_API_TOKEN=your-api-token
 python main.py
 ```
 

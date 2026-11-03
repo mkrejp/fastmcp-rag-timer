@@ -53,9 +53,10 @@ flowchart TB
 
 Trust notes from code:
 
-- REST and MCP have **no authentication**. Anyone who can reach port 8080 can upload, list documents, read processed text, call `/mcp` tools, and trigger outbound embedding calls.
-- FastAPI’s default OpenAPI UI (`/docs`, `/redoc`, `/openapi.json`) is also unauthenticated.
-- Secrets are `BGE_M3_NOVITA_API_KEY`, then `NOVITA_API_KEY`, `OPENAI_TOKEN`, `OPENAI_API_KEY`, used as an outbound Bearer token.
+- Most REST routes and MCP have **no authentication**. Anyone who can reach port 8080 can upload, list documents, read processed text, call `/mcp` tools, and trigger outbound embedding calls.
+- `POST /ingest-json` requires inbound `Authorization: Bearer` matching `RAG_API_TOKEN` (503 if that env var is unset).
+- FastAPI’s default OpenAPI UI (`/docs`, `/redoc`, `/openapi.json`) is unauthenticated.
+- Secrets: outbound embedding key (`BGE_M3_NOVITA_API_KEY`, then `NOVITA_API_KEY`, `OPENAI_TOKEN`, `OPENAI_API_KEY`); inbound `RAG_API_TOKEN` for remote JSON ingest.
 - Embedded Qdrant does **not** listen on a network port; it uses `{RAG_DATA_ROOT}/qdrant`.
 - The process binds `0.0.0.0`, so it is reachable on every container/host interface.
 
@@ -87,6 +88,8 @@ sequenceDiagram
     API-->>Client: 200 status ok
   else POST /upload or /upload-pdf
     API-->>Client: 400 or 200 JSON
+  else POST /ingest-json
+    API-->>Client: 401/503 without token, else fetch+index
   else GET /documents...
     API-->>Client: 200 or 404
   else /mcp Streamable HTTP
@@ -112,7 +115,10 @@ Facts:
 
 ## Outbound connections
 
-The only runtime network client in application code is `requests.post` in `rag.embeddings.get_embedding()`. See [Embedding connectivity](#embedding-connectivity).
+Runtime network clients in application code:
+
+1. `requests.post` in `rag.embeddings.get_embedding()` — see [Embedding connectivity](#embedding-connectivity).
+2. `requests.get` in `rag.remote.fetch_remote_bytes()` — used by `POST /ingest-json` to download public http(s) JSON/GeoJSON (GitHub blob URLs rewritten to `raw.githubusercontent.com`). Private/loopback destinations are rejected.
 
 No code talks to a remote Qdrant URL, PostgreSQL, Redis, SMTP, or webhooks.
 
@@ -142,25 +148,29 @@ No second container is required for the vector store.
 
 | Interface | Transport | Port | Auth in repo |
 | --- | --- | --- | --- |
-| FastAPI REST | HTTP/1.1 via uvicorn | **8080/tcp** | **None** |
+| FastAPI REST (most routes) | HTTP/1.1 via uvicorn | **8080/tcp** | **None** |
+| `POST /ingest-json` | HTTP/1.1 via uvicorn | 8080 | Bearer `RAG_API_TOKEN` |
 | FastAPI OpenAPI UI | HTTP GET | 8080 | **None** |
 | MCP Streamable HTTP | HTTP on `/mcp` | 8080 | **None** |
 | MCP stdio | — | — | Not started |
 | Embedded Qdrant | in-process + disk | no listen port | n/a |
 | Novita embeddings | HTTPS | 443 | Bearer `BGE_M3_NOVITA_API_KEY` or fallbacks (outbound) |
+| Remote JSON fetch | HTTPS/HTTP | 443/80 | None (public URLs only) |
 
-Auth points that exist: **one**, the outbound embedding Bearer header.
+Auth points that exist: outbound embedding Bearer header; inbound Bearer on `/ingest-json`.
 
-Auth points that do not exist: inbound API keys, JWT, mTLS, MCP OAuth, network policies in-repo.
+Auth points that do not exist: JWT, mTLS, MCP OAuth, auth on other REST/MCP routes, network policies in-repo.
 
 ## Connection inventory
 
 | Source | Destination | Protocol | Port | Auth | Direction |
 | --- | --- | --- | --- | --- | --- |
-| External HTTP client | uvicorn / FastAPI | HTTP | 8080 | None | Inbound |
+| External HTTP client | uvicorn / FastAPI | HTTP | 8080 | None (except `/ingest-json`) | Inbound |
+| External HTTP client | `POST /ingest-json` | HTTP | 8080 | Bearer `RAG_API_TOKEN` | Inbound |
 | MCP client | FastMCP at `/mcp` | HTTP (Streamable HTTP) | 8080 | None | Inbound |
 | Platform edge (**assumption**) | uvicorn | HTTP (TLS already terminated) | 8080 | None at app | Inbound |
 | `get_embedding()` (`requests`) | `https://api.novita.ai/openai/v1/embeddings` | HTTPS | 443 | Bearer `BGE_M3_NOVITA_API_KEY` or fallbacks | Outbound |
+| `fetch_remote_bytes()` (`requests`) | caller-supplied public http(s) JSON URL | HTTP/HTTPS | 80/443 | None | Outbound |
 | `RagStorage` | `{RAG_DATA_ROOT}` | filesystem | n/a | OS file perms only | Internal read/write |
 | `QdrantClient` | `{RAG_DATA_ROOT}/qdrant` | embedded Qdrant / filesystem | n/a | none | Internal read/write |
 | Docker build | `ghcr.io`, Debian apt, PyPI | HTTPS | 443 | registry/public | Build-time outbound |
@@ -171,6 +181,7 @@ Auth points that do not exist: inbound API keys, JWT, mTLS, MCP OAuth, network p
 | Flow | Data |
 | --- | --- |
 | Inbound `/upload`, `/upload-pdf` | File bytes; originals stored; extracted text sent to Novita embeddings; vectors + payloads on disk |
+| Inbound `/ingest-json` | Remote GeoJSON/JSON bytes fetched by the service; feature attributes indexed (coordinates skipped) |
 | Inbound `/upload-media` | Arbitrary bytes; stored under `originals/{uuid}/` only |
 | Inbound `GET /documents*` | Catalog metadata and processed fulltext from disk |
 | Inbound `/mcp` | Tool arguments and return strings (including document text/chunks) |
@@ -315,6 +326,6 @@ The application does not meter tokens, log `usage`, set budgets, or batch inputs
 - No chat/LLM path; this is retrieval infrastructure.
 - Base URL and model are not environment-configurable.
 - No retries, 429 handling, or batch embeddings.
-- Unauthenticated callers can drive embedding spend via `/upload` or MCP `ingest_text` / `search_domain_knowledge`.
+- Unauthenticated callers can drive embedding spend via `/upload` or MCP `ingest_text` / `search_domain_knowledge`. `/ingest-json` requires `RAG_API_TOKEN` but still triggers embedding spend once authorized.
 - Timeout is 60s per request with no overall ingest deadline.
 - No recording of token usage for cost attribution.
