@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>RAG Console · fastmcp-rag-timer</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/ui/styles.css" />
+</head>
+<body>
+  <div class="atmosphere" aria-hidden="true"></div>
+  <header class="top">
+    <div>
+      <p class="brand">fastmcp-rag-timer</p>
+      <h1>RAG console</h1>
+      <p class="lede">Browse volume contents, indexed documents, MCP tools, and recent app logs.</p>
+    </div>
+    <button id="refresh" type="button">Refresh</button>
+  </header>
+
+  <nav class="tabs" role="tablist">
+    <button type="button" class="tab active" data-tab="overview">Overview</button>
+    <button type="button" class="tab" data-tab="documents">Documents</button>
+    <button type="button" class="tab" data-tab="volume">Volume</button>
+    <button type="button" class="tab" data-tab="mcp">MCP</button>
+    <button type="button" class="tab" data-tab="logs">Logs</button>
+  </nav>
+
+  <main>
+    <section id="panel-overview" class="panel active">
+      <div class="grid stats" id="overview-stats"></div>
+      <div class="card">
+        <h2>What RAG will serve</h2>
+        <p class="muted">Search returns vectors from the local Qdrant collection. Each hit carries source filename, doc id, and chunk text.</p>
+        <pre id="overview-serve" class="code"></pre>
+      </div>
+    </section>
+
+    <section id="panel-documents" class="panel">
+      <div class="split">
+        <div class="card">
+          <h2>Catalog</h2>
+          <div id="doc-list" class="list"></div>
+        </div>
+        <div class="card">
+          <h2>Document detail</h2>
+          <div id="doc-detail" class="muted">Select a document.</div>
+        </div>
+      </div>
+    </section>
+
+    <section id="panel-volume" class="panel">
+      <div class="card">
+        <h2>Data root</h2>
+        <pre id="volume-root" class="code"></pre>
+        <div id="volume-tree" class="tree"></div>
+      </div>
+    </section>
+
+    <section id="panel-mcp" class="panel">
+      <div class="card">
+        <h2>MCP status</h2>
+        <pre id="mcp-status" class="code"></pre>
+        <div id="mcp-tools" class="list"></div>
+      </div>
+    </section>
+
+    <section id="panel-logs" class="panel">
+      <div class="card">
+        <div class="row">
+          <h2>Application logs</h2>
+          <label class="inline">
+            Level
+            <select id="log-level">
+              <option value="">all</option>
+              <option>INFO</option>
+              <option>WARNING</option>
+              <option>ERROR</option>
+            </select>
+          </label>
+        </div>
+        <pre id="log-view" class="code logs"></pre>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <span id="footer-note">Loading…</span>
+  </footer>
+  <script src="/ui/app.js"></script>
+</body>
+</html>

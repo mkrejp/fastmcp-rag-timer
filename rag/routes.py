@@ -12,6 +12,7 @@ from qdrant_client import QdrantClient
 from rag.auth import require_api_token
 from rag.config import COLLECTION_NAME
 from rag.ingest import ingest_bytes, meta_to_public
+from rag.logging_setup import get_logger
 from rag.processing import is_supported_filename
 from rag.remote import (
     RemoteFetchError,
@@ -23,6 +24,7 @@ from rag.remote import (
 from rag.storage import RagStorage
 
 router = APIRouter()
+logger = get_logger("rag.routes")
 
 
 class IngestJsonRequest(BaseModel):
@@ -115,19 +117,29 @@ def ingest_json_url(
     those objects), including GitHub blob URLs such as ``kraje.json`` / ``obce.json``.
     Coordinate arrays are not embedded.
     """
+    logger.info("Remote JSON ingest requested url=%s", body.url)
     try:
         data, final_url = fetch_remote_bytes(body.url)
     except UnsafeRemoteUrlError as exc:
+        logger.warning("Rejected remote URL: %s", exc)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RemoteTooLargeError as exc:
+        logger.warning("Remote JSON too large: %s", exc)
         raise HTTPException(status_code=413, detail=str(exc)) from exc
     except RemoteFetchError as exc:
+        logger.error("Remote fetch failed: %s", exc)
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     filename = filename_from_url(final_url)
     lowered = filename.lower()
     if not (lowered.endswith(".json") or lowered.endswith(".geojson")):
         filename = f"{filename}.json"
+    logger.info(
+        "Fetched remote JSON bytes=%s filename=%s final_url=%s",
+        len(data),
+        filename,
+        final_url,
+    )
     return _ingest_upload(request, filename, data, source_url=final_url)
 
 
