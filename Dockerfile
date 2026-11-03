@@ -9,22 +9,24 @@ WORKDIR /app
 # Install basic system curl requirements for healthchecks
 RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
 
-# Install specific Python requirements explicitly to prevent bloat
+# Pin mcp to 1.x — FastMCP lives there; mcp 2.x renames it to MCPServer
 RUN uv pip install --system \
     fastapi \
     uvicorn \
-    mcp[cli] \
+    "mcp[cli]<2" \
     pypdf \
     qdrant-client \
     requests \
     python-multipart
 
-COPY main.py .
+COPY main.py ./
+COPY rag ./rag
 
 # Expose Web Interface Port
 EXPOSE 8080
 
-# Setup Persistent Storage Volume Target for Railway
-VOLUME ["/app/storage"]
+# Railway mounts a volume at /data; RAG artifacts live under /data/rag at runtime.
+# Do not declare Docker VOLUME — Railway rejects it; use the service volume mount instead.
+ENV RAG_DATA_ROOT=/data/rag
 
 CMD ["python", "main.py"]
