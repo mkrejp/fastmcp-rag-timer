@@ -1,6 +1,6 @@
 # fastmcp-rag-timer
 
-Combines FastAPI (for web endpoints), FastMCP (to natively expose tools over the Model Context Protocol), and Qdrant Client (local-disk vector engine). It handles PDF and text extraction, stores originals plus processed artifacts on disk, and indexes chunks for semantic search.
+Combines FastAPI (for web endpoints), FastMCP (to natively expose tools over the Model Context Protocol), and Qdrant Client (local-disk vector engine). It handles PDF and text extraction, stores originals and processed artifacts on disk, and indexes chunks for semantic retrieval.
 
 ## Persistent storage
 
@@ -14,15 +14,18 @@ All RAG server data lives under **`/data/rag`** (override with `RAG_DATA_ROOT`):
   index.json
 ```
 
-On Railway, mount a volume at `/data` (service `rag-timer-00001` already does). The app creates `/data/rag` at startup.
+On Railway, mount a volume at `/data`. The app creates `/data/rag` at startup.
 
 ## Configuration
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `RAG_DATA_ROOT` | `/data/rag` | Persistent originals, processed text, Qdrant |
-| `OPENAI_TOKEN` | unset | Preferred OpenAI API credential for embeddings |
-| `OPENAI_API_KEY` | unset | Fallback embedding credential |
+| `BGE_M3_NOVITA_API_KEY` | unset | Preferred Novita API credential for embeddings |
+| `NOVITA_API_KEY` | unset | Credential fallback |
+| `OPENAI_TOKEN` / `OPENAI_API_KEY` | unset | Legacy credential fallbacks; value may be the Novita key |
+
+Embeddings use Novita's OpenAI-compatible API (`baai/bge-m3`, 1,024 dimensions). See [embedding provider and index migration](docs/embedding-provider.md). Keep the key in Railway runtime variables; never commit it.
 
 ## HTTP API
 
@@ -47,6 +50,7 @@ Streamable HTTP MCP is mounted at **`/mcp`**. Tools:
 
 - [Architecture](docs/ARCHITECTURE.md) — system context, components, MCP surface, RAG pipeline, runtime, configuration, security.
 - [Connectivity](docs/CONNECTIVITY.md) — trust boundaries, inbound/outbound paths, ports, auth points, connection inventory.
+- [Embedding provider and index migration](docs/embedding-provider.md) — Novita BGE-M3 configuration and Qdrant dimension handling.
 
 ## Package layout
 
@@ -55,20 +59,20 @@ main.py                 # entrypoint (uvicorn / python main.py)
 rag/
   app.py                # create_app()
   routes.py             # HTTP API
-  mcp_tools.py          # FastMCP tools
-  storage.py            # /data/rag originals + processed + index
-  processing.py         # PDF/text extract + chunk
-  embeddings.py         # OpenAI embeddings
-  ingest.py             # persist + index pipeline
-  vectorstore.py        # local Qdrant
-  config.py             # env defaults
+  mcp_tools.py           # FastMCP tools
+  storage.py             # /data/rag originals + processed + index
+  processing.py          # PDF/text extract + chunk
+  embeddings.py          # Novita BGE-M3 embeddings
+  ingest.py              # persist + index pipeline
+  vectorstore.py         # local Qdrant
+  config.py              # env defaults
 ```
 
 ## Local run
 
 ```bash
 export RAG_DATA_ROOT=./data/rag
-export OPENAI_TOKEN=sk-...
+export BGE_M3_NOVITA_API_KEY=your-novita-key
 python main.py
 ```
 
