@@ -24,9 +24,8 @@ COPY main.py storage.py processing.py embeddings.py ingest.py ./
 # Expose Web Interface Port
 EXPOSE 8080
 
-# Railway volume mounts at /data; RAG artifacts live under /data/rag at runtime
-VOLUME ["/data"]
-
+# Railway mounts a volume at /data; RAG artifacts live under /data/rag at runtime.
+# Do not declare Docker VOLUME — Railway rejects it; use the service volume mount instead.
 ENV RAG_DATA_ROOT=/data/rag
 
 CMD ["python", "main.py"]
