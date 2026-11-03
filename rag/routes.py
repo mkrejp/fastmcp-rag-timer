@@ -85,7 +85,7 @@ async def upload_pdf(request: Request, file: UploadFile = File(...)) -> dict[str
 async def upload_media(
     request: Request, file: UploadFile = File(...)
 ) -> dict[str, Any]:
-    """Store a non-indexed media asset under originals (legacy endpoint)."""
+    """Store a media asset under originals without extraction or indexing."""
     filename = file.filename or "media.bin"
     data = await file.read()
     doc_id = str(uuid.uuid4())

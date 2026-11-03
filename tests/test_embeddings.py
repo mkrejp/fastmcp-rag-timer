@@ -19,9 +19,9 @@ from rag.embeddings import (
 def test_resolve_api_key_prefers_bge_m3_runtime_variable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The dedicated Railway variable takes precedence over legacy names."""
+    """BGE_M3_NOVITA_API_KEY takes precedence over other credential names."""
     monkeypatch.setenv("BGE_M3_NOVITA_API_KEY", "novita-key")
-    monkeypatch.setenv("OPENAI_API_KEY", "legacy-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "unused-key")
 
     assert resolve_api_key() == "novita-key"
 
