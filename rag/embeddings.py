@@ -13,7 +13,11 @@ EMBEDDING_DIM = 1024
 
 
 def resolve_api_key() -> str | None:
-    """Return the Novita token, with legacy environment names as fallbacks."""
+    """Return the embedding API token from environment variables.
+
+    Checks ``BGE_M3_NOVITA_API_KEY``, then ``NOVITA_API_KEY``, ``OPENAI_TOKEN``,
+    and ``OPENAI_API_KEY``.
+    """
     return (
         os.getenv("BGE_M3_NOVITA_API_KEY")
         or os.getenv("NOVITA_API_KEY")

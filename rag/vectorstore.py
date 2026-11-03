@@ -18,9 +18,9 @@ def open_qdrant(
 ) -> QdrantClient:
     """Open or create the local collection with the active embedding dimension.
 
-    A dimension change requires re-embedding all documents. If the stored
-    collection uses an older dimension, replace it; its vectors cannot be used
-    with the active model.
+    If the stored collection's vector size is not ``EMBEDDING_DIM``, delete and
+    recreate it. Existing vectors in that collection are discarded; they cannot
+    be used with the active model. Re-ingest documents to rebuild the index.
     """
     client = QdrantClient(path=str(qdrant_dir))
     if client.collection_exists(collection_name):

@@ -2,9 +2,9 @@
 
 This document inventories inbound, outbound, and in-process connections for **fastmcp-rag-timer**.
 
-**Sources of truth:** `main.py`, `Dockerfile`. There is no reverse-proxy config, TLS cert, compose network, or firewall rules in the repo. Anything about an edge proxy or Railway routing is labeled **Assumption**.
+**Sources of truth:** `main.py`, `rag/` (especially `app.py`, `embeddings.py`, `routes.py`, `mcp_tools.py`, `config.py`, `storage.py`, `vectorstore.py`), and `Dockerfile`. There is no reverse-proxy config, TLS cert, compose network, or firewall rules in the repo. Anything about an edge proxy or Railway routing is labeled **Assumption**.
 
-Related: [ARCHITECTURE.md](./ARCHITECTURE.md).
+Related: [ARCHITECTURE.md](./ARCHITECTURE.md), [Embedding provider](./embedding-provider.md). Embedding API details are in [Embedding connectivity](#embedding-connectivity).
 
 ## Trust boundaries
 
@@ -13,7 +13,7 @@ flowchart TB
   subgraph internet["Trust boundary: untrusted network"]
     httpClient["HTTP client"]
     mcpClient["MCP client / agent"]
-    openai["https://openai.com :443"]
+    novita["api.novita.ai:443<br/>/openai/v1/embeddings"]
   end
 
   subgraph edge["Trust boundary: platform edge — ASSUMPTION"]
@@ -25,47 +25,50 @@ flowchart TB
     subgraph process["Trust boundary: python process"]
       uvicorn["uvicorn"]
       fastapi["FastAPI REST"]
-      mcp["FastMCP instance<br/>no listener"]
-      embed["requests POST"]
+      mcp["FastMCP Streamable HTTP /mcp"]
+      embed["requests POST embeddings"]
       qdrant["QdrantClient embedded"]
+      storage["RagStorage"]
     end
-    vol["VOLUME /app/storage<br/>UPLOAD_DIR + DB_PATH"]
+    vol["/data/rag<br/>originals, processed, qdrant, index.json"]
   end
 
   httpClient -->|"HTTPS ASSUMPTION"| tls
-  mcpClient -.->|"MCP HTTP/SSE/stdio not started"| tls
+  mcpClient -->|"HTTPS ASSUMPTION"| tls
   tls -->|"HTTP cleartext to app"| port
   httpClient -->|"HTTP if no edge"| port
+  mcpClient -->|"HTTP if no edge"| port
   port --> uvicorn --> fastapi
+  fastapi --> mcp
   fastapi --> embed
-  mcp -.-> embed
+  mcp --> embed
   fastapi --> qdrant
-  mcp -.-> qdrant
+  mcp --> qdrant
+  fastapi --> storage
+  mcp --> storage
   qdrant --> vol
-  fastapi -->|"write uploads"| vol
-  embed -->|"TLS + Bearer OPENAI_API_KEY"| openai
+  storage --> vol
+  embed -->|"TLS + Bearer BGE_M3_NOVITA_API_KEY or fallbacks"| novita
 ```
-
-Dashed MCP lines are registered in code but have **no open socket or stdio MCP server** under `CMD ["python", "main.py"]`.
 
 Trust notes from code:
 
-- REST has **no authentication**. Anyone who can reach port 8080 can upload files and trigger outbound embedding calls.
+- REST and MCP have **no authentication**. Anyone who can reach port 8080 can upload, list documents, read processed text, call `/mcp` tools, and trigger outbound embedding calls.
 - FastAPI’s default OpenAPI UI (`/docs`, `/redoc`, `/openapi.json`) is also unauthenticated.
-- The only secret is `OPENAI_API_KEY`, used as an outbound Bearer token.
-- Embedded Qdrant does **not** listen on a network port; it is a library using `DB_PATH`.
-- The process binds `0.0.0.0`, so it is reachable on every container/host interface, not only localhost.
+- Secrets are `BGE_M3_NOVITA_API_KEY`, then `NOVITA_API_KEY`, `OPENAI_TOKEN`, `OPENAI_API_KEY`, used as an outbound Bearer token.
+- Embedded Qdrant does **not** listen on a network port; it uses `{RAG_DATA_ROOT}/qdrant`.
+- The process binds `0.0.0.0`, so it is reachable on every container/host interface.
 
 ## Inbound path
-
-Implemented path:
 
 ```text
 Client
   → (optional) HTTPS edge  [Assumption: Railway or other platform TLS]
     → TCP 8080 on the service
       → uvicorn
-        → FastAPI routes in main.py
+        → FastAPI
+          → REST routes (rag.routes)
+          → mount /mcp → FastMCP Streamable HTTP
 ```
 
 ```mermaid
@@ -80,10 +83,14 @@ sequenceDiagram
   Edge->>Port: HTTP proxy
   Port->>UV: accept
   UV->>API: ASGI
-  alt POST /upload-pdf
+  alt GET /health
+    API-->>Client: 200 status ok
+  else POST /upload or /upload-pdf
     API-->>Client: 400 or 200 JSON
-  else POST /upload-media
-    API-->>Client: 200 JSON path
+  else GET /documents...
+    API-->>Client: 200 or 404
+  else /mcp Streamable HTTP
+    API-->>Client: MCP session / tool result
   else other path
     API-->>Client: FastAPI default 404 or /docs
   end
@@ -91,56 +98,43 @@ sequenceDiagram
 
 Facts:
 
-- Listen address and port are hardcoded: `uvicorn.run(app, host="0.0.0.0", port=8080)`.
+- Listen address and port are constants: `HOST = "0.0.0.0"`, `PORT = 8080` in `rag/config.py`; `uvicorn.run(..., host=HOST, port=PORT)`.
 - Docker `EXPOSE 8080`.
 - No `PORT` env var is read.
-- No HTTP/2, gRPC, WebSocket, or unix-socket server is configured.
+- MCP: `FastMCP(..., stateless_http=True, streamable_http_path="/")` mounted at `/mcp`. FastAPI lifespan enters `mcp_app.router.lifespan_context(mcp_app)`.
+- No MCP stdio (`mcp.run()` is not called).
+- No HTTP/2, gRPC, or unix-socket server is configured in this repo.
 - `python-multipart` is installed so FastAPI can parse `UploadFile` bodies.
-- There is no CORS middleware; browser cross-origin behavior is FastAPI/Starlette default (no CORS headers added in this repo).
-
-Not implemented:
-
-- MCP Streamable HTTP / SSE on any path.
-- MCP stdio (`mcp.run()`).
-- Healthcheck HTTP endpoint (despite `curl` in the image).
+- There is no CORS middleware (Starlette/FastAPI defaults).
+- `GET /health` exists for liveness. There is no Docker `HEALTHCHECK` instruction.
 
 **Assumption:** On Railway, public HTTPS (443) is mapped to the service’s 8080. The repo does not set a Railway port or domain.
 
 ## Outbound connections
 
-The only network client in application code is `requests.post` inside `get_embedding()`:
+The only runtime network client in application code is `requests.post` in `rag.embeddings.get_embedding()`. See [Embedding connectivity](#embedding-connectivity).
 
-| Field | Value in code |
-| --- | --- |
-| Method / URL | `POST https://openai.com` |
-| Port | Not set; `requests` uses **443** for `https` |
-| Headers | `Authorization: Bearer {OPENAI_API_KEY}`, `Content-Type: application/json` |
-| Body | `{"input": text, "model": "text-embedding-3-small"}` |
-| TLS verify | `requests` default (verify on) — not overridden |
-| Timeout | None (`requests.post` default: wait indefinitely) |
-| Proxy | None in code (process would honor standard `HTTP(S)_PROXY` if the environment set them — **Assumption**) |
-
-Triggered from:
-
-- `POST /upload-pdf` (once per chunk)
-- `search_domain_knowledge` (once per query), if that tool is invoked
-
-No code talks to `api.openai.com`, other LLM providers, a remote Qdrant URL, PostgreSQL, Redis, SMTP, or webhooks.
+No code talks to a remote Qdrant URL, PostgreSQL, Redis, SMTP, or webhooks.
 
 Image **build-time** outbound (not runtime):
 
 - Base image `python:3.11-slim-bookworm`
 - `ghcr.io/astral-sh/uv:latest`
 - Debian apt (`curl`)
-- PyPI via `uv pip install --system` (unpinned packages)
+- PyPI via `uv pip install --system`
 
 ## Internal I/O (not network)
 
+Default root: `RAG_DATA_ROOT` → `/data/rag` (Dockerfile `ENV`; overridable).
+
 | Path | Mechanism | Notes |
 | --- | --- | --- |
-| `UPLOAD_DIR` (default `./storage/files`) | `open` / `shutil.copyfileobj` | Created at import with `os.makedirs(..., exist_ok=True)` |
-| `DB_PATH` (default `./storage/qdrant`) | Qdrant embedded storage | Same |
-| Docker volume | `VOLUME ["/app/storage"]` | Covers both defaults when `WORKDIR` is `/app` |
+| `{root}/originals/{doc_id}/<basename>` | `Path.write_bytes` | Raw uploads; basename via `Path(filename).name` |
+| `{root}/processed/{doc_id}/meta.json`, `fulltext.txt`, `chunks.json` | UTF-8 files | Written on ingest |
+| `{root}/index.json` | JSON catalog; atomic replace via `.json.tmp` | SHA-256 duplicate lookup |
+| `{root}/qdrant/` | Embedded Qdrant | No listen port |
+
+README: on Railway, mount a volume at `/data` (the app creates `/data/rag`). Dockerfile does not declare `VOLUME`.
 
 No second container is required for the vector store.
 
@@ -150,12 +144,12 @@ No second container is required for the vector store.
 | --- | --- | --- | --- |
 | FastAPI REST | HTTP/1.1 via uvicorn | **8080/tcp** | **None** |
 | FastAPI OpenAPI UI | HTTP GET | 8080 | **None** |
-| MCP Streamable HTTP / SSE | — | — | Not started |
+| MCP Streamable HTTP | HTTP on `/mcp` | 8080 | **None** |
 | MCP stdio | — | — | Not started |
 | Embedded Qdrant | in-process + disk | no listen port | n/a |
-| Embedding call | HTTPS | 443 | Bearer `OPENAI_API_KEY` (outbound) |
+| Novita embeddings | HTTPS | 443 | Bearer `BGE_M3_NOVITA_API_KEY` or fallbacks (outbound) |
 
-Auth points that exist: **one**, the outbound OpenAI Bearer header.
+Auth points that exist: **one**, the outbound embedding Bearer header.
 
 Auth points that do not exist: inbound API keys, JWT, mTLS, MCP OAuth, network policies in-repo.
 
@@ -164,24 +158,163 @@ Auth points that do not exist: inbound API keys, JWT, mTLS, MCP OAuth, network p
 | Source | Destination | Protocol | Port | Auth | Direction |
 | --- | --- | --- | --- | --- | --- |
 | External HTTP client | uvicorn / FastAPI | HTTP | 8080 | None | Inbound |
-| Platform edge (**assumption**) | uvicorn / FastAPI | HTTP (TLS already terminated) | 8080 | None at app | Inbound |
-| MCP client | FastMCP | MCP over HTTP/SSE/stdio | n/a | n/a | **Not connected** — instance created, no transport |
-| `get_embedding()` (`requests`) | `https://openai.com` | HTTPS | 443 | Bearer `OPENAI_API_KEY` | Outbound |
-| FastAPI `upload_pdf` / `upload_media` | `UPLOAD_DIR` on local disk | filesystem | n/a | OS file perms only | Internal write |
-| `QdrantClient` | `DB_PATH` on local disk | embedded Qdrant / filesystem | n/a | none | Internal read/write |
+| MCP client | FastMCP at `/mcp` | HTTP (Streamable HTTP) | 8080 | None | Inbound |
+| Platform edge (**assumption**) | uvicorn | HTTP (TLS already terminated) | 8080 | None at app | Inbound |
+| `get_embedding()` (`requests`) | `https://api.novita.ai/openai/v1/embeddings` | HTTPS | 443 | Bearer `BGE_M3_NOVITA_API_KEY` or fallbacks | Outbound |
+| `RagStorage` | `{RAG_DATA_ROOT}` | filesystem | n/a | OS file perms only | Internal read/write |
+| `QdrantClient` | `{RAG_DATA_ROOT}/qdrant` | embedded Qdrant / filesystem | n/a | none | Internal read/write |
 | Docker build | `ghcr.io`, Debian apt, PyPI | HTTPS | 443 | registry/public | Build-time outbound |
-| Operator healthcheck using image `curl` (**assumption**) | `localhost:8080` | HTTP | 8080 | None | Inbound to self; no `/health` route |
+| Operator healthcheck using image `curl` (**assumption**) | `GET /health` on `:8080` | HTTP | 8080 | None | Inbound to self |
 
 ## Data that crosses boundaries
 
 | Flow | Data |
 | --- | --- |
-| Inbound `/upload-pdf` | Raw PDF bytes; stored under the client-supplied filename; text extracted and sent to the embedding URL |
-| Inbound `/upload-media` | Arbitrary bytes; stored only |
-| Outbound embedding | Chunk or query **plaintext** plus the API key |
-| Disk `DB_PATH` | Vectors and payloads (`text`, `source`, `page`) |
-| MCP tool return (if ever invoked) | Retrieved `source` + `text` strings |
+| Inbound `/upload`, `/upload-pdf` | File bytes; originals stored; extracted text sent to Novita embeddings; vectors + payloads on disk |
+| Inbound `/upload-media` | Arbitrary bytes; stored under `originals/{uuid}/` only |
+| Inbound `GET /documents*` | Catalog metadata and processed fulltext from disk |
+| Inbound `/mcp` | Tool arguments and return strings (including document text/chunks) |
+| Outbound embedding | Chunk or query **plaintext** plus the API key — see [Embedding connectivity](#embedding-connectivity) |
+| Disk Qdrant | Vectors and payloads (`text`, `source`, `doc_id`, `page`, `chunk_index`) |
 
 No encryption-at-rest is configured in this repo. Volume confidentiality is whatever the host provides.
 
 **Assumption:** Production operators will restrict who can reach 8080 (private network, platform auth, or an API gateway). The application does not enforce that.
+
+## Embedding connectivity
+
+This is the only runtime egress to an external API. All of it is in `rag/embeddings.py`, called from `rag.ingest.ingest_bytes` (HTTP upload and MCP `ingest_text`) and `search_domain_knowledge`.
+
+The HTTP API is OpenAI-compatible (`/openai/v1/embeddings`); the host is **Novita**, not `api.openai.com`. There is no chat/completions client.
+
+### APIs, endpoints, and models
+
+| Kind | Used? | Evidence |
+| --- | --- | --- |
+| Embeddings | **Yes** | `EMBEDDING_URL = "https://api.novita.ai/openai/v1/embeddings"`, `EMBEDDING_MODEL = "baai/bge-m3"`, `EMBEDDING_DIM = 1024` |
+| Chat / Completions / Responses | **No** | No chat or LLM client in the repo |
+| Azure OpenAI or a configurable base URL | **No** | URL is a module constant; not read from env |
+
+`open_qdrant()` uses `VectorParams(size=EMBEDDING_DIM, ...)`. `get_embedding()` rejects responses whose vector length is not `1024`.
+
+### Base URL and configuration
+
+The embeddings URL is **hardcoded**. There is no `OPENAI_BASE_URL` or Novita base-URL override, and no organization or project header.
+
+```text
+POST https://api.novita.ai/openai/v1/embeddings
+```
+
+Host `api.novita.ai`, path `/openai/v1/embeddings`, scheme HTTPS.
+
+### Auth and secret handling
+
+`resolve_api_key()` checks, in order:
+
+1. `BGE_M3_NOVITA_API_KEY`
+2. `NOVITA_API_KEY`
+3. `OPENAI_TOKEN`
+4. `OPENAI_API_KEY`
+
+- Sent as `Authorization: Bearer {key}` plus `Content-Type: application/json`.
+- If all are missing/empty: `ValueError("Missing Novita credentials. Set BGE_M3_NOVITA_API_KEY.")`.
+- Not loaded from a file, Docker secret path, or vault. Application code does not log the key (there is also no application logger).
+- Callers may pass `api_key=` into `get_embedding`; production HTTP/MCP paths do not.
+
+**Assumption:** In production the token is a Railway (or other host) environment variable. README’s local example is `export BGE_M3_NOVITA_API_KEY=...`.
+
+### Request / response flow
+
+```mermaid
+sequenceDiagram
+  participant Caller as ingest_bytes or search_domain_knowledge
+  participant GE as get_embedding
+  participant Env as process environment
+  participant NV as api.novita.ai:443
+
+  Caller->>GE: text
+  GE->>Env: BGE_M3_NOVITA_API_KEY then NOVITA_API_KEY then OPENAI_TOKEN then OPENAI_API_KEY
+  alt no key
+    GE-->>Caller: ValueError
+  else key present
+    GE->>NV: POST /openai/v1/embeddings timeout=60<br/>Bearer + {"input": text, "model": "baai/bge-m3"}
+    alt HTTP error
+      NV-->>GE: non-2xx
+      GE-->>Caller: requests.HTTPError (raise_for_status)
+    else 2xx JSON with wrong length
+      NV-->>GE: embedding length not 1024
+      GE-->>Caller: ValueError expected 1024
+    else 2xx JSON
+      NV-->>GE: {"data":[{"embedding":[...1024...]}]}
+      GE-->>Caller: list[float]
+    end
+  end
+```
+
+Request body is a JSON object with string `input` (one text, not a batch array) and `model`. Response handling is `response.json()["data"][0]["embedding"]` after `raise_for_status()`, then a length check. There is no use of `usage` tokens from the response.
+
+TLS certificate verification is the `requests` default (verify on). It is not disabled in code.
+
+**Assumption:** `HTTP_PROXY` / `HTTPS_PROXY` would be honored by `requests` if set in the environment; the app does not configure proxies.
+
+### Egress
+
+- Protocol: HTTPS
+- Port: **443** (implicit for `https://`)
+- Destination host: `api.novita.ai`
+- Frequency: **one POST per chunk** during ingest; **one POST per search query**
+
+### Timeouts, retries, rate limits, error handling
+
+| Concern | Implemented? |
+| --- | --- |
+| Timeout | **Yes:** `timeout=60` seconds on `requests.post` |
+| Retries / backoff | **No** |
+| Rate-limit handling (HTTP 429, `Retry-After`) | **No** |
+| HTTP status check | **Yes:** `response.raise_for_status()` |
+| Dimension check | **Yes:** length must equal `EMBEDDING_DIM` (1024) |
+| JSON shape validation | **No** beyond `data[0].embedding` |
+| Circuit breaker / cache | **No** |
+| Duplicate ingest | **Yes (app-level):** identical SHA-256 skips re-embed |
+
+Error mapping:
+
+- Missing key or unexpected dimension: `ValueError`. HTTP `_ingest_upload` maps **any** `ValueError` to **HTTP 400**.
+- Other embedding failures (`requests.HTTPError`, JSON/KeyError): HTTP **500** `"Ingest failed: ..."`.
+- MCP `search_domain_knowledge` / `ingest_text`: any exception → tool result string.
+
+### Data sent to Novita (privacy)
+
+Sent on every embedding call:
+
+- The **plaintext** of a chunk (ingest) or the **plaintext query** (search)
+- The API key in the Authorization header
+- Model name `baai/bge-m3`
+
+Not sent: original PDF/binary (only extracted text chunks), `doc_id`, filenames, Qdrant vectors. Filenames are not in the embedding payload.
+
+Processed fulltext and chunks remain on local disk. Novita also stores whatever their API terms specify for API inputs.
+
+**Assumption:** Operators treating documents as confidential should treat Novita as a third-party processor of extracted text. This repo has no redaction or PII filter.
+
+### Cost considerations
+
+The application does not meter tokens, log `usage`, set budgets, or batch inputs.
+
+- Each chunk is a separate embeddings request (`input` is a string, not a list).
+- A large PDF means **N sequential HTTPS calls** (no parallelism in `ingest_bytes`).
+- Duplicate files with the same SHA-256 skip embedding (exact-byte duplicates only).
+- `/documents/{id}/text`, `list_documents`, and `get_document_chunks` do **not** call Novita.
+- Every `search_domain_knowledge` call embeds the query again (no query-embedding cache).
+- `/upload-media` does not embed.
+
+**Assumption:** Billing follows Novita’s published pricing for `baai/bge-m3`. Exact rates are not in this repo. Empty-text documents create zero embedding calls.
+
+### Gaps
+
+- No chat/LLM path; this is retrieval infrastructure.
+- Base URL and model are not environment-configurable.
+- No retries, 429 handling, or batch embeddings.
+- Unauthenticated callers can drive embedding spend via `/upload` or MCP `ingest_text` / `search_domain_knowledge`.
+- Timeout is 60s per request with no overall ingest deadline.
+- No recording of token usage for cost attribution.
