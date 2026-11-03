@@ -79,8 +79,8 @@ def _email_allowed(email: str) -> bool:
     return domain in allowed_domains
 
 
-@router.get("/auth/login", response_class=HTMLResponse)
-def login_page(request: Request) -> HTMLResponse:
+@router.get("/auth/login", response_class=HTMLResponse, response_model=None)
+def login_page(request: Request) -> HTMLResponse | RedirectResponse:
     """Render the Google sign-in page for the web console."""
     user = current_user(request)
     if user is not None:
