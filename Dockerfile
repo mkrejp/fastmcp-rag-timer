@@ -17,10 +17,12 @@ RUN uv pip install --system \
     pypdf \
     qdrant-client \
     requests \
-    python-multipart
+    python-multipart \
+    itsdangerous
 
 COPY main.py ./
 COPY rag ./rag
+COPY static ./static
 
 # Expose Web Interface Port
 EXPOSE 8080
