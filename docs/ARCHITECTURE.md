@@ -6,7 +6,7 @@ This document describes **fastmcp-rag-timer** as implemented in this repository.
 
 The service is a single-process Python application that:
 
-- Accepts PDF, TXT, and Markdown uploads over HTTP (FastAPI) and optional plain-text ingest over MCP.
+- Accepts PDF, TXT, Markdown, and JSON/GeoJSON over HTTP (FastAPI), remote GeoJSON by URL via bearer-authenticated `POST /ingest-json`, and optional plain-text ingest over MCP.
 - Persists originals and processed fulltext/chunks under a data root (default `/data/rag`).
 - Embeds chunks with Novita `baai/bge-m3` and indexes them in an embedded Qdrant collection.
 - Exposes catalog/text HTTP APIs and Streamable HTTP MCP tools (including similarity search) from the same uvicorn process.
@@ -44,11 +44,14 @@ rag/
   routes.py             # HTTP API
   mcp_tools.py          # FastMCP tools
   storage.py            # originals + processed + index.json
-  processing.py         # PDF/text extract + chunk
+  processing.py         # PDF/text/GeoJSON extract + chunk
+  geojson.py            # generic GeoJSON → RAG text
+  remote.py             # fetch remote JSON (GitHub blob → raw)
+  auth.py               # inbound bearer token for /ingest-json
   embeddings.py         # Novita BGE-M3 client
   ingest.py             # persist + embed + upsert pipeline
   vectorstore.py        # local Qdrant open/create
-  config.py             # constants and RAG_DATA_ROOT
+  config.py             # constants and env helpers
 ```
 
 | Component | Where | Role |
@@ -105,9 +108,10 @@ From `rag/routes.py`:
 | Method | Path | Behavior |
 | --- | --- | --- |
 | `GET` | `/health` | `{"status": "ok", "rag_data_root": ...}` |
-| `POST` | `/upload` | PDF, TXT, or Markdown → persist + index |
+| `POST` | `/upload` | PDF, TXT, Markdown, JSON, or GeoJSON → persist + index |
 | `POST` | `/upload-pdf` | PDF-only alias |
 | `POST` | `/upload-media` | Store bytes under `originals/{uuid}/`; **not** extracted or indexed |
+| `POST` | `/ingest-json` | Bearer `RAG_API_TOKEN`; body `{"url": "..."}`; fetch remote GeoJSON/JSON and index feature attributes (coordinates skipped) |
 | `GET` | `/documents` | Catalog from `index.json` |
 | `GET` | `/documents/{doc_id}` | Metadata |
 | `GET` | `/documents/{doc_id}/text` | Processed full text from disk (no re-parse, no embedding call) |
@@ -143,7 +147,7 @@ There is **retrieval + embedding**, not generation. No chat/completions call exi
 
 ### Ingestion
 
-Shared path: `rag.ingest.ingest_bytes` (HTTP `/upload`, `/upload-pdf`, and MCP `ingest_text`).
+Shared path: `rag.ingest.ingest_bytes` (HTTP `/upload`, `/upload-pdf`, `/ingest-json`, and MCP `ingest_text`).
 
 1. Require a filename; reject unsupported types (`ValueError` → HTTP 400 on REST).
 2. SHA-256 the bytes. If `skip_duplicate` (default true) and the digest is already in the catalog, return `status: exists` with `reused: true` and **do not** re-embed.
@@ -155,7 +159,7 @@ Shared path: `rag.ingest.ingest_bytes` (HTTP `/upload`, `/upload-pdf`, and MCP `
 8. Point id: `uuid5(NAMESPACE_URL, f"{doc_id}:{chunk_index}")`.
 9. Payload: `text`, `source` (filename), `doc_id`, `page`, `chunk_index`.
 
-Supported types (`rag/processing.py`): `.pdf`; `.txt`, `.md`, `.markdown`, `.text`. PDFs use `pypdf.PdfReader` over in-memory bytes. Text is decoded as utf-8, utf-8-sig, then latin-1, then utf-8 with replacement.
+Supported types (`rag/processing.py`): `.pdf`; `.txt`, `.md`, `.markdown`, `.text`; `.json`, `.geojson`. PDFs use `pypdf.PdfReader` over in-memory bytes. Text is decoded as utf-8, utf-8-sig, then latin-1, then utf-8 with replacement. JSON/GeoJSON is turned into per-feature text records via `rag.geojson` (attributes only; coordinate rings are omitted).
 
 Chunking: page segments are concatenated until over `DEFAULT_CHUNK_SIZE` (1000 characters); oversize segments are sliced at 1000 chars. No overlap, no token counting. Each chunk stores the page index of the segment currently being accumulated. Empty extractable text yields zero chunks and no upsert (HTTP still `status: Success`).
 
@@ -271,6 +275,9 @@ sequenceDiagram
 | `OPENAI_TOKEN` | unset | Embedding credential if both Novita-named vars are empty |
 | `OPENAI_API_KEY` | unset | Embedding credential checked last |
 | `RAG_SKIP_DEFAULT_APP` | unset; tests set `"1"` | Skip module-level `create_app()` in `main.py` |
+| `RAG_API_TOKEN` | unset | Required Bearer token for `POST /ingest-json` (503 if unset) |
+| `RAG_MAX_REMOTE_JSON_BYTES` | `134217728` (128 MiB) | Max remote JSON download size |
+| `RAG_REMOTE_FETCH_TIMEOUT` | `120` | Remote fetch timeout (seconds) |
 
 Not configurable without code changes:
 
@@ -331,12 +338,12 @@ There is no GitHub Actions (or other) CI workflow in the repo.
 
 | Topic | What the code does |
 | --- | --- |
-| HTTP auth | None on REST routes or FastAPI docs. |
+| HTTP auth | None on most REST routes and FastAPI docs. `POST /ingest-json` requires `Authorization: Bearer` matching `RAG_API_TOKEN`. |
 | MCP auth | None on `/mcp`. |
 | Secrets | Embedding key from `BGE_M3_NOVITA_API_KEY`, then `NOVITA_API_KEY`, `OPENAI_TOKEN`, `OPENAI_API_KEY`; sent as `Authorization: Bearer`. Not read from a file or vault. See [Embedding connectivity](./CONNECTIVITY.md#embedding-connectivity). |
 | TLS | Not implemented in-app. |
 | Upload path | Originals use `Path(filename).name` (directory components stripped). |
-| Upload size / type | `/upload` allows PDF/TXT/Markdown suffixes only. `/upload-pdf` requires `.pdf`. `/upload-media` accepts any upload. No size quota in code. |
+| Upload size / type | `/upload` allows PDF/TXT/Markdown/JSON/GeoJSON. `/upload-pdf` requires `.pdf`. `/upload-media` accepts any upload. `/ingest-json` caps remote body size via `RAG_MAX_REMOTE_JSON_BYTES` and rejects private/loopback URLs. No multipart size quota in code. |
 | Bind address | `0.0.0.0`. |
 | Container user | Default root of `python:3.11-slim-bookworm`. |
 | Dependency supply chain | Unpinned packages except `mcp[cli]<2`; `uv:latest`. |
@@ -359,7 +366,7 @@ Current gaps (not a history of old bugs):
 2. **No MCP resources or prompts.**
 3. **No REST search** — similarity search is MCP-only.
 4. **No generator LLM** — retrieval only; no answer synthesis.
-5. **No inbound auth**, quotas, or upload size limits.
+5. **Most routes have no inbound auth**; only `/ingest-json` uses `RAG_API_TOKEN`. No upload size quotas on multipart routes.
 6. **Hardcoded port 8080** — `PORT` is not read.
 7. **`/upload-media`** stores files but does not index them or add them to `index.json`.
 8. **No public document delete** (file cleanup would not remove Qdrant points).

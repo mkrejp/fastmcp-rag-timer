@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import io
+import json
 from pathlib import Path
 from typing import Any
 
 from pypdf import PdfReader
 
+from rag.geojson import geojson_to_records
 
 DEFAULT_CHUNK_SIZE = 1000
 
 TEXT_EXTENSIONS = {".txt", ".md", ".markdown", ".text"}
 PDF_EXTENSIONS = {".pdf"}
+JSON_EXTENSIONS = {".json", ".geojson"}
 
 
 def guess_mime(filename: str) -> str:
@@ -24,13 +27,17 @@ def guess_mime(filename: str) -> str:
         return "text/markdown"
     if suffix in TEXT_EXTENSIONS:
         return "text/plain"
+    if suffix == ".geojson":
+        return "application/geo+json"
+    if suffix in JSON_EXTENSIONS:
+        return "application/json"
     return "application/octet-stream"
 
 
 def is_supported_filename(filename: str) -> bool:
     """Return whether ``filename`` is an allowed upload type."""
     suffix = Path(filename).suffix.lower()
-    return suffix in PDF_EXTENSIONS or suffix in TEXT_EXTENSIONS
+    return suffix in PDF_EXTENSIONS or suffix in TEXT_EXTENSIONS or suffix in JSON_EXTENSIONS
 
 
 def extract_pdf_text(data: bytes) -> tuple[str, list[dict[str, Any]]]:
@@ -65,7 +72,23 @@ def extract_document(filename: str, data: bytes) -> tuple[str, list[dict[str, An
     if suffix in TEXT_EXTENSIONS:
         text = extract_text_bytes(data)
         return text, [{"page": 0, "text": text}]
+    if suffix in JSON_EXTENSIONS:
+        return extract_json_document(data)
     raise ValueError(f"Unsupported file type: {filename}")
+
+
+def extract_json_document(data: bytes) -> tuple[str, list[dict[str, Any]]]:
+    """Parse JSON/GeoJSON bytes into fulltext and per-feature segments."""
+    raw = extract_text_bytes(data)
+    try:
+        payload = json.loads(raw) if raw else None
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON: {exc}") from exc
+    records = geojson_to_records(payload)
+    if not records:
+        raise ValueError("JSON did not contain any indexable GeoJSON features or records")
+    segments = [{"page": index, "text": record} for index, record in enumerate(records)]
+    return "\n".join(records), segments
 
 
 def chunk_text(

@@ -5,15 +5,30 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from pydantic import BaseModel, Field
 from qdrant_client import QdrantClient
 
+from rag.auth import require_api_token
 from rag.config import COLLECTION_NAME
 from rag.ingest import ingest_bytes, meta_to_public
 from rag.processing import is_supported_filename
+from rag.remote import (
+    RemoteFetchError,
+    RemoteTooLargeError,
+    UnsafeRemoteUrlError,
+    fetch_remote_bytes,
+    filename_from_url,
+)
 from rag.storage import RagStorage
 
 router = APIRouter()
+
+
+class IngestJsonRequest(BaseModel):
+    """Body for remote JSON/GeoJSON ingest."""
+
+    url: str = Field(..., min_length=8, max_length=2048)
 
 
 def _storage(request: Request) -> RagStorage:
@@ -31,7 +46,13 @@ def _rag_data_root(request: Request) -> str:
     return str(request.app.state.rag_data_root)
 
 
-def _ingest_upload(request: Request, filename: str, data: bytes) -> dict[str, Any]:
+def _ingest_upload(
+    request: Request,
+    filename: str,
+    data: bytes,
+    *,
+    source_url: str | None = None,
+) -> dict[str, Any]:
     """Shared ingest path for HTTP uploads."""
     try:
         return ingest_bytes(
@@ -40,6 +61,7 @@ def _ingest_upload(request: Request, filename: str, data: bytes) -> dict[str, An
             collection_name=COLLECTION_NAME,
             filename=filename,
             data=data,
+            source_url=source_url,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -62,7 +84,7 @@ async def upload_document(
     if not is_supported_filename(filename):
         raise HTTPException(
             status_code=400,
-            detail="Only PDF, TXT, and Markdown files are supported.",
+            detail="Only PDF, TXT, Markdown, JSON, and GeoJSON files are supported.",
         )
     data = await file.read()
     return _ingest_upload(request, filename, data)
@@ -79,6 +101,34 @@ async def upload_pdf(request: Request, file: UploadFile = File(...)) -> dict[str
         )
     data = await file.read()
     return _ingest_upload(request, filename, data)
+
+
+@router.post("/ingest-json")
+def ingest_json_url(
+    body: IngestJsonRequest,
+    request: Request,
+    _token: str = Depends(require_api_token),
+) -> dict[str, Any]:
+    """Fetch remote GeoJSON/JSON and index feature attributes into local RAG storage.
+
+    Accepts any similar GeoJSON (FeatureCollection, Feature, geometry, or a list of
+    those objects), including GitHub blob URLs such as ``kraje.json`` / ``obce.json``.
+    Coordinate arrays are not embedded.
+    """
+    try:
+        data, final_url = fetch_remote_bytes(body.url)
+    except UnsafeRemoteUrlError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RemoteTooLargeError as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
+    except RemoteFetchError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    filename = filename_from_url(final_url)
+    lowered = filename.lower()
+    if not (lowered.endswith(".json") or lowered.endswith(".geojson")):
+        filename = f"{filename}.json"
+    return _ingest_upload(request, filename, data, source_url=final_url)
 
 
 @router.post("/upload-media")
