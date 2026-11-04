@@ -9,7 +9,28 @@ DEFAULT_RAG_DATA_ROOT = "/data/rag"
 DEFAULT_ACCNT_DATA_ROOT = "/data/accnt"
 COLLECTION_NAME = "client_domain_knowledge"
 HOST = "0.0.0.0"
-PORT = 8080
+PORT = int(os.getenv("PORT", "8080"))
+
+DEFAULT_MCP_ALLOWED_HOSTS = (
+    "rag-timer-00001-production.up.railway.app",
+    "localhost",
+    "localhost:*",
+    "127.0.0.1",
+    "127.0.0.1:*",
+)
+
+
+def mcp_allowed_hosts() -> list[str]:
+    """Hosts accepted by MCP DNS-rebinding protection (``MCP_ALLOWED_HOSTS``, comma-separated)."""
+    raw = os.getenv("MCP_ALLOWED_HOSTS", "")
+    hosts = [h.strip() for h in raw.split(",") if h.strip()]
+    return hosts or list(DEFAULT_MCP_ALLOWED_HOSTS)
+
+
+def mcp_dns_rebinding_protection() -> bool:
+    """Set ``MCP_DISABLE_DNS_REBINDING_PROTECTION=1`` to accept any Host header."""
+    return os.getenv("MCP_DISABLE_DNS_REBINDING_PROTECTION", "").lower() not in ("1", "true", "yes")
+
 DEFAULT_MAX_REMOTE_JSON_BYTES = 128 * 1024 * 1024
 DEFAULT_REMOTE_FETCH_TIMEOUT_SECONDS = 120
 MAX_REMOTE_REDIRECTS = 5

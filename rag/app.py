@@ -22,6 +22,9 @@ from rag.config import (
     resolve_rag_data_root,
     resolve_session_secret,
 )
+from mcp.server.transport_security import TransportSecuritySettings
+
+from rag.config import mcp_allowed_hosts, mcp_dns_rebinding_protection
 from rag.google_oauth import current_user, router as auth_router
 from rag.logging_setup import configure_logging, get_logger
 from rag.mcp_tools import register_mcp_tools
@@ -66,6 +69,11 @@ def create_app(
         "Client RAG Node",
         stateless_http=True,
         streamable_http_path="/",
+        transport_security=TransportSecuritySettings(
+            enable_dns_rebinding_protection=mcp_dns_rebinding_protection(),
+            allowed_hosts=mcp_allowed_hosts(),
+            allowed_origins=["https://" + h for h in mcp_allowed_hosts()] + ["http://localhost:*", "http://127.0.0.1:*"],
+        ),
     )
     register_mcp_tools(
         mcp,
