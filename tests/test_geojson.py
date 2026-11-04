@@ -28,7 +28,9 @@ def test_czech_style_feature_collection_skips_coordinates() -> None:
                 "id": "CZ0100000000",
                 "geometry": {
                     "type": "Polygon",
-                    "coordinates": [[[14.0, 50.0], [14.1, 50.0], [14.1, 50.1], [14.0, 50.0]]],
+                    "coordinates": [
+                        [[14.0, 50.0], [14.1, 50.0], [14.1, 50.1], [14.0, 50.0]]
+                    ],
                 },
             },
             {
@@ -39,7 +41,9 @@ def test_czech_style_feature_collection_skips_coordinates() -> None:
                 "id": "CZ0200000000",
                 "geometry": {
                     "type": "MultiPolygon",
-                    "coordinates": [[[[13.0, 49.0], [13.2, 49.0], [13.2, 49.2], [13.0, 49.0]]]],
+                    "coordinates": [
+                        [[[13.0, 49.0], [13.2, 49.0], [13.2, 49.2], [13.0, 49.0]]]
+                    ],
                 },
             },
         ],

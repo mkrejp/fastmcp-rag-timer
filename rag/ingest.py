@@ -43,7 +43,9 @@ def ingest_bytes(
     if not filename:
         raise ValueError("filename is required")
     if not is_supported_filename(filename):
-        raise ValueError("Only PDF, TXT, Markdown, JSON, and GeoJSON files are supported.")
+        raise ValueError(
+            "Only PDF, TXT, Markdown, JSON, and GeoJSON files are supported."
+        )
 
     digest = content_sha256(data)
     if skip_duplicate:

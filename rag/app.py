@@ -10,23 +10,24 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 from starlette.middleware.sessions import SessionMiddleware
 
 from rag.accounting import AccountingStore, set_global_store
 from rag.admin_routes import router as admin_router
+from rag.auth import McpBearerAuth
 from rag.config import (
     COLLECTION_NAME,
     google_oauth_configured,
+    mcp_allowed_hosts,
+    mcp_dns_rebinding_protection,
     resolve_accnt_data_root,
     resolve_public_base_url,
     resolve_rag_data_root,
     resolve_session_secret,
 )
-from mcp.server.transport_security import TransportSecuritySettings
-
-from rag.auth import McpBearerAuth
-from rag.config import mcp_allowed_hosts, mcp_dns_rebinding_protection
-from rag.google_oauth import current_user, router as auth_router
+from rag.google_oauth import current_user
+from rag.google_oauth import router as auth_router
 from rag.logging_setup import configure_logging, get_logger
 from rag.mcp_tools import register_mcp_tools
 from rag.routes import router
@@ -73,7 +74,8 @@ def create_app(
         transport_security=TransportSecuritySettings(
             enable_dns_rebinding_protection=mcp_dns_rebinding_protection(),
             allowed_hosts=mcp_allowed_hosts(),
-            allowed_origins=["https://" + h for h in mcp_allowed_hosts()] + ["http://localhost:*", "http://127.0.0.1:*"],
+            allowed_origins=["https://" + h for h in mcp_allowed_hosts()]
+            + ["http://localhost:*", "http://127.0.0.1:*"],
         ),
     )
     register_mcp_tools(
@@ -125,7 +127,9 @@ def create_app(
     def ui_index(request: Request) -> FileResponse | RedirectResponse:
         """Serve the RAG console after Google sign-in; otherwise redirect to login."""
         if not google_oauth_configured():
-            return RedirectResponse(url="/auth/login?error=not_configured", status_code=302)
+            return RedirectResponse(
+                url="/auth/login?error=not_configured", status_code=302
+            )
         if current_user(request) is None:
             return RedirectResponse(url="/auth/login", status_code=302)
         return FileResponse(STATIC_DIR / "index.html")

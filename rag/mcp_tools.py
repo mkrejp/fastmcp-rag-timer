@@ -135,7 +135,9 @@ def register_mcp_tools(
         """Ingest a plain-text or markdown document via MCP without multipart upload."""
 
         def _body() -> str:
-            safe_name = filename if is_supported_filename(filename) else f"{filename}.txt"
+            safe_name = (
+                filename if is_supported_filename(filename) else f"{filename}.txt"
+            )
             try:
                 result = ingest_bytes(
                     storage=storage,
@@ -167,7 +169,7 @@ def register_mcp_tools(
                     limit,
                 )
                 query_vector = get_embedding(query)
-                results = qdrant.search(
+                results = qdrant.search(  # type: ignore[attr-defined]
                     collection_name=collection_name,
                     query_vector=query_vector,
                     limit=limit,

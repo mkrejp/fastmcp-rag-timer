@@ -37,7 +37,11 @@ def guess_mime(filename: str) -> str:
 def is_supported_filename(filename: str) -> bool:
     """Return whether ``filename`` is an allowed upload type."""
     suffix = Path(filename).suffix.lower()
-    return suffix in PDF_EXTENSIONS or suffix in TEXT_EXTENSIONS or suffix in JSON_EXTENSIONS
+    return (
+        suffix in PDF_EXTENSIONS
+        or suffix in TEXT_EXTENSIONS
+        or suffix in JSON_EXTENSIONS
+    )
 
 
 def extract_pdf_text(data: bytes) -> tuple[str, list[dict[str, Any]]]:
@@ -86,7 +90,9 @@ def extract_json_document(data: bytes) -> tuple[str, list[dict[str, Any]]]:
         raise ValueError(f"Invalid JSON: {exc}") from exc
     records = geojson_to_records(payload)
     if not records:
-        raise ValueError("JSON did not contain any indexable GeoJSON features or records")
+        raise ValueError(
+            "JSON did not contain any indexable GeoJSON features or records"
+        )
     segments = [{"page": index, "text": record} for index, record in enumerate(records)]
     return "\n".join(records), segments
 

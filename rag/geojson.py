@@ -28,7 +28,10 @@ def is_geojson_like(payload: Any) -> bool:
         return True
     if isinstance(payload, list) and payload:
         return all(isinstance(item, dict) for item in payload) and any(
-            _is_feature(item) or _is_geometry(item) or "properties" in item or "geometry" in item
+            _is_feature(item)
+            or _is_geometry(item)
+            or "properties" in item
+            or "geometry" in item
             for item in payload
         )
     return False
@@ -37,8 +40,12 @@ def is_geojson_like(payload: Any) -> bool:
 def geojson_to_records(payload: Any) -> list[str]:
     """Return indexable text records for any similar GeoJSON payload."""
     if _is_feature_collection(payload):
-        records = [_feature_record(item) for item in payload.get("features", []) if isinstance(item, dict)]
-        return [record for record in records if record]
+        feature_records = [
+            _feature_record(item)
+            for item in payload.get("features", [])
+            if isinstance(item, dict)
+        ]
+        return [record for record in feature_records if record]
     if _is_feature(payload):
         record = _feature_record(payload)
         return [record] if record else []
@@ -46,7 +53,7 @@ def geojson_to_records(payload: Any) -> list[str]:
         record = _geometry_record(payload)
         return [record] if record else []
     if isinstance(payload, list):
-        records: list[str] = []
+        list_records: list[str] = []
         for item in payload:
             if not isinstance(item, dict):
                 continue
@@ -55,8 +62,8 @@ def geojson_to_records(payload: Any) -> list[str]:
             else:
                 record = _object_record(item)
             if record:
-                records.append(record)
-        return records
+                list_records.append(record)
+        return list_records
     if isinstance(payload, dict):
         record = _object_record(payload)
         return [record] if record else []
@@ -81,7 +88,9 @@ def _is_feature(payload: Any) -> bool:
         return False
     if payload.get("type") == GEOJSON_FEATURE:
         return True
-    return "geometry" in payload and isinstance(payload.get("geometry"), (dict, type(None)))
+    return "geometry" in payload and isinstance(
+        payload.get("geometry"), (dict, type(None))
+    )
 
 
 def _is_geometry(payload: Any) -> bool:
@@ -102,7 +111,11 @@ def _feature_record(feature: dict[str, Any]) -> str:
     geometry = feature.get("geometry")
     if isinstance(geometry, dict) and isinstance(geometry.get("type"), str):
         parts.append(f"geometry_type: {geometry['type']}")
-    elif isinstance(geometry, dict) and geometry.get("type") is None and "geometries" in geometry:
+    elif (
+        isinstance(geometry, dict)
+        and geometry.get("type") is None
+        and "geometries" in geometry
+    ):
         parts.append("geometry_type: GeometryCollection")
 
     properties = feature.get("properties")
@@ -124,14 +137,19 @@ def _feature_record(feature: dict[str, Any]) -> str:
 def _geometry_record(geometry: dict[str, Any]) -> str:
     """Render a geometry-only object as a short record."""
     geom_type = geometry.get("type")
-    if geom_type == "GeometryCollection" and isinstance(geometry.get("geometries"), list):
-        inner = [
-            item.get("type")
-            for item in geometry["geometries"]
-            if isinstance(item, dict) and isinstance(item.get("type"), str)
-        ]
+    if geom_type == "GeometryCollection" and isinstance(
+        geometry.get("geometries"), list
+    ):
+        inner: list[str] = []
+        for item in geometry["geometries"]:
+            if not isinstance(item, dict):
+                continue
+            member_type = item.get("type")
+            if isinstance(member_type, str):
+                inner.append(member_type)
         if inner:
-            return f"geometry_type: GeometryCollection; members: {', '.join(inner)}"
+            joined = ", ".join(inner)
+            return f"geometry_type: GeometryCollection; members: {joined}"
     if isinstance(geom_type, str):
         return f"geometry_type: {geom_type}"
     return ""
@@ -173,7 +191,9 @@ def _format_value(value: Any) -> str | None:
         if not value or _looks_like_coordinates(value):
             return None
         if all(_is_scalar(item) or item is None for item in value):
-            joined = ", ".join(_scalar_text(item) for item in value if _scalar_text(item))
+            joined = ", ".join(
+                _scalar_text(item) for item in value if _scalar_text(item)
+            )
             return joined or None
         return None
     if isinstance(value, dict):

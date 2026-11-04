@@ -9,12 +9,18 @@ from urllib.parse import urljoin, urlparse
 import requests
 
 from rag.accounting import get_global_store
-from rag.config import MAX_REMOTE_REDIRECTS, resolve_max_remote_json_bytes, resolve_remote_fetch_timeout
+from rag.config import (
+    MAX_REMOTE_REDIRECTS,
+    resolve_max_remote_json_bytes,
+    resolve_remote_fetch_timeout,
+)
 
 _USER_AGENT = "fastmcp-rag-timer/ingest-json"
 
 
-def _record_remote_fetch(*, ok: bool, bytes_in: int = 0, error: str | None = None) -> None:
+def _record_remote_fetch(
+    *, ok: bool, bytes_in: int = 0, error: str | None = None
+) -> None:
     """Record an outbound remote fetch when accounting is configured."""
     store = get_global_store()
     if store is None:
@@ -52,11 +58,11 @@ def normalize_download_url(url: str) -> str:
     if parsed.scheme in {"http", "https"} and parsed.netloc.lower() == "github.com":
         parts = [p for p in parsed.path.split("/") if p]
         if len(parts) >= 5 and parts[2] == "blob":
-            owner, repo, _blob, ref = parts[0], parts[1], parts[2], parts[3]
+            owner, repo, _, ref = parts[0], parts[1], parts[2], parts[3]
             rest = "/".join(parts[4:])
             return f"https://raw.githubusercontent.com/{owner}/{repo}/{ref}/{rest}"
         if len(parts) >= 5 and parts[2] == "raw":
-            owner, repo, _raw, ref = parts[0], parts[1], parts[2], parts[3]
+            owner, repo, _, ref = parts[0], parts[1], parts[2], parts[3]
             rest = "/".join(parts[4:])
             return f"https://raw.githubusercontent.com/{owner}/{repo}/{ref}/{rest}"
     return stripped
@@ -129,7 +135,13 @@ def fetch_remote_bytes(url: str) -> tuple[bytes, str]:
                 )
             except requests.RequestException as exc:
                 raise RemoteFetchError(f"Failed to fetch URL: {exc}") from exc
-            if response.is_redirect or response.status_code in {301, 302, 303, 307, 308}:
+            if response.is_redirect or response.status_code in {
+                301,
+                302,
+                303,
+                307,
+                308,
+            }:
                 location = response.headers.get("Location")
                 response.close()
                 if not location:
@@ -170,7 +182,9 @@ def fetch_remote_bytes(url: str) -> tuple[bytes, str]:
             last_error = RemoteFetchError("Too many redirects")
         raise last_error or RemoteFetchError("Too many redirects")
     except Exception as exc:
-        if not isinstance(exc, (UnsafeRemoteUrlError, RemoteTooLargeError, RemoteFetchError)):
+        if not isinstance(
+            exc, (UnsafeRemoteUrlError, RemoteTooLargeError, RemoteFetchError)
+        ):
             _record_remote_fetch(ok=False, error=str(exc))
             raise
         _record_remote_fetch(ok=False, error=str(exc))

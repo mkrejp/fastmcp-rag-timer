@@ -138,7 +138,9 @@ def start_google_login(request: Request) -> RedirectResponse:
         "state": state,
     }
     logger.info("Starting Google OAuth login redirect_uri=%s", _redirect_uri(request))
-    return RedirectResponse(url=f"{GOOGLE_AUTH_URL}?{urlencode(params)}", status_code=302)
+    return RedirectResponse(
+        url=f"{GOOGLE_AUTH_URL}?{urlencode(params)}", status_code=302
+    )
 
 
 @router.get("/auth/callback")

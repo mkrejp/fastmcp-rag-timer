@@ -25,8 +25,9 @@ def open_qdrant(
     client = QdrantClient(path=str(qdrant_dir))
     if client.collection_exists(collection_name):
         collection = client.get_collection(collection_name)
-        current_size = collection.config.params.vectors.size
-        if current_size != EMBEDDING_DIM:
+        vectors = collection.config.params.vectors
+        current_size = getattr(vectors, "size", None)
+        if current_size is not None and current_size != EMBEDDING_DIM:
             client.delete_collection(collection_name)
 
     if not client.collection_exists(collection_name):

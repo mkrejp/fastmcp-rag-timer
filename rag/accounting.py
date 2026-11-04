@@ -86,7 +86,9 @@ def _empty_embed_counters() -> dict[str, int]:
     }
 
 
-def _empty_simple_counters(*, with_chars: bool = False, with_bytes: bool = False) -> dict[str, int]:
+def _empty_simple_counters(
+    *, with_chars: bool = False, with_bytes: bool = False
+) -> dict[str, int]:
     """Return zeroed call/error counters with optional char/byte fields."""
     counters: dict[str, int] = {"calls": 0, "errors": 0}
     if with_chars:
@@ -108,7 +110,9 @@ def empty_day_rollup(date: str) -> dict[str, Any]:
         },
         "mcp": {
             **_empty_simple_counters(with_chars=True),
-            "by_tool": {name: _empty_simple_counters(with_chars=True) for name in MCP_TOOLS},
+            "by_tool": {
+                name: _empty_simple_counters(with_chars=True) for name in MCP_TOOLS
+            },
         },
         "http": {name: _empty_simple_counters(with_bytes=True) for name in HTTP_ROUTES},
         "outbound": {
@@ -164,16 +168,7 @@ class AccountingStore:
 
     def read_day(self, date: str) -> dict[str, Any]:
         """Read one day's rollup, or an empty document if missing."""
-        path = self.day_path(date)
-        if not path.exists():
-            return empty_day_rollup(date)
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return empty_day_rollup(date)
-        if not isinstance(data, dict):
-            return empty_day_rollup(date)
-        return self._normalize_day(data, date)
+        return self._load_unlocked(date)
 
     def summarize(self, days: int = 30) -> dict[str, Any]:
         """Return newest ``days`` rollups plus an aggregate ``totals`` object."""
@@ -325,7 +320,9 @@ class AccountingStore:
         date = utc_today()
         with self._lock:
             day = self._load_unlocked(date)
-            bucket = day["http"].setdefault(route, _empty_simple_counters(with_bytes=True))
+            bucket = day["http"].setdefault(
+                route, _empty_simple_counters(with_bytes=True)
+            )
             _add_ints(bucket, "calls", 1)
             if not ok:
                 _add_ints(bucket, "errors", 1)
@@ -420,36 +417,52 @@ class AccountingStore:
         """Fill missing keys on a loaded day document."""
         base = empty_day_rollup(date)
         base["updated_at"] = str(data.get("updated_at") or base["updated_at"])
-        emb = data.get("embeddings") if isinstance(data.get("embeddings"), dict) else {}
+        emb_raw = data.get("embeddings")
+        emb: dict[str, Any] = emb_raw if isinstance(emb_raw, dict) else {}
         for key in _empty_embed_counters():
             base["embeddings"][key] = int(emb.get(key) or 0)
-        by_source = emb.get("by_source") if isinstance(emb.get("by_source"), dict) else {}
+        by_source_raw = emb.get("by_source")
+        by_source: dict[str, Any] = (
+            by_source_raw if isinstance(by_source_raw, dict) else {}
+        )
         for name in EMBEDDING_SOURCES:
-            src = by_source.get(name) if isinstance(by_source.get(name), dict) else {}
+            src_raw = by_source.get(name)
+            src: dict[str, Any] = src_raw if isinstance(src_raw, dict) else {}
             for key in _empty_embed_counters():
                 base["embeddings"]["by_source"][name][key] = int(src.get(key) or 0)
-        mcp = data.get("mcp") if isinstance(data.get("mcp"), dict) else {}
+        mcp_raw = data.get("mcp")
+        mcp: dict[str, Any] = mcp_raw if isinstance(mcp_raw, dict) else {}
         for key in ("calls", "errors", "request_chars", "response_chars"):
             base["mcp"][key] = int(mcp.get(key) or 0)
-        by_tool = mcp.get("by_tool") if isinstance(mcp.get("by_tool"), dict) else {}
+        by_tool_raw = mcp.get("by_tool")
+        by_tool: dict[str, Any] = by_tool_raw if isinstance(by_tool_raw, dict) else {}
         tool_names = set(MCP_TOOLS) | set(by_tool.keys())
         for name in tool_names:
-            tool = by_tool.get(name) if isinstance(by_tool.get(name), dict) else {}
+            tool_raw = by_tool.get(name)
+            tool: dict[str, Any] = tool_raw if isinstance(tool_raw, dict) else {}
             bucket = base["mcp"]["by_tool"].setdefault(
                 name, _empty_simple_counters(with_chars=True)
             )
             for key in ("calls", "errors", "request_chars", "response_chars"):
                 bucket[key] = int(tool.get(key) or 0)
-        http = data.get("http") if isinstance(data.get("http"), dict) else {}
+        http_raw = data.get("http")
+        http: dict[str, Any] = http_raw if isinstance(http_raw, dict) else {}
         route_names = set(HTTP_ROUTES) | set(http.keys())
         for name in route_names:
-            route = http.get(name) if isinstance(http.get(name), dict) else {}
-            bucket = base["http"].setdefault(name, _empty_simple_counters(with_bytes=True))
+            route_raw = http.get(name)
+            route: dict[str, Any] = route_raw if isinstance(route_raw, dict) else {}
+            bucket = base["http"].setdefault(
+                name, _empty_simple_counters(with_bytes=True)
+            )
             for key in ("calls", "errors", "bytes_in"):
                 bucket[key] = int(route.get(key) or 0)
-        outbound = data.get("outbound") if isinstance(data.get("outbound"), dict) else {}
+        outbound_raw = data.get("outbound")
+        outbound: dict[str, Any] = (
+            outbound_raw if isinstance(outbound_raw, dict) else {}
+        )
         for name in OUTBOUND_TARGETS:
-            target = outbound.get(name) if isinstance(outbound.get(name), dict) else {}
+            target_raw = outbound.get(name)
+            target: dict[str, Any] = target_raw if isinstance(target_raw, dict) else {}
             bucket = base["outbound"][name]
             for key in bucket:
                 bucket[key] = int(target.get(key) or 0)
@@ -473,7 +486,9 @@ class AccountingStore:
             for key in ("calls", "errors", "request_chars", "response_chars"):
                 _add_ints(bucket, key, int(tool.get(key) or 0))
         for name, route in day["http"].items():
-            bucket = totals["http"].setdefault(name, _empty_simple_counters(with_bytes=True))
+            bucket = totals["http"].setdefault(
+                name, _empty_simple_counters(with_bytes=True)
+            )
             for key in ("calls", "errors", "bytes_in"):
                 _add_ints(bucket, key, int(route.get(key) or 0))
         for name in OUTBOUND_TARGETS:

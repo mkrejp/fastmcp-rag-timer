@@ -2,7 +2,7 @@
 
 This document inventories inbound, outbound, and in-process connections for **fastmcp-rag-timer**.
 
-**Sources of truth:** `main.py`, `rag/` (especially `app.py`, `embeddings.py`, `routes.py`, `mcp_tools.py`, `config.py`, `storage.py`, `vectorstore.py`), and `Dockerfile`. There is no reverse-proxy config, TLS cert, compose network, or firewall rules in the repo. Anything about an edge proxy or Railway routing is labeled **Assumption**.
+**Sources of truth:** `main.py`, `rag/` (especially `app.py`, `embeddings.py`, `routes.py`, `mcp_tools.py`, `config.py`, `storage.py`, `vectorstore.py`), and `Dockerfile`. There is no reverse-proxy config, TLS cert, compose network, or firewall rules in the repository. Anything about an edge proxy or Railway routing is labeled **Assumption**.
 
 Related: [ARCHITECTURE.md](./ARCHITECTURE.md), [Embedding provider](./embedding-provider.md). Embedding API details are in [Embedding connectivity](#embedding-connectivity).
 
@@ -106,12 +106,12 @@ Facts:
 - No `PORT` env var is read.
 - MCP: `FastMCP(..., stateless_http=True, streamable_http_path="/")` mounted at `/mcp`. FastAPI lifespan enters `mcp_app.router.lifespan_context(mcp_app)`.
 - No MCP stdio (`mcp.run()` is not called).
-- No HTTP/2, gRPC, or unix-socket server is configured in this repo.
+- No HTTP/2, gRPC, or unix-socket server is configured in this repository.
 - `python-multipart` is installed so FastAPI can parse `UploadFile` bodies.
 - There is no CORS middleware (Starlette/FastAPI defaults).
 - `GET /health` exists for liveness. There is no Docker `HEALTHCHECK` instruction.
 
-**Assumption:** On Railway, public HTTPS (443) is mapped to the service’s 8080. The repo does not set a Railway port or domain.
+**Assumption:** On Railway, public HTTPS (443) is mapped to the service’s 8080. The repository does not set a Railway port or domain.
 
 ## Outbound connections
 
@@ -146,7 +146,7 @@ No second container is required for the vector store.
 
 ## Transports, ports, and auth points
 
-| Interface | Transport | Port | Auth in repo |
+| Interface | Transport | Port | Auth in repository |
 | --- | --- | --- | --- |
 | FastAPI REST (most routes) | HTTP/1.1 via uvicorn | **8080/tcp** | **None** |
 | `POST /ingest-json` | HTTP/1.1 via uvicorn | 8080 | Bearer `RAG_API_TOKEN` |
@@ -159,7 +159,7 @@ No second container is required for the vector store.
 
 Auth points that exist: outbound embedding Bearer header; inbound Bearer on `/ingest-json`.
 
-Auth points that do not exist: JWT, mTLS, MCP OAuth, auth on other REST/MCP routes, network policies in-repo.
+Auth points that do not exist: JWT, mTLS, MCP OAuth, auth on other REST/MCP routes, network policies in the repository.
 
 ## Connection inventory
 
@@ -188,7 +188,7 @@ Auth points that do not exist: JWT, mTLS, MCP OAuth, auth on other REST/MCP rout
 | Outbound embedding | Chunk or query **plaintext** plus the API key — see [Embedding connectivity](#embedding-connectivity) |
 | Disk Qdrant | Vectors and payloads (`text`, `source`, `doc_id`, `page`, `chunk_index`) |
 
-No encryption-at-rest is configured in this repo. Volume confidentiality is whatever the host provides.
+No encryption-at-rest is configured in this repository. Volume confidentiality is whatever the host provides.
 
 **Assumption:** Production operators will restrict who can reach 8080 (private network, platform auth, or an API gateway). The application does not enforce that.
 
@@ -203,7 +203,7 @@ The HTTP API is OpenAI-compatible (`/openai/v1/embeddings`); the host is **Novit
 | Kind | Used? | Evidence |
 | --- | --- | --- |
 | Embeddings | **Yes** | `EMBEDDING_URL = "https://api.novita.ai/openai/v1/embeddings"`, `EMBEDDING_MODEL = "baai/bge-m3"`, `EMBEDDING_DIM = 1024` |
-| Chat / Completions / Responses | **No** | No chat or LLM client in the repo |
+| Chat / Completions / Responses | **No** | No chat or LLM client in the repository |
 | Azure OpenAI or a configurable base URL | **No** | URL is a module constant; not read from env |
 
 `open_qdrant()` uses `VectorParams(size=EMBEDDING_DIM, ...)`. `get_embedding()` rejects responses whose vector length is not `1024`.
@@ -306,7 +306,7 @@ Not sent: original PDF/binary (only extracted text chunks), `doc_id`, filenames,
 
 Processed fulltext and chunks remain on local disk. Novita also stores whatever their API terms specify for API inputs.
 
-**Assumption:** Operators treating documents as confidential should treat Novita as a third-party processor of extracted text. This repo has no redaction or PII filter.
+**Assumption:** Operators treating documents as confidential should treat Novita as a third-party processor of extracted text. This repository has no redaction or PII filter.
 
 ### Cost considerations
 
@@ -326,7 +326,7 @@ There are still **no budgets**, spend caps, or dollar conversion.
 - Every `search_domain_knowledge` call embeds the query again (no query-embedding cache).
 - `/upload-media` does not embed.
 
-**Assumption:** Billing follows Novita’s published pricing for `baai/bge-m3`. Exact rates are not in this repo. Empty-text documents create zero embedding calls.
+**Assumption:** Billing follows Novita’s published pricing for `baai/bge-m3`. Exact rates are not in this repository. Empty-text documents create zero embedding calls.
 
 ### Gaps
 

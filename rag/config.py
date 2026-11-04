@@ -29,7 +29,12 @@ def mcp_allowed_hosts() -> list[str]:
 
 def mcp_dns_rebinding_protection() -> bool:
     """Set ``MCP_DISABLE_DNS_REBINDING_PROTECTION=1`` to accept any Host header."""
-    return os.getenv("MCP_DISABLE_DNS_REBINDING_PROTECTION", "").lower() not in ("1", "true", "yes")
+    return os.getenv("MCP_DISABLE_DNS_REBINDING_PROTECTION", "").lower() not in (
+        "1",
+        "true",
+        "yes",
+    )
+
 
 DEFAULT_MAX_REMOTE_JSON_BYTES = 128 * 1024 * 1024
 DEFAULT_REMOTE_FETCH_TIMEOUT_SECONDS = 120

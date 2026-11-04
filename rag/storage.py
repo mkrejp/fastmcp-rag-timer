@@ -65,7 +65,12 @@ class RagStorage:
 
     def ensure_layout(self) -> None:
         """Create the persistent directory tree if it does not exist."""
-        for path in (self.root, self.originals_dir, self.processed_dir, self.qdrant_dir):
+        for path in (
+            self.root,
+            self.originals_dir,
+            self.processed_dir,
+            self.qdrant_dir,
+        ):
             path.mkdir(parents=True, exist_ok=True)
         if not self.index_path.exists():
             self._write_index([])
@@ -105,7 +110,9 @@ class RagStorage:
         fulltext_path = dest_dir / "fulltext.txt"
         chunks_path = dest_dir / "chunks.json"
         meta_path = dest_dir / "meta.json"
-        original_path = self.original_dir(doc_id) / (Path(filename).name or "document.bin")
+        original_path = self.original_dir(doc_id) / (
+            Path(filename).name or "document.bin"
+        )
 
         fulltext_path.write_text(fulltext, encoding="utf-8")
         chunks_path.write_text(
