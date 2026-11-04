@@ -94,8 +94,8 @@ def create_app(rag_data_root: str | None = None) -> FastAPI:
         """Send browsers to the authenticated console."""
         return RedirectResponse(url="/ui/", status_code=302)
 
-    @app.get("/ui")
-    @app.get("/ui/")
+    @app.get("/ui", response_model=None)
+    @app.get("/ui/", response_model=None)
     def ui_index(request: Request) -> FileResponse | RedirectResponse:
         """Serve the RAG console after Google sign-in; otherwise redirect to login."""
         if not google_oauth_configured():
