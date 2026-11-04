@@ -53,6 +53,32 @@ def test_record_embedding_writes_day_rollup_and_event(store: AccountingStore) ->
     assert events
     assert events[0]["kind"] == "embedding"
     assert events[0]["source"] == "ingest_http"
+    assert events[0]["prompt_tokens"] == 4
+    assert events[0]["total_tokens"] == 4
+    assert events[0]["tokens_from_api"] is True
+
+
+def test_read_events_filters_by_kind(store: AccountingStore) -> None:
+    """Event reads should prefer newest matching kind when filtered."""
+    store.record_mcp(tool="list_documents", ok=True, response_chars=3)
+    store.record_embedding(
+        source="search_mcp",
+        ok=True,
+        input_chars=5,
+        prompt_tokens=9,
+        total_tokens=9,
+        tokens_from_api=True,
+        latency_ms=8,
+        model="baai/bge-m3",
+    )
+    store.record_http(route="health", ok=True, bytes_in=0)
+    today = utc_today()
+    embeddings = store.read_events(today, limit=10, kind="embedding")
+    assert len(embeddings) == 1
+    assert embeddings[0]["prompt_tokens"] == 9
+    assert embeddings[0]["total_tokens"] == 9
+    mixed = store.read_events(today, limit=10)
+    assert {event["kind"] for event in mixed} >= {"embedding", "mcp", "http"}
 
 
 def test_summarize_aggregates_multiple_days(
@@ -180,6 +206,35 @@ def test_admin_accounts_endpoints(
             detail = client.get(f"/api/admin/accounts/{today}")
             assert detail.status_code == 200
             assert detail.json()["day"]["http"]["upload"]["calls"] >= 1
+            from rag.accounting import get_global_store
+
+            accounting = get_global_store()
+            assert accounting is not None
+            accounting.record_embedding(
+                source="ingest_http",
+                ok=True,
+                input_chars=12,
+                prompt_tokens=11,
+                total_tokens=11,
+                tokens_from_api=True,
+                latency_ms=20,
+                model="baai/bge-m3",
+            )
+            with_events = client.get(
+                f"/api/admin/accounts/{today}"
+                "?include_events=true&event_kind=embedding&event_limit=50"
+            )
+            assert with_events.status_code == 200
+            event_body = with_events.json()
+            assert event_body["event_kind"] == "embedding"
+            assert event_body["event_count"] == len(event_body["events"])
+            assert event_body["events"]
+            assert all(event["kind"] == "embedding" for event in event_body["events"])
+            assert any(
+                int(event.get("prompt_tokens") or 0) == 11
+                and event.get("tokens_from_api") is True
+                for event in event_body["events"]
+            )
             status_resp = client.get("/api/admin/status")
             assert status_resp.status_code == 200
             assert status_resp.json()["volume"]["accnt_root"] == str(accnt_root)

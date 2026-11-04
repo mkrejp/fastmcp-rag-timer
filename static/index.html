@@ -83,7 +83,13 @@
       </div>
       <div class="card" style="margin-top:1rem">
         <h2>Embeddings by source</h2>
-        <pre id="accounts-embeddings" class="code"></pre>
+        <p class="muted">Rollup totals attributed via <code>ingest_http</code>, <code>ingest_mcp</code>, <code>search_mcp</code>, or <code>other</code>.</p>
+        <div id="accounts-embeddings" class="table-wrap muted">Select a day.</div>
+      </div>
+      <div class="card" style="margin-top:1rem">
+        <h2>Embedding API calls</h2>
+        <p class="muted">Each Novita embeddings request with prompt/total tokens when the API returned <code>usage</code>.</p>
+        <div id="accounts-embedding-calls" class="table-wrap muted">Select a day.</div>
       </div>
       <div class="card" style="margin-top:1rem">
         <h2>MCP by tool</h2>

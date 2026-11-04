@@ -138,14 +138,99 @@ async function loadMcp () {
     .join('') || '<div class="item muted">No tools registered.</div>'
 }
 
+function avgLatencyMs (outboundEmbed) {
+  const calls = Number(outboundEmbed?.calls || 0)
+  const sum = Number(outboundEmbed?.latency_ms_sum || 0)
+  if (!calls) return null
+  return Math.round(sum / calls)
+}
+
+function renderEmbeddingSourceTable (bySource) {
+  const sources = Object.keys(bySource || {})
+  if (!sources.length) {
+    return '<p class="muted">No embedding activity for this day.</p>'
+  }
+  const rows = sources
+    .map((source) => {
+      const row = bySource[source] || {}
+      return `<tr>
+        <td>${escapeHtml(source)}</td>
+        <td class="num">${number(row.calls)}</td>
+        <td class="num">${number(row.errors)}</td>
+        <td class="num">${number(row.prompt_tokens)}</td>
+        <td class="num">${number(row.total_tokens)}</td>
+        <td class="num">${number(row.input_chars)}</td>
+        <td class="num">${number(row.tokens_from_api)}</td>
+        <td class="num">${number(row.tokens_estimated)}</td>
+      </tr>`
+    })
+    .join('')
+  return `<table class="accounts-table">
+    <thead><tr>
+      <th>Source</th><th>Calls</th><th>Errors</th><th>Prompt tok</th><th>Total tok</th>
+      <th>Chars</th><th>API usage</th><th>No usage</th>
+    </tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`
+}
+
+function renderEmbeddingCallsTable (events, meta = {}) {
+  const embeddings = (events || []).filter((event) => event.kind === 'embedding')
+  if (!embeddings.length) {
+    return '<p class="muted">No embedding API calls recorded for this day yet.</p>'
+  }
+  const rows = embeddings
+    .map((event) => {
+      const ok = event.ok !== false
+      const fromApi = Boolean(event.tokens_from_api)
+      const prompt = number(event.prompt_tokens)
+      const total = number(event.total_tokens)
+      const tokenClass = fromApi ? 'token-yes' : ''
+      const usageLabel = fromApi ? 'API' : (ok ? 'missing' : '—')
+      const error = event.error ? escapeHtml(String(event.error)) : ''
+      return `<tr class="${ok ? '' : 'fail'}">
+        <td>${escapeHtml(event.ts || '')}</td>
+        <td>${escapeHtml(event.source || 'other')}</td>
+        <td>${ok ? 'ok' : 'error'}</td>
+        <td class="num ${tokenClass}">${prompt}</td>
+        <td class="num ${tokenClass}">${total}</td>
+        <td>${usageLabel}</td>
+        <td class="num">${number(event.chars)}</td>
+        <td class="num">${number(event.latency_ms)} ms</td>
+        <td>${escapeHtml(event.model || '')}</td>
+        <td class="clip" title="${error}">${error}</td>
+      </tr>`
+    })
+    .join('')
+  const shown = embeddings.length
+  const limit = meta.event_limit
+  const note = limit && shown >= limit
+    ? `<p class="muted">Showing newest ${number(shown)} embedding calls (limit ${number(limit)}).</p>`
+    : `<p class="muted">${number(shown)} embedding call${shown === 1 ? '' : 's'}.</p>`
+  return `${note}<table class="accounts-table">
+    <thead><tr>
+      <th>Time (UTC)</th><th>Source</th><th>Status</th>
+      <th>Prompt tokens</th><th>Total tokens</th><th>Usage</th>
+      <th>Chars</th><th>Latency</th><th>Model</th><th>Error</th>
+    </tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`
+}
+
 function renderAccountDay (day, meta = {}) {
   const emb = day.embeddings || {}
   const mcp = day.mcp || {}
+  const outboundEmbed = day.outbound?.novita_embeddings || {}
+  const latency = avgLatencyMs(outboundEmbed)
   const stats = [
     ['Embed calls', number(emb.calls)],
     ['Prompt tokens', number(emb.prompt_tokens)],
     ['Total tokens', number(emb.total_tokens)],
+    ['API usage calls', number(emb.tokens_from_api)],
+    ['No usage calls', number(emb.tokens_estimated)],
+    ['Embed errors', number(emb.errors)],
     ['Input chars', number(emb.input_chars)],
+    ['Avg latency', latency == null ? '—' : `${number(latency)} ms`],
     ['MCP calls', number(mcp.calls)],
     ['MCP errors', number(mcp.errors)]
   ]
@@ -155,7 +240,10 @@ function renderAccountDay (day, meta = {}) {
         `<div class="stat"><span class="muted">${label}</span><strong>${value}</strong></div>`
     )
     .join('')
-  $('accounts-embeddings').textContent = JSON.stringify(emb.by_source || emb, null, 2)
+  $('accounts-embeddings').className = 'table-wrap'
+  $('accounts-embeddings').innerHTML = renderEmbeddingSourceTable(emb.by_source || {})
+  $('accounts-embedding-calls').className = 'table-wrap'
+  $('accounts-embedding-calls').innerHTML = renderEmbeddingCallsTable(meta.events || [], meta)
   $('accounts-mcp').textContent = JSON.stringify(mcp.by_tool || mcp, null, 2)
   $('accounts-comms').textContent = JSON.stringify(
     {
@@ -176,14 +264,17 @@ function renderAccountDay (day, meta = {}) {
       total_tokens: emb.total_tokens,
       input_chars: emb.input_chars,
       tokens_from_api: emb.tokens_from_api,
-      tokens_estimated: emb.tokens_estimated
+      tokens_estimated: emb.tokens_estimated,
+      by_source: emb.by_source || {}
     },
+    embedding_events_shown: (meta.events || []).filter((event) => event.kind === 'embedding').length,
     mcp: {
       calls: mcp.calls,
       errors: mcp.errors,
       request_chars: mcp.request_chars,
       response_chars: mcp.response_chars
-    }
+    },
+    outbound_novita: outboundEmbed
   }
   $('accounts-detail').className = ''
   $('accounts-detail').innerHTML = `<pre class="code">${escapeHtml(JSON.stringify(detail, null, 2))}</pre>`
@@ -194,10 +285,23 @@ async function selectAccountDay (date) {
   const detail = $('accounts-detail')
   detail.className = 'muted'
   detail.textContent = 'Loading…'
+  $('accounts-embedding-calls').className = 'table-wrap muted'
+  $('accounts-embedding-calls').textContent = 'Loading…'
+  const params = new URLSearchParams({
+    include_events: '1',
+    event_kind: 'embedding',
+    event_limit: '500'
+  })
   const body = await getJson(
-    `/api/admin/accounts/${encodeURIComponent(date)}?include_events=0`
+    `/api/admin/accounts/${encodeURIComponent(date)}?${params.toString()}`
   )
-  renderAccountDay(body.day, { date: body.date, exists: body.exists })
+  renderAccountDay(body.day, {
+    date: body.date,
+    exists: body.exists,
+    events: body.events || [],
+    event_limit: body.event_limit,
+    event_kind: body.event_kind
+  })
   document.querySelectorAll('#accounts-days button').forEach((button) => {
     button.classList.toggle('active', button.dataset.date === date)
   })
@@ -220,7 +324,7 @@ async function loadAccounts () {
         http: totals.http || {},
         outbound: totals.outbound || {}
       },
-      { date: today, exists: false }
+      { date: today, exists: false, events: [] }
     )
     return
   }
@@ -228,9 +332,10 @@ async function loadAccounts () {
   list.innerHTML = days
     .map((day) => {
       const embCalls = day.embeddings?.calls ?? 0
+      const promptTokens = day.embeddings?.prompt_tokens ?? 0
       const mcpCalls = day.mcp?.calls ?? 0
       const label = day.date === today ? `${day.date} (today)` : day.date
-      return `<button type="button" data-date="${day.date}">${label}<br><span class="muted">embed ${number(embCalls)} · mcp ${number(mcpCalls)}</span></button>`
+      return `<button type="button" data-date="${day.date}">${label}<br><span class="muted">embed ${number(embCalls)} · ${number(promptTokens)} tok · mcp ${number(mcpCalls)}</span></button>`
     })
     .join('')
 

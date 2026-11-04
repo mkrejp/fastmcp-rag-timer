@@ -154,6 +154,25 @@ button:hover, .google-btn:hover, .tab:hover { filter: brightness(1.05); }
 .actions { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
 footer { padding: 0 0 2rem; color: var(--muted); font-size: 0.85rem; }
 .error { color: var(--danger); }
+.table-wrap { overflow: auto; max-height: 480px; }
+.accounts-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--mono);
+  font-size: 0.78rem;
+}
+.accounts-table th,
+.accounts-table td {
+  text-align: left;
+  padding: 0.45rem 0.55rem;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+.accounts-table th { color: var(--muted); font-weight: 500; position: sticky; top: 0; background: var(--bg1); }
+.accounts-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.accounts-table tr.fail td { color: var(--danger); }
+.accounts-table .token-yes { color: var(--accent); }
+.accounts-table .clip { max-width: 14rem; overflow: hidden; text-overflow: ellipsis; }
 
 .auth-body { min-height: 100vh; display: grid; place-items: center; padding: 1.5rem; }
 .auth-card {
