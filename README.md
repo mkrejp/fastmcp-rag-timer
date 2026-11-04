@@ -12,15 +12,20 @@ All RAG server data lives under **`/data/rag`** (override with `RAG_DATA_ROOT`):
   processed/{doc_id}/meta.json, fulltext.txt, chunks.json
   qdrant/
   index.json
+
+/data/accnt/
+  YYYY-MM-DD.json          # daily rollups (embeddings, MCP, HTTP, outbound)
+  events/YYYY-MM-DD.jsonl  # per-call audit lines
 ```
 
-On Railway, mount a volume at `/data`. The app creates `/data/rag` at startup.
+On Railway, mount a volume at `/data`. The app creates `/data/rag` and `/data/accnt` at startup.
 
 ## Configuration
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `RAG_DATA_ROOT` | `/data/rag` | Persistent originals, processed text, Qdrant |
+| `ACCNT_DATA_ROOT` | `/data/accnt` | Per-day token/comms accounting rollups and event logs |
 | `BGE_M3_NOVITA_API_KEY` | unset | Preferred Novita API credential for embeddings |
 | `NOVITA_API_KEY` | unset | Embedding credential if `BGE_M3_NOVITA_API_KEY` is empty |
 | `OPENAI_TOKEN` | unset | Embedding credential if both Novita-named vars are empty |
@@ -93,6 +98,7 @@ rag/
   remote.py             # fetch remote JSON (GitHub blob → raw)
   auth.py               # inbound bearer token for /ingest-json
   embeddings.py         # Novita BGE-M3 embeddings
+  accounting.py         # per-day token/comms accounting under /data/accnt
   ingest.py             # persist + index pipeline
   vectorstore.py        # local Qdrant
   config.py             # env defaults

@@ -8,9 +8,23 @@ from urllib.parse import urljoin, urlparse
 
 import requests
 
+from rag.accounting import get_global_store
 from rag.config import MAX_REMOTE_REDIRECTS, resolve_max_remote_json_bytes, resolve_remote_fetch_timeout
 
 _USER_AGENT = "fastmcp-rag-timer/ingest-json"
+
+
+def _record_remote_fetch(*, ok: bool, bytes_in: int = 0, error: str | None = None) -> None:
+    """Record an outbound remote fetch when accounting is configured."""
+    store = get_global_store()
+    if store is None:
+        return
+    store.record_outbound(
+        target="remote_fetch",
+        ok=ok,
+        bytes_in=bytes_in,
+        error=error,
+    )
 
 
 class UnsafeRemoteUrlError(ValueError):
@@ -99,51 +113,65 @@ def fetch_remote_bytes(url: str) -> tuple[bytes, str]:
     timeout = resolve_remote_fetch_timeout()
     max_bytes = resolve_max_remote_json_bytes()
     last_error: Exception | None = None
-    for _ in range(MAX_REMOTE_REDIRECTS + 1):
-        _assert_public_http_url(current)
-        try:
-            response = requests.get(
-                current,
-                stream=True,
-                timeout=timeout,
-                allow_redirects=False,
-                headers={"User-Agent": _USER_AGENT, "Accept": "application/json, application/geo+json, */*"},
-            )
-        except requests.RequestException as exc:
-            raise RemoteFetchError(f"Failed to fetch URL: {exc}") from exc
-        if response.is_redirect or response.status_code in {301, 302, 303, 307, 308}:
-            location = response.headers.get("Location")
-            response.close()
-            if not location:
-                raise RemoteFetchError("Redirect without Location header")
-            current = urljoin(current, location)
-            continue
-        try:
-            if response.status_code >= 400:
-                raise RemoteFetchError(f"Remote host returned HTTP {response.status_code}")
-            content_length = response.headers.get("Content-Length")
-            if content_length:
-                try:
-                    declared = int(content_length)
-                except ValueError:
-                    declared = 0
-                if declared > max_bytes:
-                    raise RemoteTooLargeError(
-                        f"Remote JSON exceeds the {max_bytes} byte limit"
+    try:
+        for _ in range(MAX_REMOTE_REDIRECTS + 1):
+            _assert_public_http_url(current)
+            try:
+                response = requests.get(
+                    current,
+                    stream=True,
+                    timeout=timeout,
+                    allow_redirects=False,
+                    headers={
+                        "User-Agent": _USER_AGENT,
+                        "Accept": "application/json, application/geo+json, */*",
+                    },
+                )
+            except requests.RequestException as exc:
+                raise RemoteFetchError(f"Failed to fetch URL: {exc}") from exc
+            if response.is_redirect or response.status_code in {301, 302, 303, 307, 308}:
+                location = response.headers.get("Location")
+                response.close()
+                if not location:
+                    raise RemoteFetchError("Redirect without Location header")
+                current = urljoin(current, location)
+                continue
+            try:
+                if response.status_code >= 400:
+                    raise RemoteFetchError(
+                        f"Remote host returned HTTP {response.status_code}"
                     )
-            chunks: list[bytes] = []
-            total = 0
-            for piece in response.iter_content(chunk_size=64 * 1024):
-                if not piece:
-                    continue
-                total += len(piece)
-                if total > max_bytes:
-                    raise RemoteTooLargeError(
-                        f"Remote JSON exceeds the {max_bytes} byte limit"
-                    )
-                chunks.append(piece)
-            return b"".join(chunks), current
-        finally:
-            response.close()
-        last_error = RemoteFetchError("Too many redirects")
-    raise last_error or RemoteFetchError("Too many redirects")
+                content_length = response.headers.get("Content-Length")
+                if content_length:
+                    try:
+                        declared = int(content_length)
+                    except ValueError:
+                        declared = 0
+                    if declared > max_bytes:
+                        raise RemoteTooLargeError(
+                            f"Remote JSON exceeds the {max_bytes} byte limit"
+                        )
+                chunks: list[bytes] = []
+                total = 0
+                for piece in response.iter_content(chunk_size=64 * 1024):
+                    if not piece:
+                        continue
+                    total += len(piece)
+                    if total > max_bytes:
+                        raise RemoteTooLargeError(
+                            f"Remote JSON exceeds the {max_bytes} byte limit"
+                        )
+                    chunks.append(piece)
+                body = b"".join(chunks)
+                _record_remote_fetch(ok=True, bytes_in=len(body))
+                return body, current
+            finally:
+                response.close()
+            last_error = RemoteFetchError("Too many redirects")
+        raise last_error or RemoteFetchError("Too many redirects")
+    except Exception as exc:
+        if not isinstance(exc, (UnsafeRemoteUrlError, RemoteTooLargeError, RemoteFetchError)):
+            _record_remote_fetch(ok=False, error=str(exc))
+            raise
+        _record_remote_fetch(ok=False, error=str(exc))
+        raise

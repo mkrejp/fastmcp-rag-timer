@@ -15,7 +15,7 @@
     <div>
       <p class="brand">fastmcp-rag-timer</p>
       <h1>RAG console</h1>
-      <p class="lede">Browse volume contents, indexed documents, MCP tools, and recent app logs.</p>
+      <p class="lede">Browse volume contents, indexed documents, MCP tools, token accounts, and recent app logs.</p>
     </div>
     <button id="refresh" type="button">Refresh</button>
   </header>
@@ -25,6 +25,7 @@
     <button type="button" class="tab" data-tab="documents">Documents</button>
     <button type="button" class="tab" data-tab="volume">Volume</button>
     <button type="button" class="tab" data-tab="mcp">MCP</button>
+    <button type="button" class="tab" data-tab="accounts">Accounts</button>
     <button type="button" class="tab" data-tab="logs">Logs</button>
   </nav>
 
@@ -64,6 +65,33 @@
         <h2>MCP status</h2>
         <pre id="mcp-status" class="code"></pre>
         <div id="mcp-tools" class="list"></div>
+      </div>
+    </section>
+
+    <section id="panel-accounts" class="panel">
+      <div class="grid stats" id="accounts-stats"></div>
+      <div class="split">
+        <div class="card">
+          <h2>Days (UTC)</h2>
+          <p class="muted">Per-day rollups under <code>/data/accnt</code>.</p>
+          <div id="accounts-days" class="list"></div>
+        </div>
+        <div class="card">
+          <h2>Selected day</h2>
+          <div id="accounts-detail" class="muted">Loading…</div>
+        </div>
+      </div>
+      <div class="card" style="margin-top:1rem">
+        <h2>Embeddings by source</h2>
+        <pre id="accounts-embeddings" class="code"></pre>
+      </div>
+      <div class="card" style="margin-top:1rem">
+        <h2>MCP by tool</h2>
+        <pre id="accounts-mcp" class="code"></pre>
+      </div>
+      <div class="card" style="margin-top:1rem">
+        <h2>Other communications</h2>
+        <pre id="accounts-comms" class="code"></pre>
       </div>
     </section>
 

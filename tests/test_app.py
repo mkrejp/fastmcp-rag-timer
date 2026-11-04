@@ -14,14 +14,18 @@ if TYPE_CHECKING:
 
 
 @pytest.fixture()
-def client(rag_root: Path, fake_embed: Callable[[str], list[float]]):
+def client(
+    rag_root: Path,
+    accnt_root: Path,
+    fake_embed: Callable[[str], list[float]],
+):
     """Build a TestClient with temp storage and mocked embeddings."""
     with patch("rag.embeddings.get_embedding", side_effect=fake_embed), patch(
         "rag.ingest.get_embedding", side_effect=fake_embed
     ), patch("rag.mcp_tools.get_embedding", side_effect=fake_embed):
         from rag.app import create_app
 
-        app = create_app(str(rag_root))
+        app = create_app(str(rag_root), accnt_data_root=str(accnt_root))
         with TestClient(app) as test_client:
             yield test_client
 
@@ -57,6 +61,7 @@ def test_upload_text_and_fetch_processed(client: TestClient) -> None:
 
 def test_processed_text_available_after_upload(
     rag_root: Path,
+    accnt_root: Path,
     fake_embed: Callable[[str], list[float]],
 ) -> None:
     """After upload, processed fulltext should be readable without embeddings."""
@@ -66,7 +71,7 @@ def test_processed_text_available_after_upload(
         from rag.app import create_app
         from rag.storage import RagStorage
 
-        app = create_app(str(rag_root))
+        app = create_app(str(rag_root), accnt_data_root=str(accnt_root))
         with TestClient(app) as client:
             upload = client.post(
                 "/upload",
@@ -86,7 +91,9 @@ def test_processed_text_available_after_upload(
 
 
 def test_mcp_mount_registered(
-    rag_root: Path, fake_embed: Callable[[str], list[float]]
+    rag_root: Path,
+    accnt_root: Path,
+    fake_embed: Callable[[str], list[float]],
 ) -> None:
     """create_app should mount the MCP ASGI app at ``/mcp``."""
     with patch("rag.embeddings.get_embedding", side_effect=fake_embed), patch(
@@ -94,7 +101,7 @@ def test_mcp_mount_registered(
     ), patch("rag.mcp_tools.get_embedding", side_effect=fake_embed):
         from rag.app import create_app
 
-        app = create_app(str(rag_root))
+        app = create_app(str(rag_root), accnt_data_root=str(accnt_root))
         mount_paths = [
             getattr(r, "path", None)
             for r in app.routes

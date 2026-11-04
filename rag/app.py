@@ -12,10 +12,12 @@ from fastapi.staticfiles import StaticFiles
 from mcp.server.fastmcp import FastMCP
 from starlette.middleware.sessions import SessionMiddleware
 
+from rag.accounting import AccountingStore, set_global_store
 from rag.admin_routes import router as admin_router
 from rag.config import (
     COLLECTION_NAME,
     google_oauth_configured,
+    resolve_accnt_data_root,
     resolve_public_base_url,
     resolve_rag_data_root,
     resolve_session_secret,
@@ -37,15 +39,28 @@ MCP_TOOL_DOCS = {
 }
 
 
-def create_app(rag_data_root: str | None = None) -> FastAPI:
+def create_app(
+    rag_data_root: str | None = None,
+    *,
+    accnt_data_root: str | None = None,
+) -> FastAPI:
     """Build the FastAPI application with MCP mounted at ``/mcp``."""
     configure_logging()
     logger = get_logger("rag.app")
     root = resolve_rag_data_root(rag_data_root)
     storage = RagStorage(root)
     storage.ensure_layout()
+    accnt_root = resolve_accnt_data_root(accnt_data_root)
+    accounting = AccountingStore(accnt_root)
+    accounting.ensure_layout()
+    set_global_store(accounting)
     qdrant = open_qdrant(storage.qdrant_dir, collection_name=COLLECTION_NAME)
-    logger.info("Opened RAG data root=%s collection=%s", root, COLLECTION_NAME)
+    logger.info(
+        "Opened RAG data root=%s accnt_root=%s collection=%s",
+        root,
+        accnt_root,
+        COLLECTION_NAME,
+    )
 
     mcp = FastMCP(
         "Client RAG Node",
@@ -81,6 +96,8 @@ def create_app(rag_data_root: str | None = None) -> FastAPI:
     app.state.storage = storage
     app.state.qdrant = qdrant
     app.state.rag_data_root = root
+    app.state.accounting = accounting
+    app.state.accnt_data_root = accnt_root
     app.state.mcp_mounted = True
     app.state.mcp_tools = mcp_tool_names
     app.state.mcp_tool_docs = MCP_TOOL_DOCS

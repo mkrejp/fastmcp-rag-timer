@@ -30,6 +30,14 @@ def rag_root(tmp_path: Path) -> Path:
 
 
 @pytest.fixture()
+def accnt_root(tmp_path: Path) -> Path:
+    """Provide an isolated accounting data root directory."""
+    root = tmp_path / "accnt"
+    root.mkdir()
+    return root
+
+
+@pytest.fixture()
 def rag_storage(rag_root: Path) -> RagStorage:
     """Provide initialized ``RagStorage`` under a temp root."""
     storage = RagStorage(rag_root)

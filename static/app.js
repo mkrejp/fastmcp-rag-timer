@@ -1,5 +1,7 @@
 const $ = (id) => document.getElementById(id);
 
+let selectedAccountDate = null;
+
 function bytes(value) {
   if (value == null || Number.isNaN(Number(value))) return "—";
   const units = ["B", "KB", "MB", "GB", "TB"];
@@ -11,6 +13,11 @@ function bytes(value) {
   }
   const digits = index === 0 ? 0 : 1;
   return `${size.toFixed(digits)} ${units[index]}`;
+}
+
+function number(value) {
+  if (value == null || Number.isNaN(Number(value))) return "0";
+  return Number(value).toLocaleString();
 }
 
 async function getJson(path) {
@@ -52,6 +59,7 @@ async function loadOverview() {
       embeddings: status.embeddings,
       vector_store: status.vector_store,
       mcp: status.mcp,
+      accnt_root: status.volume?.accnt_root,
     },
     null,
     2,
@@ -130,6 +138,117 @@ async function loadMcp() {
     .join("") || `<div class="item muted">No tools registered.</div>`;
 }
 
+function renderAccountDay(day, meta = {}) {
+  const emb = day.embeddings || {};
+  const mcp = day.mcp || {};
+  const stats = [
+    ["Embed calls", number(emb.calls)],
+    ["Prompt tokens", number(emb.prompt_tokens)],
+    ["Total tokens", number(emb.total_tokens)],
+    ["Input chars", number(emb.input_chars)],
+    ["MCP calls", number(mcp.calls)],
+    ["MCP errors", number(mcp.errors)],
+  ];
+  $("accounts-stats").innerHTML = stats
+    .map(
+      ([label, value]) =>
+        `<div class="stat"><span class="muted">${label}</span><strong>${value}</strong></div>`,
+    )
+    .join("");
+  $("accounts-embeddings").textContent = JSON.stringify(emb.by_source || emb, null, 2);
+  $("accounts-mcp").textContent = JSON.stringify(mcp.by_tool || mcp, null, 2);
+  $("accounts-comms").textContent = JSON.stringify(
+    {
+      http: day.http || {},
+      outbound: day.outbound || {},
+    },
+    null,
+    2,
+  );
+  const detail = {
+    date: day.date || meta.date,
+    updated_at: day.updated_at,
+    exists: meta.exists,
+    embeddings: {
+      calls: emb.calls,
+      errors: emb.errors,
+      prompt_tokens: emb.prompt_tokens,
+      total_tokens: emb.total_tokens,
+      input_chars: emb.input_chars,
+      tokens_from_api: emb.tokens_from_api,
+      tokens_estimated: emb.tokens_estimated,
+    },
+    mcp: {
+      calls: mcp.calls,
+      errors: mcp.errors,
+      request_chars: mcp.request_chars,
+      response_chars: mcp.response_chars,
+    },
+  };
+  $("accounts-detail").className = "";
+  $("accounts-detail").innerHTML = `<pre class="code">${escapeHtml(JSON.stringify(detail, null, 2))}</pre>`;
+}
+
+async function selectAccountDay(date) {
+  selectedAccountDate = date;
+  const detail = $("accounts-detail");
+  detail.className = "muted";
+  detail.textContent = "Loading…";
+  const body = await getJson(
+    `/api/admin/accounts/${encodeURIComponent(date)}?include_events=0`,
+  );
+  renderAccountDay(body.day, { date: body.date, exists: body.exists });
+  document.querySelectorAll("#accounts-days button").forEach((button) => {
+    button.classList.toggle("active", button.dataset.date === date);
+  });
+}
+
+async function loadAccounts() {
+  const summary = await getJson("/api/admin/accounts?days=30");
+  const totals = summary.totals || {};
+  const days = summary.days || [];
+  const today = summary.today;
+  const list = $("accounts-days");
+
+  if (!days.length) {
+    list.innerHTML = `<div class="item muted">No accounting days yet. Ingest or MCP calls will create UTC day files under /data/accnt.</div>`;
+    renderAccountDay(
+      {
+        date: today,
+        embeddings: totals.embeddings || { calls: 0, by_source: {} },
+        mcp: totals.mcp || { calls: 0, by_tool: {} },
+        http: totals.http || {},
+        outbound: totals.outbound || {},
+      },
+      { date: today, exists: false },
+    );
+    return;
+  }
+
+  list.innerHTML = days
+    .map((day) => {
+      const embCalls = day.embeddings?.calls ?? 0;
+      const mcpCalls = day.mcp?.calls ?? 0;
+      const label = day.date === today ? `${day.date} (today)` : day.date;
+      return `<button type="button" data-date="${day.date}">${label}<br><span class="muted">embed ${number(embCalls)} · mcp ${number(mcpCalls)}</span></button>`;
+    })
+    .join("");
+
+  list.querySelectorAll("button").forEach((button) => {
+    button.addEventListener("click", () => {
+      selectAccountDay(button.dataset.date).catch((error) =>
+        showError($("accounts-detail"), error),
+      );
+    });
+  });
+
+  const initial =
+    selectedAccountDate && days.some((day) => day.date === selectedAccountDate)
+      ? selectedAccountDate
+      : days[0].date;
+  await selectAccountDay(initial);
+}
+
 async function loadLogs() {
   const level = $("log-level").value;
   const query = level ? `?level=${encodeURIComponent(level)}&limit=200` : "?limit=200";
@@ -151,10 +270,33 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;");
 }
 
+function activeTabName() {
+  const active = document.querySelector(".tab.active");
+  return active?.dataset?.tab || "overview";
+}
+
 async function refresh() {
   $("footer-note").textContent = "Loading…";
   try {
-    await Promise.all([loadOverview(), loadDocuments(), loadVolume(), loadMcp(), loadLogs()]);
+    const tab = activeTabName();
+    if (tab === "accounts") {
+      await loadAccounts();
+    } else if (tab === "documents") {
+      await loadDocuments();
+    } else if (tab === "volume") {
+      await loadVolume();
+    } else if (tab === "mcp") {
+      await loadMcp();
+    } else if (tab === "logs") {
+      await loadLogs();
+    } else {
+      await loadOverview();
+    }
+    // Keep overview footer path fresh even when another tab is active.
+    if (tab !== "overview") {
+      const status = await getJson("/api/admin/status");
+      $("footer-note").textContent = `${status.service} · ${status.rag_data_root}`;
+    }
   } catch (error) {
     if (error.message !== "Sign-in required") {
       $("footer-note").textContent = error.message;
@@ -168,6 +310,7 @@ document.querySelectorAll(".tab").forEach((tab) => {
     document.querySelectorAll(".panel").forEach((panel) => panel.classList.remove("active"));
     tab.classList.add("active");
     $(`panel-${tab.dataset.tab}`).classList.add("active");
+    refresh();
   });
 });
 

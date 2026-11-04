@@ -2,17 +2,21 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from qdrant_client import QdrantClient
 
+from rag.accounting import AccountingStore, utc_today
 from rag.config import COLLECTION_NAME
 from rag.embeddings import EMBEDDING_DIM, EMBEDDING_MODEL, EMBEDDING_URL
 from rag.google_oauth import require_google_user
 from rag.logging_setup import get_log_handler, get_logger
 from rag.storage import RagStorage
+
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 router = APIRouter(
     prefix="/api/admin",
@@ -30,6 +34,11 @@ def _storage(request: Request) -> RagStorage:
 def _qdrant(request: Request) -> QdrantClient:
     """Return the request-scoped Qdrant client."""
     return request.app.state.qdrant
+
+
+def _accounting(request: Request) -> AccountingStore:
+    """Return the request-scoped accounting store."""
+    return request.app.state.accounting
 
 
 def _dir_size(path: Path) -> int:
@@ -124,6 +133,7 @@ def admin_status(request: Request) -> dict[str, Any]:
             "processed_bytes": _dir_size(storage.processed_dir),
             "qdrant_bytes": _dir_size(storage.qdrant_dir),
             "index_exists": storage.index_path.exists(),
+            "accnt_root": str(getattr(request.app.state, "accnt_data_root", "")),
         },
         "mcp": {
             "mounted": mcp_mounted,
@@ -261,3 +271,39 @@ def admin_logs(
     handler = get_log_handler()
     entries = handler.snapshot(limit=limit, level=level)
     return {"count": len(entries), "limit": limit, "level": level, "entries": entries}
+
+
+@router.get("/accounts")
+def admin_accounts(
+    request: Request,
+    days: int = Query(30, ge=1, le=366),
+) -> dict[str, Any]:
+    """Return recent daily accounting rollups plus aggregate totals."""
+    store = _accounting(request)
+    summary = store.summarize(days=days)
+    summary["today"] = utc_today()
+    return summary
+
+
+@router.get("/accounts/{date}")
+def admin_accounts_day(
+    date: str,
+    request: Request,
+    include_events: bool = Query(False),
+    event_limit: int = Query(200, ge=1, le=2000),
+) -> dict[str, Any]:
+    """Return one UTC day's accounting rollup and optional event tail."""
+    if not _DATE_RE.match(date):
+        raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD")
+    store = _accounting(request)
+    day = store.read_day(date)
+    payload: dict[str, Any] = {
+        "date": date,
+        "accnt_root": str(store.root),
+        "day": day,
+        "exists": store.day_path(date).exists(),
+    }
+    if include_events:
+        payload["events"] = store.read_events(date, limit=event_limit)
+        payload["event_limit"] = event_limit
+    return payload
