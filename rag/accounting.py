@@ -188,8 +188,19 @@ class AccountingStore:
             "totals": totals,
         }
 
-    def read_events(self, date: str, *, limit: int = 200) -> list[dict[str, Any]]:
-        """Return the newest ``limit`` JSONL events for ``date``."""
+    def read_events(
+        self,
+        date: str,
+        *,
+        limit: int = 200,
+        kind: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return the newest ``limit`` JSONL events for ``date``.
+
+        When ``kind`` is set (for example ``embedding``), only matching events
+        are returned. Filtering scans from the end of the file so the newest
+        matching events are preferred even when other kinds dominate the log.
+        """
         path = self.events_path(date)
         if not path.exists() or limit <= 0:
             return []
@@ -198,7 +209,7 @@ class AccountingStore:
         except OSError:
             return []
         events: list[dict[str, Any]] = []
-        for line in lines[-limit:]:
+        for line in reversed(lines):
             line = line.strip()
             if not line:
                 continue
@@ -206,9 +217,14 @@ class AccountingStore:
                 payload = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if isinstance(payload, dict):
-                events.append(payload)
-        return list(reversed(events))
+            if not isinstance(payload, dict):
+                continue
+            if kind is not None and payload.get("kind") != kind:
+                continue
+            events.append(payload)
+            if len(events) >= limit:
+                break
+        return events
 
     def record_embedding(
         self,

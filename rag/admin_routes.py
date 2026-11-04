@@ -301,6 +301,10 @@ def admin_accounts_day(
     request: Request,
     include_events: bool = Query(False),
     event_limit: int = Query(200, ge=1, le=2000),
+    event_kind: str | None = Query(
+        None,
+        description="Optional event kind filter (embedding, mcp, http, outbound).",
+    ),
 ) -> dict[str, Any]:
     """Return one UTC day's accounting rollup and optional event tail."""
     if not _DATE_RE.match(date):
@@ -314,6 +318,10 @@ def admin_accounts_day(
         "exists": store.day_path(date).exists(),
     }
     if include_events:
-        payload["events"] = store.read_events(date, limit=event_limit)
+        kind = (event_kind or "").strip() or None
+        events = store.read_events(date, limit=event_limit, kind=kind)
+        payload["events"] = events
         payload["event_limit"] = event_limit
+        payload["event_kind"] = kind
+        payload["event_count"] = len(events)
     return payload
