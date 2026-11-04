@@ -3,22 +3,40 @@
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterator
+from typing import Callable, Iterator
+from unittest.mock import patch
 
 # Prevent main.py from eagerly locking the production Qdrant path during imports.
 os.environ["RAG_SKIP_DEFAULT_APP"] = "1"
 
-import pytest
-from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams
+import pytest  # noqa: E402
+from qdrant_client import QdrantClient  # noqa: E402
+from qdrant_client.models import Distance, VectorParams  # noqa: E402
 
-from rag.embeddings import EMBEDDING_DIM
-from rag.storage import RagStorage
+from rag.embeddings import EMBEDDING_DIM  # noqa: E402
+from rag.storage import RagStorage  # noqa: E402
 
-if TYPE_CHECKING:
-    from _pytest.monkeypatch import MonkeyPatch
-    from pytest_mock.plugin import MockerFixture
+TEST_MCP_TOKEN = "test-mcp-token"
+AUTH_HEADERS = {"Authorization": f"Bearer {TEST_MCP_TOKEN}"}
+
+
+@contextmanager
+def patched_embeddings(
+    fake_embed: Callable[[str], list[float]],
+) -> Iterator[None]:
+    """Patch embedding call sites used by HTTP, ingest, and MCP paths."""
+    with patch("rag.embeddings.get_embedding", side_effect=fake_embed), patch(
+        "rag.ingest.get_embedding", side_effect=fake_embed
+    ), patch("rag.mcp_tools.get_embedding", side_effect=fake_embed):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _mcp_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Configure the bearer token for /mcp and embedding routes."""
+    monkeypatch.setenv("MCP_API_TOKEN", TEST_MCP_TOKEN)
 
 
 @pytest.fixture()
@@ -69,13 +87,3 @@ def fake_embed() -> object:
         return [base] * EMBEDDING_DIM
 
     return _embed
-
-
-TEST_MCP_TOKEN = "test-mcp-token"
-AUTH_HEADERS = {"Authorization": f"Bearer {TEST_MCP_TOKEN}"}
-
-
-@pytest.fixture(autouse=True)
-def _mcp_token(monkeypatch: "MonkeyPatch") -> None:
-    """Configure the bearer token for /mcp and embedding routes."""
-    monkeypatch.setenv("MCP_API_TOKEN", TEST_MCP_TOKEN)

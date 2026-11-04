@@ -26,7 +26,9 @@ class RingBufferHandler(logging.Handler):
         """Append one formatted log record to the ring buffer."""
         try:
             entry = {
-                "ts": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(),
+                "ts": datetime.fromtimestamp(
+                    record.created, tz=timezone.utc
+                ).isoformat(),
                 "level": record.levelname,
                 "logger": record.name,
                 "message": self.format(record),
@@ -38,7 +40,9 @@ class RingBufferHandler(logging.Handler):
         except Exception:  # noqa: BLE001 - never break the app on logging
             self.handleError(record)
 
-    def snapshot(self, *, limit: int = 100, level: str | None = None) -> list[dict[str, Any]]:
+    def snapshot(
+        self, *, limit: int = 100, level: str | None = None
+    ) -> list[dict[str, Any]]:
         """Return the newest ``limit`` entries, optionally filtered by level name."""
         with self._lock:
             items = list(self._entries)

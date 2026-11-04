@@ -49,7 +49,9 @@ def _rag_data_root(request: Request) -> str:
     return str(request.app.state.rag_data_root)
 
 
-def _record_http(*, route: str, ok: bool, bytes_in: int = 0, error: str | None = None) -> None:
+def _record_http(
+    *, route: str, ok: bool, bytes_in: int = 0, error: str | None = None
+) -> None:
     """Record an HTTP route invocation when accounting is configured."""
     store = get_global_store()
     if store is None:
@@ -111,7 +113,9 @@ async def upload_document(
         _record_http(route="upload", ok=True, bytes_in=len(data))
         return result
     except HTTPException as exc:
-        _record_http(route="upload", ok=False, bytes_in=len(data), error=str(exc.detail))
+        _record_http(
+            route="upload", ok=False, bytes_in=len(data), error=str(exc.detail)
+        )
         raise
 
 
@@ -131,7 +135,9 @@ async def upload_pdf(request: Request, file: UploadFile = File(...)) -> dict[str
         _record_http(route="upload_pdf", ok=True, bytes_in=len(data))
         return result
     except HTTPException as exc:
-        _record_http(route="upload_pdf", ok=False, bytes_in=len(data), error=str(exc.detail))
+        _record_http(
+            route="upload_pdf", ok=False, bytes_in=len(data), error=str(exc.detail)
+        )
         raise
 
 
@@ -178,7 +184,9 @@ def ingest_json_url(
         _record_http(route="ingest_json", ok=True, bytes_in=len(data))
         return result
     except HTTPException as exc:
-        _record_http(route="ingest_json", ok=False, bytes_in=len(data), error=str(exc.detail))
+        _record_http(
+            route="ingest_json", ok=False, bytes_in=len(data), error=str(exc.detail)
+        )
         raise
 
 

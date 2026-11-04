@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable
-from unittest.mock import Mock, patch
+from typing import Callable
+from unittest.mock import Mock
 
 import pytest
+from _pytest.monkeypatch import MonkeyPatch
 from fastapi.testclient import TestClient
 
 from rag.accounting import (
@@ -16,9 +17,7 @@ from rag.accounting import (
     utc_today,
 )
 from rag.embeddings import EMBEDDING_DIM, get_embedding
-
-if TYPE_CHECKING:
-    from _pytest.monkeypatch import MonkeyPatch
+from tests.conftest import AUTH_HEADERS, patched_embeddings
 
 
 @pytest.fixture()
@@ -56,7 +55,9 @@ def test_record_embedding_writes_day_rollup_and_event(store: AccountingStore) ->
     assert events[0]["source"] == "ingest_http"
 
 
-def test_summarize_aggregates_multiple_days(store: AccountingStore, monkeypatch: MonkeyPatch) -> None:
+def test_summarize_aggregates_multiple_days(
+    store: AccountingStore, monkeypatch: MonkeyPatch
+) -> None:
     """Summarize should total counters across listed day files."""
     for date, calls in (("2026-11-01", 2), ("2026-11-02", 3)):
         monkeypatch.setattr("rag.accounting.utc_today", lambda d=date: d)
@@ -127,14 +128,18 @@ def test_upload_records_http_and_ingest_source(
         recorded.append(get_accounting_source())
         return fake_embed(text)  # type: ignore[operator]
 
-    with patch("rag.embeddings.get_embedding", side_effect=tracking_embed), patch(
-        "rag.ingest.get_embedding", side_effect=tracking_embed
-    ), patch("rag.mcp_tools.get_embedding", side_effect=tracking_embed):
+    with patched_embeddings(tracking_embed):
         app = create_app(str(rag_root), accnt_data_root=str(accnt_root))
-        with TestClient(app, headers={"Authorization": "Bearer test-mcp-token"}) as client:
+        with TestClient(app, headers=AUTH_HEADERS) as client:
             response = client.post(
                 "/upload",
-                files={"file": ("note.txt", b"Accounting meters embeddings.", "text/plain")},
+                files={
+                    "file": (
+                        "note.txt",
+                        b"Accounting meters embeddings.",
+                        "text/plain",
+                    )
+                },
             )
             assert response.status_code == 200
 
@@ -155,14 +160,12 @@ def test_admin_accounts_endpoints(
     from rag.app import create_app
     from rag.google_oauth import require_google_user
 
-    with patch("rag.embeddings.get_embedding", side_effect=fake_embed), patch(
-        "rag.ingest.get_embedding", side_effect=fake_embed
-    ), patch("rag.mcp_tools.get_embedding", side_effect=fake_embed):
+    with patched_embeddings(fake_embed):
         app = create_app(str(rag_root), accnt_data_root=str(accnt_root))
         app.dependency_overrides[require_google_user] = lambda: {
             "email": "ops@example.com"
         }
-        with TestClient(app, headers={"Authorization": "Bearer test-mcp-token"}) as client:
+        with TestClient(app, headers=AUTH_HEADERS) as client:
             upload = client.post(
                 "/upload",
                 files={"file": ("a.txt", b"hello tokens", "text/plain")},
@@ -177,6 +180,6 @@ def test_admin_accounts_endpoints(
             detail = client.get(f"/api/admin/accounts/{today}")
             assert detail.status_code == 200
             assert detail.json()["day"]["http"]["upload"]["calls"] >= 1
-            status = client.get("/api/admin/status")
-            assert status.status_code == 200
-            assert status.json()["volume"]["accnt_root"] == str(accnt_root)
+            status_resp = client.get("/api/admin/status")
+            assert status_resp.status_code == 200
+            assert status_resp.json()["volume"]["accnt_root"] == str(accnt_root)

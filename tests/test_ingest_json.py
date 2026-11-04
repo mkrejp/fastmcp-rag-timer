@@ -10,6 +10,7 @@ from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.conftest import patched_embeddings
 
 KRAJE_SAMPLE = {
     "type": "FeatureCollection",
@@ -45,9 +46,7 @@ def auth_client(
     api_token: str,
 ) -> Iterator[TestClient]:
     """Build a TestClient with mocked embeddings."""
-    with patch("rag.embeddings.get_embedding", side_effect=fake_embed), patch(
-        "rag.ingest.get_embedding", side_effect=fake_embed
-    ), patch("rag.mcp_tools.get_embedding", side_effect=fake_embed):
+    with patched_embeddings(fake_embed):
         from rag.app import create_app
 
         app = create_app(str(rag_root), accnt_data_root=str(accnt_root))
@@ -103,9 +102,7 @@ def test_ingest_json_unconfigured_token(
 ) -> None:
     """The endpoint should fail closed when RAG_API_TOKEN is unset."""
     monkeypatch.delenv("RAG_API_TOKEN", raising=False)
-    with patch("rag.embeddings.get_embedding", side_effect=fake_embed), patch(
-        "rag.ingest.get_embedding", side_effect=fake_embed
-    ), patch("rag.mcp_tools.get_embedding", side_effect=fake_embed):
+    with patched_embeddings(fake_embed):
         from rag.app import create_app
 
         app = create_app(str(rag_root), accnt_data_root=str(accnt_root))

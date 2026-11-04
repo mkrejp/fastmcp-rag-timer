@@ -60,7 +60,9 @@ def _list_tree(path: Path, *, max_entries: int = 200) -> list[dict[str, Any]]:
         return []
     entries: list[dict[str, Any]] = []
     try:
-        children = sorted(path.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
+        children = sorted(
+            path.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())
+        )
     except OSError as exc:
         logger.warning("Failed to list %s: %s", path, exc)
         return []
@@ -118,7 +120,7 @@ def admin_status(request: Request) -> dict[str, Any]:
     docs = storage.list_documents()
     mcp_tools = list(getattr(request.app.state, "mcp_tools", []))
     mcp_mounted = bool(getattr(request.app.state, "mcp_mounted", False))
-    status = {
+    payload: dict[str, Any] = {
         "service": "Lightweight RAG Engine",
         "rag_data_root": str(request.app.state.rag_data_root),
         "documents": {
@@ -152,11 +154,11 @@ def admin_status(request: Request) -> dict[str, Any]:
     }
     logger.info(
         "Admin status requested: docs=%s vectors=%s mcp_tools=%s",
-        status["documents"]["count"],
-        status["vector_store"].get("points_count"),
-        status["mcp"]["tool_count"],
+        payload["documents"]["count"],
+        payload["vector_store"].get("points_count"),
+        payload["mcp"]["tool_count"],
     )
-    return status
+    return payload
 
 
 @router.get("/documents")
@@ -169,8 +171,12 @@ def admin_documents(request: Request) -> dict[str, Any]:
         item = dict(entry)
         item["originals_bytes"] = _dir_size(storage.original_dir(doc_id))
         item["processed_bytes"] = _dir_size(storage.processed_doc_dir(doc_id))
-        item["has_fulltext"] = (storage.processed_doc_dir(doc_id) / "fulltext.txt").exists()
-        item["has_chunks"] = (storage.processed_doc_dir(doc_id) / "chunks.json").exists()
+        item["has_fulltext"] = (
+            storage.processed_doc_dir(doc_id) / "fulltext.txt"
+        ).exists()
+        item["has_chunks"] = (
+            storage.processed_doc_dir(doc_id) / "chunks.json"
+        ).exists()
         enriched.append(item)
     return {"documents": enriched, "count": len(enriched)}
 
@@ -234,9 +240,11 @@ def admin_volume(request: Request) -> dict[str, Any]:
             "index": {
                 "path": str(storage.index_path),
                 "exists": storage.index_path.exists(),
-                "size_bytes": storage.index_path.stat().st_size
-                if storage.index_path.exists()
-                else 0,
+                "size_bytes": (
+                    storage.index_path.stat().st_size
+                    if storage.index_path.exists()
+                    else 0
+                ),
             },
         },
     }
@@ -255,7 +263,9 @@ def admin_mcp(request: Request) -> dict[str, Any]:
         "tools": [
             {
                 "name": name,
-                "description": getattr(request.app.state, "mcp_tool_docs", {}).get(name, ""),
+                "description": getattr(request.app.state, "mcp_tool_docs", {}).get(
+                    name, ""
+                ),
             }
             for name in tools
         ],

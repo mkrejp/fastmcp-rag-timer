@@ -6,8 +6,8 @@ import pytest
 
 from rag.remote import (
     UnsafeRemoteUrlError,
-    filename_from_url,
     fetch_remote_bytes,
+    filename_from_url,
     normalize_download_url,
 )
 
@@ -26,7 +26,9 @@ def test_github_blob_urls_become_raw() -> None:
         )
         == "https://raw.githubusercontent.com/siwekm/czech-geojson/master/obce.json"
     )
-    already_raw = "https://raw.githubusercontent.com/siwekm/czech-geojson/master/okresy.json"
+    already_raw = (
+        "https://raw.githubusercontent.com/siwekm/czech-geojson/master/okresy.json"
+    )
     assert normalize_download_url(already_raw) == already_raw
 
 

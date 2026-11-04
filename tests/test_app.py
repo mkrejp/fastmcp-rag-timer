@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable
-from unittest.mock import patch
+from typing import Callable, Iterator
 
 import pytest
 from fastapi.testclient import TestClient
 
-if TYPE_CHECKING:
-    from _pytest.monkeypatch import MonkeyPatch
+from tests.conftest import AUTH_HEADERS, patched_embeddings
 
 
 @pytest.fixture()
@@ -18,15 +16,13 @@ def client(
     rag_root: Path,
     accnt_root: Path,
     fake_embed: Callable[[str], list[float]],
-):
+) -> Iterator[TestClient]:
     """Build a TestClient with temp storage and mocked embeddings."""
-    with patch("rag.embeddings.get_embedding", side_effect=fake_embed), patch(
-        "rag.ingest.get_embedding", side_effect=fake_embed
-    ), patch("rag.mcp_tools.get_embedding", side_effect=fake_embed):
+    with patched_embeddings(fake_embed):
         from rag.app import create_app
 
         app = create_app(str(rag_root), accnt_data_root=str(accnt_root))
-        with TestClient(app, headers={"Authorization": "Bearer test-mcp-token"}) as test_client:
+        with TestClient(app, headers=AUTH_HEADERS) as test_client:
             yield test_client
 
 
@@ -43,7 +39,13 @@ def test_upload_text_and_fetch_processed(client: TestClient) -> None:
     """Uploading text should expose catalog and processed fulltext endpoints."""
     response = client.post(
         "/upload",
-        files={"file": ("domain.txt", b"Railway volume mounts at /data.", "text/plain")},
+        files={
+            "file": (
+                "domain.txt",
+                b"Railway volume mounts at /data.",
+                "text/plain",
+            )
+        },
     )
     assert response.status_code == 200
     payload = response.json()
@@ -65,14 +67,12 @@ def test_processed_text_available_after_upload(
     fake_embed: Callable[[str], list[float]],
 ) -> None:
     """After upload, processed fulltext should be readable without embeddings."""
-    with patch("rag.embeddings.get_embedding", side_effect=fake_embed), patch(
-        "rag.ingest.get_embedding", side_effect=fake_embed
-    ), patch("rag.mcp_tools.get_embedding", side_effect=fake_embed):
+    with patched_embeddings(fake_embed):
         from rag.app import create_app
         from rag.storage import RagStorage
 
         app = create_app(str(rag_root), accnt_data_root=str(accnt_root))
-        with TestClient(app, headers={"Authorization": "Bearer test-mcp-token"}) as client:
+        with TestClient(app, headers=AUTH_HEADERS) as client:
             upload = client.post(
                 "/upload",
                 files={
@@ -96,15 +96,13 @@ def test_mcp_mount_registered(
     fake_embed: Callable[[str], list[float]],
 ) -> None:
     """create_app should mount the MCP ASGI app at ``/mcp``."""
-    with patch("rag.embeddings.get_embedding", side_effect=fake_embed), patch(
-        "rag.ingest.get_embedding", side_effect=fake_embed
-    ), patch("rag.mcp_tools.get_embedding", side_effect=fake_embed):
+    with patched_embeddings(fake_embed):
         from rag.app import create_app
 
         app = create_app(str(rag_root), accnt_data_root=str(accnt_root))
         mount_paths = [
-            getattr(r, "path", None)
-            for r in app.routes
-            if r.__class__.__name__ == "Mount"
+            getattr(route, "path", None)
+            for route in app.routes
+            if route.__class__.__name__ == "Mount"
         ]
         assert "/mcp" in mount_paths

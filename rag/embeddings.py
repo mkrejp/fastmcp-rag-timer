@@ -83,7 +83,9 @@ def get_embedding(text: str, *, api_key: str | None = None) -> list[float]:
     input_chars = len(text)
     started = time.perf_counter()
     try:
-        response = requests.post(EMBEDDING_URL, json=payload, headers=headers, timeout=60)
+        response = requests.post(
+            EMBEDDING_URL, json=payload, headers=headers, timeout=60
+        )
         response.raise_for_status()
         body = response.json()
         embedding = body["data"][0]["embedding"]
