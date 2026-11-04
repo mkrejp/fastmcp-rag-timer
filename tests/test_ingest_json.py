@@ -39,7 +39,10 @@ def api_token(monkeypatch: pytest.MonkeyPatch) -> str:
 
 @pytest.fixture()
 def auth_client(
-    rag_root: Path, fake_embed: Callable[[str], list[float]], api_token: str
+    rag_root: Path,
+    accnt_root: Path,
+    fake_embed: Callable[[str], list[float]],
+    api_token: str,
 ) -> Iterator[TestClient]:
     """Build a TestClient with mocked embeddings."""
     with patch("rag.embeddings.get_embedding", side_effect=fake_embed), patch(
@@ -47,7 +50,7 @@ def auth_client(
     ), patch("rag.mcp_tools.get_embedding", side_effect=fake_embed):
         from rag.app import create_app
 
-        app = create_app(str(rag_root))
+        app = create_app(str(rag_root), accnt_data_root=str(accnt_root))
         with TestClient(app) as test_client:
             yield test_client
 
@@ -93,7 +96,10 @@ def test_ingest_json_from_github_blob_url(
 
 
 def test_ingest_json_unconfigured_token(
-    rag_root: Path, fake_embed: Callable[[str], list[float]], monkeypatch: pytest.MonkeyPatch
+    rag_root: Path,
+    accnt_root: Path,
+    fake_embed: Callable[[str], list[float]],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The endpoint should fail closed when RAG_API_TOKEN is unset."""
     monkeypatch.delenv("RAG_API_TOKEN", raising=False)
@@ -102,7 +108,7 @@ def test_ingest_json_unconfigured_token(
     ), patch("rag.mcp_tools.get_embedding", side_effect=fake_embed):
         from rag.app import create_app
 
-        app = create_app(str(rag_root))
+        app = create_app(str(rag_root), accnt_data_root=str(accnt_root))
         with TestClient(app) as client:
             response = client.post(
                 "/ingest-json",

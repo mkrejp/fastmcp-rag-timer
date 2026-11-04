@@ -310,7 +310,14 @@ Processed fulltext and chunks remain on local disk. Novita also stores whatever 
 
 ### Cost considerations
 
-The application does not meter tokens, log `usage`, set budgets, or batch inputs.
+The application meters embedding and communications usage into durable **UTC per-day** files under `ACCNT_DATA_ROOT` (default `/data/accnt`):
+
+- `YYYY-MM-DD.json` — daily rollups (embedding calls/tokens/chars by source, MCP by tool, HTTP routes, outbound)
+- `events/YYYY-MM-DD.jsonl` — append-only per-call audit lines
+
+`get_embedding()` records Novita `usage.prompt_tokens` / `usage.total_tokens` when the API returns them; otherwise it records `input_chars` and marks the call as not API-tokenized (`tokens_estimated`). Sources are attributed via context (`ingest_http`, `ingest_mcp`, `search_mcp`). The Google-gated Accounts console tab reads `/api/admin/accounts`.
+
+There are still **no budgets**, spend caps, or dollar conversion.
 
 - Each chunk is a separate embeddings request (`input` is a string, not a list).
 - A large PDF means **N sequential HTTPS calls** (no parallelism in `ingest_bytes`).
@@ -328,4 +335,4 @@ The application does not meter tokens, log `usage`, set budgets, or batch inputs
 - No retries, 429 handling, or batch embeddings.
 - Unauthenticated callers can drive embedding spend via `/upload` or MCP `ingest_text` / `search_domain_knowledge`. `/ingest-json` requires `RAG_API_TOKEN` but still triggers embedding spend once authorized.
 - Timeout is 60s per request with no overall ingest deadline.
-- No recording of token usage for cost attribution.
+- No per-MCP-client identity (stateless HTTP); accounting is process-wide totals only.
