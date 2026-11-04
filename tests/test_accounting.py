@@ -131,7 +131,7 @@ def test_upload_records_http_and_ingest_source(
         "rag.ingest.get_embedding", side_effect=tracking_embed
     ), patch("rag.mcp_tools.get_embedding", side_effect=tracking_embed):
         app = create_app(str(rag_root), accnt_data_root=str(accnt_root))
-        with TestClient(app) as client:
+        with TestClient(app, headers={"Authorization": "Bearer test-mcp-token"}) as client:
             response = client.post(
                 "/upload",
                 files={"file": ("note.txt", b"Accounting meters embeddings.", "text/plain")},
@@ -162,7 +162,7 @@ def test_admin_accounts_endpoints(
         app.dependency_overrides[require_google_user] = lambda: {
             "email": "ops@example.com"
         }
-        with TestClient(app) as client:
+        with TestClient(app, headers={"Authorization": "Bearer test-mcp-token"}) as client:
             upload = client.post(
                 "/upload",
                 files={"file": ("a.txt", b"hello tokens", "text/plain")},

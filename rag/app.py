@@ -22,6 +22,10 @@ from rag.config import (
     resolve_rag_data_root,
     resolve_session_secret,
 )
+from mcp.server.transport_security import TransportSecuritySettings
+
+from rag.auth import McpBearerAuth
+from rag.config import mcp_allowed_hosts, mcp_dns_rebinding_protection
 from rag.google_oauth import current_user, router as auth_router
 from rag.logging_setup import configure_logging, get_logger
 from rag.mcp_tools import register_mcp_tools
@@ -66,6 +70,11 @@ def create_app(
         "Client RAG Node",
         stateless_http=True,
         streamable_http_path="/",
+        transport_security=TransportSecuritySettings(
+            enable_dns_rebinding_protection=mcp_dns_rebinding_protection(),
+            allowed_hosts=mcp_allowed_hosts(),
+            allowed_origins=["https://" + h for h in mcp_allowed_hosts()] + ["http://localhost:*", "http://127.0.0.1:*"],
+        ),
     )
     register_mcp_tools(
         mcp,
@@ -125,6 +134,6 @@ def create_app(
         # CSS/JS are public; HTML shell and /api/admin require Google session.
         app.mount("/ui", StaticFiles(directory=str(STATIC_DIR)), name="ui-static")
 
-    app.mount("/mcp", mcp_app)
+    app.mount("/mcp", McpBearerAuth(mcp_app))
     logger.info("Application routes ready; UI at /ui (Google OAuth)")
     return app

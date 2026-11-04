@@ -26,7 +26,7 @@ def client(
         from rag.app import create_app
 
         app = create_app(str(rag_root), accnt_data_root=str(accnt_root))
-        with TestClient(app) as test_client:
+        with TestClient(app, headers={"Authorization": "Bearer test-mcp-token"}) as test_client:
             yield test_client
 
 
@@ -72,7 +72,7 @@ def test_processed_text_available_after_upload(
         from rag.storage import RagStorage
 
         app = create_app(str(rag_root), accnt_data_root=str(accnt_root))
-        with TestClient(app) as client:
+        with TestClient(app, headers={"Authorization": "Bearer test-mcp-token"}) as client:
             upload = client.post(
                 "/upload",
                 files={

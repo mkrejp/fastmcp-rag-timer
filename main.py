@@ -16,4 +16,4 @@ else:
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app or create_app(), host=HOST, port=PORT)
+    uvicorn.run(app or create_app(), host=HOST, port=PORT, proxy_headers=True, forwarded_allow_ips="*")

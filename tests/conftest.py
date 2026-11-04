@@ -69,3 +69,13 @@ def fake_embed() -> object:
         return [base] * EMBEDDING_DIM
 
     return _embed
+
+
+TEST_MCP_TOKEN = "test-mcp-token"
+AUTH_HEADERS = {"Authorization": f"Bearer {TEST_MCP_TOKEN}"}
+
+
+@pytest.fixture(autouse=True)
+def _mcp_token(monkeypatch: "MonkeyPatch") -> None:
+    """Configure the bearer token for /mcp and embedding routes."""
+    monkeypatch.setenv("MCP_API_TOKEN", TEST_MCP_TOKEN)

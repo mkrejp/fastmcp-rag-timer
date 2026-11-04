@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from qdrant_client import QdrantClient
 
 from rag.accounting import accounting_source, get_global_store
-from rag.auth import require_api_token
+from rag.auth import require_api_token, require_embed_access
 from rag.config import COLLECTION_NAME
 from rag.ingest import ingest_bytes, meta_to_public
 from rag.logging_setup import get_logger
@@ -93,7 +93,7 @@ def health(request: Request) -> dict[str, str]:
         raise
 
 
-@router.post("/upload")
+@router.post("/upload", dependencies=[Depends(require_embed_access)])
 async def upload_document(
     request: Request, file: UploadFile = File(...)
 ) -> dict[str, Any]:
@@ -115,7 +115,7 @@ async def upload_document(
         raise
 
 
-@router.post("/upload-pdf")
+@router.post("/upload-pdf", dependencies=[Depends(require_embed_access)])
 async def upload_pdf(request: Request, file: UploadFile = File(...)) -> dict[str, Any]:
     """Compatibility alias for PDF uploads."""
     filename = file.filename or ""
