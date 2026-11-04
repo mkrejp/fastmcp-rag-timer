@@ -119,3 +119,29 @@ python main.py
 pip install pytest pytest-mock 'mcp[cli]<2' fastapi uvicorn pypdf qdrant-client requests python-multipart
 pytest -q
 ```
+
+## Connecting MCP clients
+
+Endpoint: `https://rag-timer-00001-production.up.railway.app/mcp/` (Streamable HTTP, stateless; keep the trailing slash).
+
+Auth: the **whole `/mcp` endpoint** requires `Authorization: Bearer <token>`. The token comes from `MCP_API_TOKEN`; if that is unset, `RAG_API_TOKEN` is used. If neither is set, `/mcp` and the embedding REST routes `/upload` and `/upload-pdf` fail closed with 503 and log a warning. `/upload` and `/upload-pdf` also accept a signed-in Google session, which the console uses. `/ingest-json` still requires `RAG_API_TOKEN`. Tokens are compared in constant time.
+
+Host allow-list (MCP DNS-rebinding protection): `MCP_ALLOWED_HOSTS` takes a comma-separated list. The default is `rag-timer-00001-production.up.railway.app` plus localhost/127.0.0.1. Set `MCP_DISABLE_DNS_REBINDING_PROTECTION=1` to accept any Host. The server honors `PORT` (default 8080) and trusts `X-Forwarded-*` headers.
+
+Cursor `mcp.json`:
+
+```json
+{ "mcpServers": { "rag-timer": {
+  "url": "https://rag-timer-00001-production.up.railway.app/mcp/",
+  "headers": { "Authorization": "Bearer ${env:MCP_API_TOKEN}" } } } }
+```
+
+Claude Desktop (via mcp-remote):
+
+```json
+{ "mcpServers": { "rag-timer": {
+  "command": "npx",
+  "args": ["-y", "mcp-remote", "https://rag-timer-00001-production.up.railway.app/mcp/",
+           "--header", "Authorization:Bearer ${MCP_API_TOKEN}"],
+  "env": { "MCP_API_TOKEN": "<token>" } } } }
+```

@@ -134,3 +134,15 @@ def resolve_google_allowed_domains() -> set[str]:
 def google_oauth_configured() -> bool:
     """Return whether Google OAuth client credentials are present."""
     return bool(resolve_google_client_id() and resolve_google_client_secret())
+
+
+def resolve_mcp_token() -> str | None:
+    """Bearer token for ``/mcp`` and embedding REST routes.
+
+    ``MCP_API_TOKEN`` wins; falls back to ``RAG_API_TOKEN``. ``None`` means fail closed.
+    """
+    for name in ("MCP_API_TOKEN", "RAG_API_TOKEN"):
+        value = (os.getenv(name) or "").strip()
+        if value:
+            return value
+    return None

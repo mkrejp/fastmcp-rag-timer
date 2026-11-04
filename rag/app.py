@@ -24,6 +24,7 @@ from rag.config import (
 )
 from mcp.server.transport_security import TransportSecuritySettings
 
+from rag.auth import McpBearerAuth
 from rag.config import mcp_allowed_hosts, mcp_dns_rebinding_protection
 from rag.google_oauth import current_user, router as auth_router
 from rag.logging_setup import configure_logging, get_logger
@@ -133,6 +134,6 @@ def create_app(
         # CSS/JS are public; HTML shell and /api/admin require Google session.
         app.mount("/ui", StaticFiles(directory=str(STATIC_DIR)), name="ui-static")
 
-    app.mount("/mcp", mcp_app)
+    app.mount("/mcp", McpBearerAuth(mcp_app))
     logger.info("Application routes ready; UI at /ui (Google OAuth)")
     return app
