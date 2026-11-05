@@ -65,7 +65,12 @@ During PDF ingest, embedded images are extracted with PyMuPDF, deduplicated by S
 
 ## HTTP API
 
-- `POST /upload` — PDF, TXT, Markdown, JSON, or GeoJSON → persist + index
+- `POST /upload` — PDF, TXT, Markdown, JSON, or GeoJSON → persist + index (small files)
+- `POST /upload/init` — start a chunked upload (large files; same auth as `/upload`)
+- `PUT /upload/{upload_id}/chunks/{index}` — upload one raw chunk (~50 MiB default)
+- `POST /upload/{upload_id}/complete` — verify, assemble on disk, ingest, remove staging
+- `GET /upload/{upload_id}` — chunk progress (optional)
+- `DELETE /upload/{upload_id}` — abort and delete staging
 - `POST /upload-pdf` — PDF-only alias
 - `POST /upload-media` — store bytes under `originals/` (not indexed)
 - `POST /ingest-json` — Bearer-auth fetch of remote GeoJSON/JSON by URL → persist + index
@@ -78,7 +83,43 @@ During PDF ingest, embedded images are extracted with PyMuPDF, deduplicated by S
 
 Listen address is `0.0.0.0:8080` (not configurable via `PORT`). Most routes have no inbound auth.
 `POST /ingest-json` requires `Authorization: Bearer $RAG_API_TOKEN`.
-`POST /upload`, `POST /upload-pdf`, `GET /images/...`, and `DELETE /documents/{doc_id}` require a bearer token (`MCP_API_TOKEN`, else `RAG_API_TOKEN`) or a signed-in Google session.
+`POST /upload`, chunked upload routes, `POST /upload-pdf`, `GET /images/...`, and `DELETE /documents/{doc_id}` require a bearer token (`MCP_API_TOKEN`, else `RAG_API_TOKEN`) or a signed-in Google session.
+
+Chunked staging lives under `uploads/{upload_id}/` inside `RAG_DATA_ROOT`. Configure `RAG_UPLOAD_CHUNK_SIZE` (default 52428800), `RAG_UPLOAD_MAX_BYTES`, and `RAG_UPLOAD_TTL_SECONDS` (default 86400).
+
+### Chunked upload (large files)
+
+Use when a single `POST /upload` would exceed proxy or worker limits. Compute the whole-file SHA-256 client-side, split into fixed-size chunks, then complete to run the same ingest path as `/upload`.
+
+```bash
+export MCP_API_TOKEN=your-token
+FILE=large.pdf
+SIZE=$(wc -c < "$FILE" | tr -d ' ')
+SHA=$(sha256sum "$FILE" | awk '{print $1}')
+CHUNK=52428800
+
+INIT=$(curl -sS -X POST http://127.0.0.1:8080/upload/init \
+  -H "Authorization: Bearer $MCP_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{\"filename\":\"$(basename "$FILE")\",\"size\":$SIZE,\"sha256\":\"$SHA\",\"chunk_size\":$CHUNK}")
+UPLOAD_ID=$(echo "$INIT" | python3 -c "import sys,json; print(json.load(sys.stdin)['upload_id'])")
+
+# Upload chunk indexes 0..N-1 (example: two-chunk split with dd)
+INDEX=0
+OFFSET=0
+while [ "$OFFSET" -lt "$SIZE" ]; do
+  COUNT=$(( SIZE - OFFSET < CHUNK ? SIZE - OFFSET : CHUNK ))
+  dd if="$FILE" bs=1 skip="$OFFSET" count="$COUNT" 2>/dev/null | \
+    curl -sS -X PUT "http://127.0.0.1:8080/upload/$UPLOAD_ID/chunks/$INDEX" \
+      -H "Authorization: Bearer $MCP_API_TOKEN" \
+      --data-binary @-
+  INDEX=$((INDEX + 1))
+  OFFSET=$((OFFSET + COUNT))
+done
+
+curl -sS -X POST "http://127.0.0.1:8080/upload/$UPLOAD_ID/complete" \
+  -H "Authorization: Bearer $MCP_API_TOKEN"
+```
 
 ### Remote GeoJSON (`POST /ingest-json`)
 

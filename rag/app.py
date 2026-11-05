@@ -39,6 +39,7 @@ from rag.google_oauth import router as auth_router
 from rag.logging_setup import configure_logging, get_logger
 from rag.mcp_tools import register_mcp_tools
 from rag.routes import router
+from rag.chunked_upload import ChunkedUploadStore
 from rag.storage import RagStorage
 from rag.vectorstore import open_qdrant
 
@@ -67,6 +68,8 @@ def create_app(
     root = resolve_rag_data_root(rag_data_root)
     storage = RagStorage(root)
     storage.ensure_layout()
+    chunked_uploads = ChunkedUploadStore(root)
+    chunked_uploads.ensure_layout()
     accnt_root = resolve_accnt_data_root(accnt_data_root)
     accounting = AccountingStore(accnt_root)
     accounting.ensure_layout()
@@ -128,6 +131,7 @@ def create_app(
         max_age=60 * 60 * 12,
     )
     app.state.storage = storage
+    app.state.chunked_uploads = chunked_uploads
     app.state.qdrant = qdrant
     app.state.rag_data_root = root
     app.state.accounting = accounting
