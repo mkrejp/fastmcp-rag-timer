@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from qdrant_client import QdrantClient
@@ -307,7 +307,7 @@ def admin_accounts_day(
     request: Request,
     include_events: bool = Query(False),
     event_limit: int = Query(200, ge=1, le=2000),
-    event_kind: str | None = Query(
+    event_kind: Optional[str] = Query(
         None,
         description="Optional event kind filter (embedding, mcp, http, outbound).",
     ),

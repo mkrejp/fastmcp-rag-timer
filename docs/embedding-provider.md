@@ -37,7 +37,7 @@ FastEmbed's built-in dense catalog does not include BGE-M3 (`qdrant/fastembed#10
 | Item | Value |
 | --- | --- |
 | Package | `fastembed` (Dockerfile / `pyproject.toml`) |
-| Model id | `BAAI/bge-m3` |
+| Model ID | `BAAI/bge-m3` |
 | Source | Hugging Face `BAAI/bge-m3` ONNX files |
 | Vector dimension | `1024` (same as Novita; Qdrant size stays 1024) |
 | First call | downloads ~2.3GB of ONNX weights unless already cached |

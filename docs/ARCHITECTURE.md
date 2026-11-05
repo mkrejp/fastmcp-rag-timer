@@ -11,7 +11,10 @@ The service is a single-process Python application that:
 - Embeds chunks with Novita `baai/bge-m3` by default (`EMBEDDING_PROVIDER` unset/`novita`), or locally with FastEmbed `BAAI/bge-m3` when `EMBEDDING_PROVIDER=fastembed`, and indexes them in an embedded Qdrant collection.
 - Exposes catalog/text HTTP APIs and Streamable HTTP MCP tools (including similarity search) from the same uvicorn process.
 
-**Sources of truth:** `main.py`, `rag/` (`app.py`, `config.py`, `embeddings.py`, `ingest.py`, `mcp_tools.py`, `processing.py`, `routes.py`, `storage.py`, `vectorstore.py`), `Dockerfile`, `README.md`, `docs/embedding-provider.md`, and `tests/`. `pyproject.toml` lists runtime dependencies (including `fastembed`). There is no `requirements.txt`, lockfile, compose file, or platform config (for example `railway.toml`). CI lives under `.github/workflows/`.
+**Sources of truth:** `main.py`, `rag/` (`app.py`, `config.py`, `embeddings.py`, `ingest.py`, `mcp_tools.py`, `processing.py`, `routes.py`, `storage.py`, `vectorstore.py`), `Dockerfile`, `README.md`, `docs/embedding-provider.md`, and `tests/`.
+`pyproject.toml` lists runtime dependencies (including `fastembed`).
+There is no `requirements.txt`, lockfile, compose file, or platform config (for example `railway.toml`).
+CI lives under `.github/workflows/`.
 
 Statements below are taken from those files unless labeled **Assumption**.
 
