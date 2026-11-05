@@ -1,12 +1,13 @@
-# Use a highly optimized, modern python base image
+# python:3.11-slim-bookworm — runtime matches requires-python >=3.11
 FROM python:3.11-slim-bookworm
 
-# Install UV for lightning fast, cached dependency resolution
+# uv installs unpinned PyPI deps into the system interpreter
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 WORKDIR /app
 
-# Install basic system curl requirements for healthchecks
+# curl for operator healthchecks (no Docker HEALTHCHECK instruction)
+# Tesseract ces+eng for PDF image OCR during ingest
 # hadolint ignore=DL3008 -- apt package versions float with the slim base image
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
@@ -35,7 +36,7 @@ COPY main.py ./
 COPY rag ./rag
 COPY static ./static
 
-# Expose Web Interface Port
+# HTTP + MCP listen port metadata (runtime PORT defaults to 8080)
 EXPOSE 8080
 
 # Railway mounts a volume at /data; RAG artifacts live under /data/rag at runtime.

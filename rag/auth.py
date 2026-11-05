@@ -1,4 +1,4 @@
-"""Inbound bearer-token authentication for selected HTTP routes."""
+"""Inbound bearer-token authentication for /ingest-json, /mcp, and embedding REST."""
 
 from __future__ import annotations
 

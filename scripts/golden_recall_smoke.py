@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Optional smoke check for Novita-ingest vs fastembed-query recall (phase D).
+"""Optional smoke check for Novita-ingest vs FastEmbed-query recall.
 
 Run after re-ingesting a small golden set with ``EMBEDDING_PROVIDER_INGEST=novita``
 and ``EMBEDDING_PROVIDER_QUERY=fastembed``. Expect high but not identical overlap
