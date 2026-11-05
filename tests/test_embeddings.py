@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import Mock
 
 import pytest
@@ -219,7 +220,7 @@ def test_fastembed_missing_package_has_clear_error(
     monkeypatch.setenv("EMBEDDING_PROVIDER", "fastembed")
     real_import = builtins.__import__
 
-    def fake_import(name: str, *args: object, **kwargs: object) -> object:
+    def fake_import(name: str, *args: Any, **kwargs: Any) -> Any:
         """Fail only the FastEmbed import used by the local backend."""
         if name == "fastembed" or name.startswith("fastembed."):
             raise ImportError("No module named 'fastembed'")

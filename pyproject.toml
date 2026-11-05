@@ -21,7 +21,6 @@ line-length = 88
 profile = "black"
 line_length = 88
 known_first_party = ["rag", "tests"]
-src_paths = ["."]
 
 [tool.flake8]
 max-line-length = 120

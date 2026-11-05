@@ -318,7 +318,10 @@ The application meters embedding and communications usage into durable **UTC per
 - `YYYY-MM-DD.json` — daily rollups (embedding calls/tokens/chars by source, MCP by tool, HTTP routes, outbound)
 - `events/YYYY-MM-DD.jsonl` — append-only per-call audit lines
 
-`get_embedding()` records Novita `usage.prompt_tokens` / `usage.total_tokens` when the API returns them; otherwise it records `input_chars` and marks the call as not API-tokenized (`tokens_estimated`). Sources are attributed via context (`ingest_http`, `ingest_mcp`, `search_mcp`). Each call is also appended to the day's JSONL event log. The Google-gated Accounts console tab reads `/api/admin/accounts` and `/api/admin/accounts/{date}?include_events=true&event_kind=embedding` to show per-source rollups and per-call prompt/total tokens.
+`get_embedding()` records Novita `usage.prompt_tokens` / `usage.total_tokens` when the API returns them; otherwise it records `input_chars` and marks the call as not API-tokenized (`tokens_estimated`).
+Sources are attributed via context (`ingest_http`, `ingest_mcp`, `search_mcp`).
+Each call is also appended to the day's JSONL event log.
+The Google-gated Accounts console tab reads `/api/admin/accounts` and `/api/admin/accounts/{date}?include_events=true&event_kind=embedding` to show per-source rollups and per-call prompt/total tokens.
 
 There are still **no budgets**, spend caps, or dollar conversion.
 

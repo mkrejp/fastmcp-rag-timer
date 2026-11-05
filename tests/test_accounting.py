@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterator
 from unittest.mock import Mock
 
 import pytest
@@ -21,7 +21,7 @@ from tests.conftest import AUTH_HEADERS, patched_embeddings
 
 
 @pytest.fixture()
-def store(accnt_root: Path) -> AccountingStore:
+def store(accnt_root: Path) -> Iterator[AccountingStore]:
     """Provide an initialized accounting store under a temp root."""
     accounting = AccountingStore(accnt_root)
     accounting.ensure_layout()

@@ -37,7 +37,13 @@ On Railway, mount a volume at `/data`. The app creates `/data/rag` and `/data/ac
 | `RAG_MAX_REMOTE_JSON_BYTES` | `134217728` (128 MiB) | Remote GeoJSON download cap (`obce.json` is ~95 MiB) |
 | `RAG_REMOTE_FETCH_TIMEOUT` | `120` | Remote fetch timeout in seconds |
 
-Embeddings default to Novita's OpenAI-compatible API (`baai/bge-m3`, 1024 dimensions). Set `EMBEDDING_PROVIDER=fastembed` to embed locally with FastEmbed (`BAAI/bge-m3`, also 1024-dim). The ONNX model is downloaded on first embed (~2.3GB) and needs roughly **4GB+ RAM** (8GB preferred). Switching providers recreates the Qdrant collection; re-ingest after a switch. See [embedding provider](docs/embedding-provider.md). Keep Novita keys in runtime variables; never commit them. Do not change production Railway variables unless you intend to switch backends.
+Embeddings default to Novita's OpenAI-compatible API (`baai/bge-m3`, 1024 dimensions).
+Set `EMBEDDING_PROVIDER=fastembed` to embed locally with FastEmbed (`BAAI/bge-m3`, also 1024-dim).
+The ONNX model is downloaded on first embed (~2.3GB) and needs roughly **4GB+ RAM** (8GB preferred).
+Switching providers recreates the Qdrant collection; re-ingest after a switch.
+See [embedding provider](docs/embedding-provider.md).
+Keep Novita keys in runtime variables; never commit them.
+Do not change production Railway variables unless you intend to switch backends.
 
 ## HTTP API
 
@@ -129,7 +135,11 @@ pytest -q
 
 Endpoint: `https://rag-timer-00001-production.up.railway.app/mcp/` (Streamable HTTP, stateless; keep the trailing slash).
 
-Auth: the **whole `/mcp` endpoint** requires `Authorization: Bearer <token>`. The token comes from `MCP_API_TOKEN`; if that is unset, `RAG_API_TOKEN` is used. If neither is set, `/mcp` and the embedding REST routes `/upload` and `/upload-pdf` fail closed with 503 and log a warning. `/upload` and `/upload-pdf` also accept a signed-in Google session, which the console uses. `/ingest-json` still requires `RAG_API_TOKEN`. Tokens are compared in constant time.
+Auth: the **whole `/mcp` endpoint** requires `Authorization: Bearer <token>`.
+The token comes from `MCP_API_TOKEN`; if that is unset, `RAG_API_TOKEN` is used.
+If neither is set, `/mcp` and the embedding REST routes `/upload` and `/upload-pdf` fail closed with 503 and log a warning.
+`/upload` and `/upload-pdf` also accept a signed-in Google session, which the console uses.
+`/ingest-json` still requires `RAG_API_TOKEN`. Tokens are compared in constant time.
 
 Host allow-list (MCP DNS-rebinding protection): `MCP_ALLOWED_HOSTS` takes a comma-separated list. The default is `rag-timer-00001-production.up.railway.app` plus localhost/127.0.0.1. Set `MCP_DISABLE_DNS_REBINDING_PROTECTION=1` to accept any Host. The server honors `PORT` (default 8080) and trusts `X-Forwarded-*` headers.
 
