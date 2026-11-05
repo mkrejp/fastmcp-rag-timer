@@ -27,3 +27,6 @@ jobs:
           VALIDATE_ALL_CODEBASE: false
           DEFAULT_BRANCH: "main"
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PYTHON_ISORT_CONFIG_FILE: .isort.cfg
+          DOCKERFILE_HADOLINT_FILE_NAME: .hadolint.yaml
+          HADOLINT_ARGS: --ignore DL3008
