@@ -5,8 +5,8 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 from qdrant_client import QdrantClient
 
@@ -26,12 +26,56 @@ from rag.remote import (
     fetch_remote_bytes,
     filename_from_url,
 )
+from rag.chunked_upload import (
+    ChunkConflictError,
+    ChunkedUploadError,
+    ChunkedUploadStore,
+    UploadExpiredError,
+    UploadNotFoundError,
+)
 from rag.storage import RagStorage
 
 MAX_IMAGE_HTTP_BYTES = 50 * 1024 * 1024
 
 router = APIRouter()
 logger = get_logger("rag.routes")
+
+
+class UploadInitRequest(BaseModel):
+    """Body for ``POST /upload/init``."""
+
+    filename: str = Field(..., min_length=1, max_length=512)
+    size: int = Field(..., gt=0)
+    sha256: str = Field(..., min_length=64, max_length=64)
+    content_type: str | None = Field(default=None, max_length=256)
+    chunk_size: int | None = Field(
+        default=None,
+        gt=0,
+        description="Bytes per chunk; server default is ~50 MiB.",
+    )
+
+
+class UploadInitResponse(BaseModel):
+    """Response for ``POST /upload/init``."""
+
+    upload_id: str
+    chunk_size: int
+    chunk_count: int
+    expires_at: str
+
+
+class UploadStatusResponse(BaseModel):
+    """Progress for an in-progress chunked upload."""
+
+    upload_id: str
+    filename: str
+    size: int
+    chunk_size: int
+    chunk_count: int
+    received_indexes: list[int]
+    bytes_received: int
+    expires_at: str
+    complete: bool
 
 
 class IngestJsonRequest(BaseModel):
@@ -65,6 +109,24 @@ def _qdrant(request: Request) -> QdrantClient:
 def _rag_data_root(request: Request) -> str:
     """Return the configured RAG data root."""
     return str(request.app.state.rag_data_root)
+
+
+def _chunked_uploads(request: Request) -> ChunkedUploadStore:
+    """Return the request-scoped chunked upload store."""
+    return request.app.state.chunked_uploads
+
+
+def _chunked_upload_http_error(exc: Exception) -> HTTPException:
+    """Map chunked-upload domain errors to HTTP responses."""
+    if isinstance(exc, UploadNotFoundError):
+        return HTTPException(status_code=404, detail=str(exc))
+    if isinstance(exc, UploadExpiredError):
+        return HTTPException(status_code=410, detail=str(exc))
+    if isinstance(exc, ChunkConflictError):
+        return HTTPException(status_code=409, detail=str(exc))
+    if isinstance(exc, ValueError):
+        return HTTPException(status_code=400, detail=str(exc))
+    return HTTPException(status_code=500, detail=str(exc))
 
 
 def _record_http(
@@ -141,6 +203,140 @@ async def upload_document(
             route="upload", ok=False, bytes_in=len(data), error=str(exc.detail)
         )
         raise
+
+
+@router.post(
+    "/upload/init",
+    dependencies=[Depends(require_embed_access)],
+    response_model=UploadInitResponse,
+)
+def upload_init(
+    body: UploadInitRequest,
+    request: Request,
+) -> UploadInitResponse:
+    """Start a chunked upload session (see ``PUT /upload/{upload_id}/chunks/{index}``)."""
+    if not is_supported_filename(body.filename):
+        _record_http(route="upload_init", ok=False, error="unsupported filename")
+        raise HTTPException(
+            status_code=400,
+            detail="Only PDF, TXT, Markdown, JSON, and GeoJSON files are supported.",
+        )
+    store = _chunked_uploads(request)
+    try:
+        meta = store.create_session(
+            filename=body.filename,
+            size=body.size,
+            sha256=body.sha256,
+            content_type=body.content_type,
+            chunk_size=body.chunk_size,
+        )
+    except ValueError as exc:
+        _record_http(route="upload_init", ok=False, error=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _record_http(route="upload_init", ok=True)
+    return UploadInitResponse(
+        upload_id=meta.upload_id,
+        chunk_size=meta.chunk_size,
+        chunk_count=meta.chunk_count,
+        expires_at=meta.expires_at,
+    )
+
+
+@router.put(
+    "/upload/{upload_id}/chunks/{index}",
+    dependencies=[Depends(require_embed_access)],
+)
+async def upload_chunk(
+    upload_id: str,
+    index: int,
+    request: Request,
+    x_chunk_sha256: str | None = Header(default=None, alias="X-Chunk-SHA256"),
+) -> dict[str, Any]:
+    """Upload one raw chunk body; idempotent when the same bytes are resent."""
+    data = await request.body()
+    store = _chunked_uploads(request)
+    try:
+        meta = store.store_chunk(
+            upload_id,
+            index,
+            data,
+            chunk_sha256=x_chunk_sha256,
+        )
+    except ChunkedUploadError as exc:
+        _record_http(route="upload_chunk", ok=False, error=str(exc))
+        raise _chunked_upload_http_error(exc) from exc
+    except ValueError as exc:
+        _record_http(route="upload_chunk", ok=False, error=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _record_http(route="upload_chunk", ok=True, bytes_in=len(data))
+    summary = store.received_summary(meta)
+    return {"status": "received", **summary}
+
+
+@router.get(
+    "/upload/{upload_id}",
+    dependencies=[Depends(require_embed_access)],
+    response_model=UploadStatusResponse,
+)
+def upload_status(upload_id: str, request: Request) -> UploadStatusResponse:
+    """Return received chunk indexes and byte progress for an upload session."""
+    store = _chunked_uploads(request)
+    try:
+        meta = store.get_session(upload_id)
+    except ChunkedUploadError as exc:
+        _record_http(route="upload_status", ok=False, error=str(exc))
+        raise _chunked_upload_http_error(exc) from exc
+    _record_http(route="upload_status", ok=True)
+    summary = store.received_summary(meta)
+    return UploadStatusResponse(**summary)
+
+
+@router.post(
+    "/upload/{upload_id}/complete",
+    dependencies=[Depends(require_embed_access)],
+)
+def upload_complete(upload_id: str, request: Request) -> dict[str, Any]:
+    """Verify chunks, assemble on disk, ingest, and remove staging."""
+    store = _chunked_uploads(request)
+    try:
+        assembled_path, meta = store.assemble_to_file(upload_id)
+    except ChunkedUploadError as exc:
+        _record_http(route="upload_complete", ok=False, error=str(exc))
+        raise _chunked_upload_http_error(exc) from exc
+    except ValueError as exc:
+        _record_http(route="upload_complete", ok=False, error=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    data = assembled_path.read_bytes()
+    try:
+        result = _ingest_upload(request, meta.filename, data)
+        store.delete_session(upload_id)
+        _record_http(route="upload_complete", ok=True, bytes_in=len(data))
+        return result
+    except HTTPException as exc:
+        _record_http(
+            route="upload_complete",
+            ok=False,
+            bytes_in=len(data),
+            error=str(exc.detail),
+        )
+        raise
+
+
+@router.delete(
+    "/upload/{upload_id}",
+    dependencies=[Depends(require_embed_access)],
+    status_code=204,
+)
+def upload_abort(upload_id: str, request: Request) -> Response:
+    """Delete staged chunks and metadata for an upload session."""
+    store = _chunked_uploads(request)
+    removed = store.delete_session(upload_id)
+    if not removed:
+        _record_http(route="upload_delete", ok=False, error="not found")
+        raise HTTPException(status_code=404, detail="Upload session not found")
+    _record_http(route="upload_delete", ok=True)
+    return Response(status_code=204)
 
 
 @router.post("/upload-pdf", dependencies=[Depends(require_embed_access)])

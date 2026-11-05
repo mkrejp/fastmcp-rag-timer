@@ -38,6 +38,10 @@ def mcp_dns_rebinding_protection() -> bool:
 
 DEFAULT_MAX_REMOTE_JSON_BYTES = 128 * 1024 * 1024
 DEFAULT_REMOTE_FETCH_TIMEOUT_SECONDS = 120
+DEFAULT_UPLOAD_CHUNK_SIZE = 52_428_800  # 50 MiB
+DEFAULT_UPLOAD_MAX_CHUNK_SIZE = 52_428_800
+DEFAULT_UPLOAD_MAX_BYTES = 512 * 1024 * 1024
+DEFAULT_UPLOAD_TTL_SECONDS = 86_400
 MAX_REMOTE_REDIRECTS = 5
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -171,6 +175,38 @@ def resolve_ocr_min_chars() -> int:
     except ValueError:
         return 20
     return max(0, value)
+
+
+def _positive_int_env(name: str, default: int) -> int:
+    """Parse a positive integer environment variable."""
+    raw = os.getenv(name, "")
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def resolve_upload_chunk_size_default() -> int:
+    """Default chunk size for ``POST /upload/init`` (``RAG_UPLOAD_CHUNK_SIZE``)."""
+    return _positive_int_env("RAG_UPLOAD_CHUNK_SIZE", DEFAULT_UPLOAD_CHUNK_SIZE)
+
+
+def resolve_upload_max_chunk_size() -> int:
+    """Maximum allowed per-chunk body size (``RAG_UPLOAD_MAX_CHUNK_SIZE``)."""
+    return _positive_int_env("RAG_UPLOAD_MAX_CHUNK_SIZE", DEFAULT_UPLOAD_MAX_CHUNK_SIZE)
+
+
+def resolve_upload_max_bytes() -> int:
+    """Maximum whole-file size for chunked uploads (``RAG_UPLOAD_MAX_BYTES``)."""
+    return _positive_int_env("RAG_UPLOAD_MAX_BYTES", DEFAULT_UPLOAD_MAX_BYTES)
+
+
+def resolve_upload_ttl_seconds() -> int:
+    """Staging TTL for chunked uploads in seconds (``RAG_UPLOAD_TTL_SECONDS``)."""
+    return _positive_int_env("RAG_UPLOAD_TTL_SECONDS", DEFAULT_UPLOAD_TTL_SECONDS)
 
 
 def resolve_mcp_token() -> str | None:
