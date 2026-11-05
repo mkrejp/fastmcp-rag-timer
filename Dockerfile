@@ -15,7 +15,7 @@ RUN uv pip install --system \
     uvicorn \
     "mcp[cli]<2" \
     pypdf \
-    qdrant-client \
+    "qdrant-client>=1.12,<2" \
     requests \
     python-multipart \
     itsdangerous

@@ -137,7 +137,7 @@ Tool behavior:
 - `list_documents`: JSON of `storage.list_documents()`, or `"No documents stored."`
 - `get_document_text` / `get_document_chunks`: disk reads of processed artifacts; missing id returns a not-found string
 - `ingest_text`: if the filename is not a supported suffix, appends `.txt`; calls `ingest_bytes`; returns JSON or `"Error ingesting text: ..."`
-- `search_domain_knowledge`: embed query → `qdrant.search` → format `Source: {source} (doc_id=...)` + `Content:`; empty → `"No relevant facts found."`; exceptions → `"Error executing RAG search: ..."`
+- `search_domain_knowledge`: embed query → `search_similar` (`qdrant.query_points`) → format `Source: {source} (doc_id=...)` + `Content:`; empty → `"No relevant facts found."`; exceptions → `"Error executing RAG search: ..."`
 
 No stdio MCP entrypoint (`mcp.run()` is not called). Tests assert that `/mcp` is mounted; they do not exercise a live MCP session handshake.
 
@@ -252,7 +252,7 @@ sequenceDiagram
   Tool->>Embed: get_embedding(query)
   Embed->>Novita: POST /openai/v1/embeddings Bearer token
   Novita-->>Embed: embedding vector
-  Tool->>Qdrant: search client_domain_knowledge
+  Tool->>Qdrant: query_points client_domain_knowledge
   Qdrant-->>Tool: points with payload
   alt hits
     Tool-->>Agent: Source/Content blocks joined by ---

@@ -15,6 +15,7 @@ from rag.ingest import ingest_bytes
 from rag.logging_setup import get_logger
 from rag.processing import is_supported_filename
 from rag.storage import RagStorage
+from rag.vectorstore import search_similar
 
 logger = get_logger("rag.mcp")
 
@@ -169,10 +170,11 @@ def register_mcp_tools(
                     limit,
                 )
                 query_vector = get_embedding(query)
-                results = qdrant.search(  # type: ignore[attr-defined]
-                    collection_name=collection_name,
+                results = search_similar(
+                    qdrant,
                     query_vector=query_vector,
                     limit=limit,
+                    collection_name=collection_name,
                 )
                 logger.info("MCP search returned %s hits", len(results))
                 context_blocks: list[str] = []

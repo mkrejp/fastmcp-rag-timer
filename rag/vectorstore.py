@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Sequence
 
 from qdrant_client import QdrantClient
+from qdrant_client.http.models import ScoredPoint
 from qdrant_client.models import Distance, VectorParams
 
 from rag.config import COLLECTION_NAME
@@ -36,3 +38,24 @@ def open_qdrant(
             vectors_config=VectorParams(size=EMBEDDING_DIM, distance=Distance.COSINE),
         )
     return client
+
+
+def search_similar(
+    client: QdrantClient,
+    *,
+    query_vector: Sequence[float],
+    limit: int = 3,
+    collection_name: str = COLLECTION_NAME,
+) -> list[ScoredPoint]:
+    """Return nearest points for ``query_vector`` via the current Qdrant query API.
+
+    ``QdrantClient.search`` was removed in qdrant-client 1.16+; callers must use
+    ``query_points`` and read ``.points``.
+    """
+    response = client.query_points(
+        collection_name=collection_name,
+        query=list(query_vector),
+        limit=limit,
+        with_payload=True,
+    )
+    return list(response.points)
