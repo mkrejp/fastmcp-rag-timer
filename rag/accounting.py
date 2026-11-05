@@ -27,6 +27,7 @@ HTTP_ROUTES = (
     "documents_list",
     "documents_get",
     "documents_text",
+    "documents_delete",
     "health",
 )
 OUTBOUND_TARGETS = ("novita_embeddings", "remote_fetch")

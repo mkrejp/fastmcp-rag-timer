@@ -11,7 +11,7 @@ The service is a single-process Python application that:
 - Embeds chunks with Novita `baai/bge-m3` by default (`EMBEDDING_PROVIDER` unset/`novita`), or locally with FastEmbed `BAAI/bge-m3` when `EMBEDDING_PROVIDER=fastembed`, and indexes them in an embedded Qdrant collection.
 - Exposes catalog/text HTTP APIs and Streamable HTTP MCP tools (including similarity search) from the same uvicorn process.
 
-**Sources of truth:** `main.py`, `rag/` (`app.py`, `config.py`, `embeddings.py`, `ingest.py`, `mcp_tools.py`, `processing.py`, `routes.py`, `storage.py`, `vectorstore.py`), `Dockerfile`, `README.md`, `docs/embedding-provider.md`, and `tests/`.
+**Sources of truth:** `main.py`, `rag/` (`app.py`, `config.py`, `embeddings.py`, `ingest.py`, `document_delete.py`, `mcp_tools.py`, `processing.py`, `routes.py`, `storage.py`, `vectorstore.py`), `Dockerfile`, `README.md`, `docs/embedding-provider.md`, and `tests/`.
 `pyproject.toml` lists runtime dependencies (including `fastembed`).
 There is no `requirements.txt`, lockfile, compose file, or platform config (for example `railway.toml`).
 CI lives under `.github/workflows/`.
@@ -53,6 +53,7 @@ rag/
   auth.py               # inbound bearer token for /ingest-json
   embeddings.py         # Novita HTTP or local FastEmbed BGE-M3
   ingest.py             # persist + embed + upsert pipeline
+  document_delete.py    # remove one document from disk + Qdrant
   vectorstore.py        # local Qdrant open/create
   config.py             # constants and env helpers
 ```
@@ -77,6 +78,7 @@ flowchart TB
     routes["rag.routes"]
     tools["rag.mcp_tools"]
     ingest["rag.ingest"]
+    deleteDoc["rag.document_delete"]
     proc["rag.processing"]
     embed["rag.embeddings.get_embedding"]
     storage["rag.storage.RagStorage"]
@@ -86,6 +88,9 @@ flowchart TB
     fastapi --> mcp
     mcp --> tools
     routes --> ingest
+    routes --> deleteDoc
+    deleteDoc --> storage
+    deleteDoc --> qdrant
     tools --> ingest
     tools --> storage
     tools --> embed
@@ -118,8 +123,9 @@ From `rag/routes.py`:
 | `GET` | `/documents` | Catalog from `index.json` |
 | `GET` | `/documents/{doc_id}` | Metadata |
 | `GET` | `/documents/{doc_id}/text` | Processed full text from disk (no re-parse, no embedding call) |
+| `DELETE` | `/documents/{doc_id}` | Bearer or Google session (same as `/upload`); remove files, catalog row, and Qdrant points. `200` `{"status":"deleted","doc_id","filename","chunks_removed"}`; `404` if missing; `401`/`503` if unauthorized |
 
-There is **no REST search** endpoint. Similarity search is MCP-only (`search_domain_knowledge`). There is no HTTP delete/reindex route. `RagStorage.remove_document_files` exists for tests/cleanup and does not delete Qdrant points.
+There is **no REST search** endpoint. Similarity search is MCP-only (`search_domain_knowledge`). There is no HTTP reindex route. `rag.document_delete.delete_document` deletes Qdrant points by `payload.doc_id` then calls `RagStorage.remove_document_files`.
 
 ## Exposed MCP tools, resources, and prompts
 
@@ -349,7 +355,7 @@ There is no GitHub Actions (or other) CI workflow in the repository.
 
 | Topic | What the code does |
 | --- | --- |
-| HTTP auth | None on most REST routes and FastAPI docs. `POST /ingest-json` requires `Authorization: Bearer` matching `RAG_API_TOKEN`. |
+| HTTP auth | None on most REST routes and FastAPI docs. `POST /ingest-json` requires `Authorization: Bearer` matching `RAG_API_TOKEN`. `POST /upload`, `POST /upload-pdf`, and `DELETE /documents/{doc_id}` require a bearer (`MCP_API_TOKEN` or `RAG_API_TOKEN`) or a signed-in Google session. |
 | MCP auth | None on `/mcp`. |
 | Secrets | Embedding key from `BGE_M3_NOVITA_API_KEY`, then `NOVITA_API_KEY`, `OPENAI_TOKEN`, `OPENAI_API_KEY`; sent as `Authorization: Bearer`. Not read from a file or vault. See [Embedding connectivity](./CONNECTIVITY.md#embedding-connectivity). |
 | TLS | Not implemented in-app. |
@@ -377,10 +383,10 @@ Current gaps (not a history of old bugs):
 2. **No MCP resources or prompts.**
 3. **No REST search** — similarity search is MCP-only.
 4. **No generator LLM** — retrieval only; no answer synthesis.
-5. **Most routes have no inbound auth**; only `/ingest-json` uses `RAG_API_TOKEN`. No upload size quotas on multipart routes.
+5. **Most routes have no inbound auth**; `/ingest-json` uses `RAG_API_TOKEN`, and `/upload`, `/upload-pdf`, and `DELETE /documents/{doc_id}` use bearer or Google session. No upload size quotas on multipart routes.
 6. **Hardcoded port 8080** — `PORT` is not read.
 7. **`/upload-media`** stores files but does not index them or add them to `index.json`.
-8. **No public document delete** (file cleanup would not remove Qdrant points).
+8. **No HTTP reindex** — delete a `doc_id` then re-upload to replace an obsolete file.
 9. **No CI workflow** and no lockfile; most Docker deps unpinned.
 10. **No Docker HEALTHCHECK** despite `curl` and `/health`.
 11. Embeddings are **one HTTP call per chunk/query**, with no batch `input` array, retries, or 429 handling.

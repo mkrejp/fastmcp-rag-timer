@@ -92,6 +92,8 @@ sequenceDiagram
     API-->>Client: 401/503 without token, else fetch+index
   else GET /documents...
     API-->>Client: 200 or 404
+  else DELETE /documents/{doc_id}
+    API-->>Client: 401/503 without token, else 200 or 404
   else /mcp Streamable HTTP
     API-->>Client: MCP session / tool result
   else other path
@@ -150,6 +152,7 @@ No second container is required for the vector store.
 | Interface | Transport | Port | Auth in repository |
 | --- | --- | --- | --- |
 | FastAPI REST (most routes) | HTTP/1.1 via uvicorn | **8080/tcp** | **None** |
+| `POST /upload`, `POST /upload-pdf`, `DELETE /documents/{doc_id}` | HTTP/1.1 via uvicorn | 8080 | Bearer `MCP_API_TOKEN`/`RAG_API_TOKEN` or Google session |
 | `POST /ingest-json` | HTTP/1.1 via uvicorn | 8080 | Bearer `RAG_API_TOKEN` |
 | FastAPI OpenAPI UI | HTTP GET | 8080 | **None** |
 | MCP Streamable HTTP | HTTP on `/mcp` | 8080 | **None** |
@@ -159,7 +162,7 @@ No second container is required for the vector store.
 | FastEmbed model download | HTTPS | 443 | none (Hugging Face Hub, first local embed only) |
 | Remote JSON fetch | HTTPS/HTTP | 443/80 | None (public URLs only) |
 
-Auth points that exist: outbound embedding Bearer header; inbound Bearer on `/ingest-json`.
+Auth points that exist: outbound embedding Bearer header; inbound Bearer on `/ingest-json`; inbound Bearer or Google session on `/upload`, `/upload-pdf`, and `DELETE /documents/{doc_id}`.
 
 Auth points that do not exist: JWT, mTLS, MCP OAuth, auth on other REST/MCP routes, network policies in the repository.
 
@@ -167,8 +170,9 @@ Auth points that do not exist: JWT, mTLS, MCP OAuth, auth on other REST/MCP rout
 
 | Source | Destination | Protocol | Port | Auth | Direction |
 | --- | --- | --- | --- | --- | --- |
-| External HTTP client | uvicorn / FastAPI | HTTP | 8080 | None (except `/ingest-json`) | Inbound |
+| External HTTP client | uvicorn / FastAPI | HTTP | 8080 | None (except ingest/upload/delete) | Inbound |
 | External HTTP client | `POST /ingest-json` | HTTP | 8080 | Bearer `RAG_API_TOKEN` | Inbound |
+| External HTTP client | `DELETE /documents/{doc_id}` | HTTP | 8080 | Bearer or Google session | Inbound |
 | MCP client | FastMCP at `/mcp` | HTTP (Streamable HTTP) | 8080 | None | Inbound |
 | Platform edge (**assumption**) | uvicorn | HTTP (TLS already terminated) | 8080 | None at app | Inbound |
 | `get_embedding()` (`requests`) | `https://api.novita.ai/openai/v1/embeddings` | HTTPS | 443 | Bearer `BGE_M3_NOVITA_API_KEY` or fallbacks | Outbound (Novita provider) |
@@ -187,6 +191,7 @@ Auth points that do not exist: JWT, mTLS, MCP OAuth, auth on other REST/MCP rout
 | Inbound `/ingest-json` | Remote GeoJSON/JSON bytes fetched by the service; feature attributes indexed (coordinates skipped) |
 | Inbound `/upload-media` | Arbitrary bytes; stored under `originals/{uuid}/` only |
 | Inbound `GET /documents*` | Catalog metadata and processed fulltext from disk |
+| Inbound `DELETE /documents/{doc_id}` | Authenticated removal of originals, processed files, catalog row, and Qdrant points |
 | Inbound `/mcp` | Tool arguments and return strings (including document text/chunks) |
 | Outbound embedding | Chunk or query **plaintext** plus the API key — see [Embedding connectivity](#embedding-connectivity) |
 | Disk Qdrant | Vectors and payloads (`text`, `source`, `doc_id`, `page`, `chunk_index`) |

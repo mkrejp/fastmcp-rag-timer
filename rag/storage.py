@@ -210,7 +210,7 @@ class RagStorage:
         os.replace(tmp_path, self.index_path)
 
     def remove_document_files(self, doc_id: str) -> None:
-        """Delete original and processed files for ``doc_id`` (tests/cleanup)."""
+        """Delete original and processed files for ``doc_id`` and drop the catalog row."""
         for path in (self.original_dir(doc_id), self.processed_doc_dir(doc_id)):
             if path.exists():
                 shutil.rmtree(path)
