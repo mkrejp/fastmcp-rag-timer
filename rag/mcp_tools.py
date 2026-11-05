@@ -16,9 +16,16 @@ from rag.embeddings import get_query_embedding
 from rag.image_embed import embed_image_query, image_embedding_enabled
 from rag.ingest import ingest_bytes
 from rag.logging_setup import get_logger
+from rag.payloads import LocalityLinkPayloadError
 from rag.processing import is_supported_filename
 from rag.storage import ImageMeta, RagStorage
-from rag.vectorstore import IMAGE_VECTOR_NAME, TEXT_VECTOR_NAME, search_similar
+from rag.vectorstore import (
+    IMAGE_VECTOR_NAME,
+    TEXT_VECTOR_NAME,
+    list_locality_links,
+    search_similar,
+    upsert_locality_links,
+)
 
 logger = get_logger("rag.mcp")
 
@@ -409,3 +416,99 @@ def register_mcp_tools(
             source="search_mcp",
             fn=_body,
         )
+
+    @mcp.tool()
+    def link_locality(links: list[dict[str, Any]]) -> str:
+        """Upsert document-municipality links into the payload-only locality_links collection.
+
+        Each object requires obec_id, name, doc_id, chunk_index, matched_text,
+        char_start, char_end, source_type (pdf_chunk|pdf_image|text_chunk), and
+        method (exact|lemma|fuzzy|llm|manual). Optional fields include lau_id,
+        okres, kraj, parent_document, page_number, point_id, chunk_sha256,
+        ambiguous, candidates, confidence, confidence_level, notes, geom.
+        Point ids are stable UUIDs from (doc_id, chunk_index, obec_id, char_start).
+        Does not call embedding APIs. Does not modify chunk payloads.
+        """
+
+        def _body() -> str:
+            try:
+                items = _coerce_locality_links(links)
+                result = upsert_locality_links(qdrant, items)
+                return json.dumps(result, ensure_ascii=False)
+            except LocalityLinkPayloadError as exc:
+                return f"Error link_locality: {exc}"
+
+        return _run_mcp_tool(
+            "link_locality",
+            request_chars=len(json.dumps(links, ensure_ascii=False, default=str)),
+            source=None,
+            fn=_body,
+        )
+
+    @mcp.tool()
+    def list_links(
+        doc_id: str = "",
+        obec_id: str = "",
+        status: str = "",
+        ambiguous: bool | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> str:
+        """List locality_links with optional filters and integer pagination.
+
+        Filter by doc_id, obec_id, status (unverified|verified|rejected), and
+        ambiguous. ``limit`` defaults to 50 (max 200); ``offset`` skips that
+        many matching points. Does not call embedding APIs.
+        """
+
+        def _body() -> str:
+            try:
+                result = list_locality_links(
+                    qdrant,
+                    doc_id=doc_id.strip() or None,
+                    obec_id=obec_id.strip() or None,
+                    status=status.strip() or None,
+                    ambiguous=ambiguous,
+                    limit=limit,
+                    offset=offset,
+                )
+                return json.dumps(result, ensure_ascii=False)
+            except LocalityLinkPayloadError as exc:
+                return f"Error list_links: {exc}"
+
+        return _run_mcp_tool(
+            "list_links",
+            request_chars=(
+                len(doc_id)
+                + len(obec_id)
+                + len(status)
+                + len(str(limit))
+                + len(str(offset))
+            ),
+            source=None,
+            fn=_body,
+        )
+
+
+def _coerce_locality_links(links: object) -> list[dict[str, Any]]:
+    """Accept a list of objects, a single object, or a JSON string of either."""
+    parsed: object = links
+    if isinstance(links, str):
+        try:
+            parsed = json.loads(links)
+        except json.JSONDecodeError as exc:
+            raise LocalityLinkPayloadError(
+                "links must be a JSON object or array of objects"
+            ) from exc
+    if isinstance(parsed, dict):
+        return [parsed]
+    if isinstance(parsed, list):
+        if not parsed:
+            raise LocalityLinkPayloadError("at least one link is required")
+        coerced: list[dict[str, Any]] = []
+        for item in parsed:
+            if not isinstance(item, dict):
+                raise LocalityLinkPayloadError("each link must be a JSON object")
+            coerced.append(item)
+        return coerced
+    raise LocalityLinkPayloadError("links must be a JSON object or array of objects")

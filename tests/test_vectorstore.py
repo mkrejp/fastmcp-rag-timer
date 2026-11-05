@@ -9,6 +9,7 @@ from _pytest.monkeypatch import MonkeyPatch
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams
 
+from rag.config import LOCALITY_LINKS_COLLECTION
 from rag.embeddings import EMBEDDING_DIM, FASTEMBED_MODEL
 from rag.image_embed import IMAGE_EMBEDDING_DIM
 from rag.vectorstore import (
@@ -16,7 +17,10 @@ from rag.vectorstore import (
     IMAGE_VECTOR_NAME,
     MARKER_SCHEMA_VERSION,
     TEXT_VECTOR_NAME,
+    ensure_locality_links_collection,
+    list_locality_links,
     open_qdrant,
+    upsert_locality_links,
 )
 
 
@@ -108,5 +112,112 @@ def test_open_qdrant_allows_ingest_provider_switch_without_recreate(
         assert _marker_payload(qdrant_dir)["ingest_provider"] == "fastembed"
         assert _marker_payload(qdrant_dir)["ingest_model"] == FASTEMBED_MODEL
         assert info.points_count == 0
+    finally:
+        client.close()
+
+
+def _sample_link(**overrides: object) -> dict[str, object]:
+    """Return a valid locality-link mapping for vector-store tests."""
+    payload: dict[str, object] = {
+        "obec_id": "554782",
+        "name": "Praha",
+        "doc_id": "doc-1",
+        "chunk_index": 0,
+        "matched_text": "Praha",
+        "char_start": 12,
+        "char_end": 17,
+        "source_type": "pdf_chunk",
+        "method": "exact",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_open_qdrant_creates_payload_only_locality_links(tmp_path: Path) -> None:
+    """Startup should create locality_links with no vectors, without embeddings."""
+    qdrant_dir = tmp_path / "qdrant"
+    client = open_qdrant(qdrant_dir)
+    try:
+        assert client.collection_exists(LOCALITY_LINKS_COLLECTION)
+        info = client.get_collection(LOCALITY_LINKS_COLLECTION)
+        assert info.config.params.vectors == {}
+        ensure_locality_links_collection(client)
+        assert client.get_collection(LOCALITY_LINKS_COLLECTION).points_count == 0
+    finally:
+        client.close()
+
+
+def test_open_qdrant_does_not_delete_existing_locality_links(
+    tmp_path: Path,
+) -> None:
+    """Recreating the knowledge collection must not drop locality_links points."""
+    qdrant_dir = tmp_path / "qdrant"
+    first = open_qdrant(qdrant_dir)
+    upsert_locality_links(first, [_sample_link()])
+    first.close()
+
+    old_client = QdrantClient(path=str(qdrant_dir))
+    old_client.delete_collection("client_domain_knowledge")
+    old_client.create_collection(
+        collection_name="client_domain_knowledge",
+        vectors_config=VectorParams(size=1536, distance=Distance.COSINE),
+    )
+    old_client.close()
+
+    client = open_qdrant(qdrant_dir)
+    try:
+        listed = list_locality_links(client)
+        assert listed["returned"] == 1
+        assert listed["links"][0]["obec_id"] == "554782"
+        knowledge = client.get_collection("client_domain_knowledge")
+        vectors = knowledge.config.params.vectors
+        assert isinstance(vectors, dict)
+        assert vectors[TEXT_VECTOR_NAME].size == EMBEDDING_DIM
+    finally:
+        client.close()
+
+
+def test_upsert_locality_links_is_idempotent_on_unique_key(tmp_path: Path) -> None:
+    """The same unique key should update in place rather than insert a second point."""
+    qdrant_dir = tmp_path / "qdrant"
+    client = open_qdrant(qdrant_dir)
+    try:
+        first = upsert_locality_links(client, [_sample_link(notes="one")])
+        second = upsert_locality_links(
+            client, [_sample_link(notes="two", method="lemma")]
+        )
+        assert first["inserted"] == 1
+        assert first["updated"] == 0
+        assert second["inserted"] == 0
+        assert second["updated"] == 1
+        assert first["ids"] == second["ids"]
+        listed = list_locality_links(client, doc_id="doc-1")
+        assert listed["returned"] == 1
+        assert listed["links"][0]["notes"] == "two"
+        assert listed["links"][0]["method"] == "lemma"
+        other = upsert_locality_links(
+            client, [_sample_link(obec_id="582786", name="Brno", char_start=40)]
+        )
+        assert other["inserted"] == 1
+        all_links = list_locality_links(client, limit=10)
+        assert all_links["returned"] == 2
+        page = list_locality_links(client, limit=1, offset=0)
+        assert page["returned"] == 1
+        assert page["has_more"] is True
+        rest = list_locality_links(client, limit=1, offset=1)
+        assert rest["returned"] == 1
+        assert rest["has_more"] is False
+        filtered = list_locality_links(client, obec_id="582786")
+        assert filtered["returned"] == 1
+        assert filtered["links"][0]["name"] == "Brno"
+        upsert_locality_links(
+            client,
+            [_sample_link(verification_status="verified", char_start=99)],
+        )
+        verified = list_locality_links(client, status="verified")
+        assert verified["returned"] == 1
+        assert verified["links"][0]["char_start"] == 99
+        unverified = list_locality_links(client, status="unverified", doc_id="doc-1")
+        assert unverified["returned"] == 2
     finally:
         client.close()

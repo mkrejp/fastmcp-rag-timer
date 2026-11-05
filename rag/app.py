@@ -17,6 +17,7 @@ from rag.accounting import AccountingStore, set_global_store
 from rag.admin_routes import router as admin_router
 from rag.asgi_shutdown import CompleteResponseOnExit
 from rag.auth import McpBearerAuth
+from rag.chunked_upload import ChunkedUploadStore
 from rag.config import (
     COLLECTION_NAME,
     google_oauth_configured,
@@ -34,13 +35,12 @@ from rag.embeddings import (
     resolve_embedding_provider,
     validate_embedding_configuration,
 )
-from rag.image_embed import image_embedding_enabled
 from rag.google_oauth import current_user
 from rag.google_oauth import router as auth_router
+from rag.image_embed import image_embedding_enabled
 from rag.logging_setup import configure_logging, get_logger
 from rag.mcp_tools import register_mcp_tools
 from rag.routes import router
-from rag.chunked_upload import ChunkedUploadStore
 from rag.storage import RagStorage
 from rag.vectorstore import open_qdrant
 
@@ -54,6 +54,8 @@ MCP_TOOL_DOCS = {
     "ingest_text": "Ingest plain-text or markdown via MCP.",
     "search_domain_knowledge": "Query local RAG vector storage for contextual facts.",
     "search_images": "Search PDF images by CLIP visual similarity (optional hybrid).",
+    "link_locality": "Upsert document-municipality links into locality_links (no embeddings).",
+    "list_links": "List locality_links with optional filters and pagination.",
 }
 
 
