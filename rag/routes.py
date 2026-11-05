@@ -6,6 +6,7 @@ import uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from qdrant_client import QdrantClient
 
@@ -23,6 +24,8 @@ from rag.remote import (
     filename_from_url,
 )
 from rag.storage import RagStorage
+
+MAX_IMAGE_HTTP_BYTES = 50 * 1024 * 1024
 
 router = APIRouter()
 logger = get_logger("rag.routes")
@@ -228,6 +231,40 @@ def get_document_http(doc_id: str, request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="Document not found")
     _record_http(route="documents_get", ok=True)
     return meta_to_public(meta)
+
+
+@router.get(
+    "/images/{doc_id}/{image_id}",
+    dependencies=[Depends(require_embed_access)],
+)
+def get_image_http(doc_id: str, image_id: str, request: Request) -> FileResponse:
+    """Return one extracted PDF image (same auth as ``POST /upload``)."""
+    storage = _storage(request)
+    try:
+        storage.validate_doc_id(doc_id)
+        storage.validate_image_id(image_id)
+    except ValueError as exc:
+        _record_http(route="images_get", ok=False, error=str(exc))
+        raise HTTPException(status_code=404, detail="Image not found") from exc
+
+    image_meta = storage.find_image(doc_id, image_id)
+    if image_meta is None:
+        _record_http(route="images_get", ok=False, error="not found")
+        raise HTTPException(status_code=404, detail="Image not found")
+    try:
+        path = storage.image_file_path(doc_id, image_meta)
+    except ValueError as exc:
+        _record_http(route="images_get", ok=False, error=str(exc))
+        raise HTTPException(status_code=404, detail="Image not found") from exc
+    if not path.is_file():
+        _record_http(route="images_get", ok=False, error="missing file")
+        raise HTTPException(status_code=404, detail="Image not found")
+    if path.stat().st_size > MAX_IMAGE_HTTP_BYTES:
+        _record_http(route="images_get", ok=False, error="too large")
+        raise HTTPException(status_code=413, detail="Image file too large")
+
+    _record_http(route="images_get", ok=True)
+    return FileResponse(path, media_type=image_meta.mime)
 
 
 @router.get("/documents/{doc_id}/text")

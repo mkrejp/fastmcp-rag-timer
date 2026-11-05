@@ -8,7 +8,7 @@ from typing import Any, Sequence
 
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import ScoredPoint
-from qdrant_client.models import Distance, VectorParams
+from qdrant_client.models import Distance, PayloadSchemaType, VectorParams
 
 from rag.config import COLLECTION_NAME
 from rag.embeddings import (
@@ -77,6 +77,30 @@ def _backend_mismatch(
     )
 
 
+def ensure_payload_indexes(
+    client: QdrantClient,
+    *,
+    collection_name: str = COLLECTION_NAME,
+) -> None:
+    """Create keyword indexes used by filters and admin tooling."""
+    if not client.collection_exists(collection_name):
+        return
+    for field_name in ("source_type", "doc_id"):
+        try:
+            client.create_payload_index(
+                collection_name=collection_name,
+                field_name=field_name,
+                field_schema=PayloadSchemaType.KEYWORD,
+            )
+        except Exception as exc:  # noqa: BLE001 - index may already exist
+            logger.debug(
+                "Payload index %s on %s skipped: %s",
+                field_name,
+                collection_name,
+                exc,
+            )
+
+
 def open_qdrant(
     qdrant_dir: Path | str,
     *,
@@ -122,6 +146,7 @@ def open_qdrant(
             vectors_config=VectorParams(size=dim, distance=Distance.COSINE),
         )
     _write_backend_marker(marker_path, provider=provider, model=model, dim=dim)
+    ensure_payload_indexes(client, collection_name=collection_name)
     return client
 
 

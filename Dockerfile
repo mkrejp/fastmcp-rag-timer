@@ -8,7 +8,12 @@ WORKDIR /app
 
 # Install basic system curl requirements for healthchecks
 # hadolint ignore=DL3008 -- apt package versions float with the slim base image
-RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    tesseract-ocr \
+    tesseract-ocr-ces \
+    tesseract-ocr-eng \
+    && rm -rf /var/lib/apt/lists/*
 
 # Pin mcp to 1.x — FastMCP lives there; mcp 2.x renames it to MCPServer
 # fastembed: local BGE-M3 ONNX (~2.3GB download on first embed; plan ~4GB+ RAM)
@@ -17,6 +22,9 @@ RUN uv pip install --system \
     uvicorn \
     "mcp[cli]<2" \
     pypdf \
+    pymupdf \
+    pillow \
+    pytesseract \
     "qdrant-client>=1.12,<2" \
     requests \
     python-multipart \
