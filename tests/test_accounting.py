@@ -117,6 +117,7 @@ def test_get_embedding_records_usage(
     assert day["embeddings"]["prompt_tokens"] == 7
     assert day["embeddings"]["tokens_from_api"] == 1
     assert day["embeddings"]["by_source"]["search_mcp"]["calls"] == 1
+    assert day["outbound"]["novita_embeddings"]["calls"] == 1
 
 
 def test_get_embedding_error_increments_errors(
@@ -134,6 +135,35 @@ def test_get_embedding_error_increments_errors(
     day = store.read_day(utc_today())
     assert day["embeddings"]["calls"] == 1
     assert day["embeddings"]["errors"] == 1
+
+
+def test_fastembed_embedding_skips_novita_outbound(
+    store: AccountingStore,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Local FastEmbed calls still meter embeddings but not Novita egress."""
+    monkeypatch.setenv("EMBEDDING_PROVIDER", "fastembed")
+
+    class _Fake:
+        """Return a 1024-dim vector without touching the network."""
+
+        def embed(self, documents: list[str], **_kwargs: object) -> list[list[float]]:
+            """Yield one dense vector per document."""
+            return [[0.1] * EMBEDDING_DIM for _ in documents]
+
+    monkeypatch.setattr("rag.embeddings._get_fastembed_model", lambda: _Fake())
+
+    with accounting_source("search_mcp"):
+        vector = get_embedding("hello local")
+
+    assert len(vector) == EMBEDDING_DIM
+    day = store.read_day(utc_today())
+    assert day["embeddings"]["calls"] == 1
+    assert day["embeddings"]["by_source"]["search_mcp"]["calls"] == 1
+    assert day["outbound"]["novita_embeddings"]["calls"] == 0
+    events = store.read_events(utc_today(), limit=10, kind="embedding")
+    assert events[0]["provider"] == "fastembed"
+    assert events[0]["tokens_from_api"] is False
 
 
 def test_upload_records_http_and_ingest_source(

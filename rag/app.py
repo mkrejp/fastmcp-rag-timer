@@ -26,6 +26,7 @@ from rag.config import (
     resolve_rag_data_root,
     resolve_session_secret,
 )
+from rag.embeddings import embedding_dim, embedding_model, resolve_embedding_provider
 from rag.google_oauth import current_user
 from rag.google_oauth import router as auth_router
 from rag.logging_setup import configure_logging, get_logger
@@ -61,10 +62,13 @@ def create_app(
     set_global_store(accounting)
     qdrant = open_qdrant(storage.qdrant_dir, collection_name=COLLECTION_NAME)
     logger.info(
-        "Opened RAG data root=%s accnt_root=%s collection=%s",
+        "Opened RAG data root=%s accnt_root=%s collection=%s provider=%s model=%s dim=%s",
         root,
         accnt_root,
         COLLECTION_NAME,
+        resolve_embedding_provider(),
+        embedding_model(),
+        embedding_dim(),
     )
 
     mcp = FastMCP(

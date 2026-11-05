@@ -8,10 +8,10 @@ The service is a single-process Python application that:
 
 - Accepts PDF, TXT, Markdown, and JSON/GeoJSON over HTTP (FastAPI), remote GeoJSON by URL via bearer-authenticated `POST /ingest-json`, and optional plain-text ingest over MCP.
 - Persists originals and processed fulltext/chunks under a data root (default `/data/rag`).
-- Embeds chunks with Novita `baai/bge-m3` and indexes them in an embedded Qdrant collection.
+- Embeds chunks with Novita `baai/bge-m3` by default (`EMBEDDING_PROVIDER` unset/`novita`), or locally with FastEmbed `BAAI/bge-m3` when `EMBEDDING_PROVIDER=fastembed`, and indexes them in an embedded Qdrant collection.
 - Exposes catalog/text HTTP APIs and Streamable HTTP MCP tools (including similarity search) from the same uvicorn process.
 
-**Sources of truth:** `main.py`, `rag/` (`app.py`, `config.py`, `embeddings.py`, `ingest.py`, `mcp_tools.py`, `processing.py`, `routes.py`, `storage.py`, `vectorstore.py`), `Dockerfile`, `README.md`, `docs/embedding-provider.md`, and `tests/`. There is no `pyproject.toml`, `requirements.txt`, lockfile, compose file, CI config, or platform config (for example `railway.toml`).
+**Sources of truth:** `main.py`, `rag/` (`app.py`, `config.py`, `embeddings.py`, `ingest.py`, `mcp_tools.py`, `processing.py`, `routes.py`, `storage.py`, `vectorstore.py`), `Dockerfile`, `README.md`, `docs/embedding-provider.md`, and `tests/`. `pyproject.toml` lists runtime dependencies (including `fastembed`). There is no `requirements.txt`, lockfile, compose file, or platform config (for example `railway.toml`). CI lives under `.github/workflows/`.
 
 Statements below are taken from those files unless labeled **Assumption**.
 
@@ -48,7 +48,7 @@ rag/
   geojson.py            # generic GeoJSON → RAG text
   remote.py             # fetch remote JSON (GitHub blob → raw)
   auth.py               # inbound bearer token for /ingest-json
-  embeddings.py         # Novita BGE-M3 client
+  embeddings.py         # Novita HTTP or local FastEmbed BGE-M3
   ingest.py             # persist + embed + upsert pipeline
   vectorstore.py        # local Qdrant open/create
   config.py             # constants and env helpers
@@ -58,9 +58,9 @@ rag/
 | --- | --- | --- |
 | FastAPI app `Lightweight RAG Engine` | `rag.app.create_app()` | HTTP API (see [HTTP API](#http-api)). FastAPI also exposes default `/docs`, `/redoc`, `/openapi.json` (not disabled). |
 | FastMCP server `Client RAG Node` | `rag.app.create_app()` | `stateless_http=True`, `streamable_http_path="/"`, mounted at `/mcp` with the MCP app lifespan entered from FastAPI. |
-| `get_embedding()` | `rag/embeddings.py` | `POST https://api.novita.ai/openai/v1/embeddings` with model `baai/bge-m3`. |
+| `get_embedding()` / `get_embeddings()` | `rag/embeddings.py` | Default: `POST https://api.novita.ai/openai/v1/embeddings` with model `baai/bge-m3`. `EMBEDDING_PROVIDER=fastembed`: local ONNX `BAAI/bge-m3`, lazy-loaded. |
 | `RagStorage` | `rag/storage.py` | Filesystem catalog under `RAG_DATA_ROOT`. |
-| Embedded Qdrant | `rag/vectorstore.py` | `QdrantClient(path=storage.qdrant_dir)`, collection `client_domain_knowledge`, cosine, size `1024`. |
+| Embedded Qdrant | `rag/vectorstore.py` | `QdrantClient(path=storage.qdrant_dir)`, collection `client_domain_knowledge`, cosine, size from `embedding_dim()` (1024 for both providers). |
 | Uvicorn | `main.py` `__main__` and Docker `CMD` | `host=HOST` (`0.0.0.0`), `port=PORT` (`8080`). |
 | Tests | `tests/` | pytest; `RAG_SKIP_DEFAULT_APP=1` so `main.py` does not lock the production Qdrant path. |
 | Container image | `Dockerfile` | Python 3.11 slim, `uv` installer, `mcp[cli]<2`, `EXPOSE 8080`, `ENV RAG_DATA_ROOT=/data/rag`. No `VOLUME` instruction. |
@@ -168,8 +168,9 @@ Chunking: page segments are concatenated until over `DEFAULT_CHUNK_SIZE` (1000 c
 ### Embeddings
 
 See [Embedding connectivity](./CONNECTIVITY.md#embedding-connectivity).
-Collection size `1024` matches `EMBEDDING_DIM` / `baai/bge-m3`.
-Missing credentials raise `ValueError` naming `BGE_M3_NOVITA_API_KEY`.
+Collection size follows `embedding_dim()` (1024 for Novita and FastEmbed BGE-M3).
+Missing Novita credentials raise `ValueError` naming `BGE_M3_NOVITA_API_KEY`.
+FastEmbed needs no API key.
 HTTP `_ingest_upload` maps any `ValueError` to **400** (filename/type checks and missing credentials).
 Other embedding failures (`HTTPError`, JSON errors, unexpected dimension) become HTTP **500** `"Ingest failed: ..."`.
 MCP search and ingest tools catch exceptions and return error strings.
@@ -179,7 +180,7 @@ MCP search and ingest tools catch exceptions and return error strings.
 - `QdrantClient(path=str(storage.qdrant_dir))` — embedded on-disk, not a remote Qdrant URL.
 - Default directory: `{RAG_DATA_ROOT}/qdrant` → `/data/rag/qdrant` in the image.
 - Collection name (hardcoded): `client_domain_knowledge`.
-- Created in `open_qdrant()` if missing. If the existing collection’s vector size is not `EMBEDDING_DIM` (1024), that collection is **deleted and recreated** (vectors in it are lost; files on disk are not). See [Embedding provider](./embedding-provider.md).
+- Created in `open_qdrant()` if missing. If the existing collection’s vector size is not `embedding_dim()`, or `{RAG_DATA_ROOT}/embedding_backend.json` records a different provider/model, that collection is **deleted and recreated** (vectors in it are lost; files on disk are not). See [Embedding provider](./embedding-provider.md).
 - In-memory mode (`:memory:`) is not used.
 
 ### Retrieval
@@ -275,7 +276,9 @@ sequenceDiagram
 | Name | Default / value | Used for |
 | --- | --- | --- |
 | `RAG_DATA_ROOT` | `/data/rag` (`DEFAULT_RAG_DATA_ROOT`; Dockerfile `ENV`) | Originals, processed artifacts, Qdrant, `index.json` |
-| `BGE_M3_NOVITA_API_KEY` | unset | Preferred Bearer token for embeddings |
+| `EMBEDDING_PROVIDER` | unset → `novita` | `novita` (HTTP) or `fastembed` (local ONNX BGE-M3) |
+| `FASTEMBED_CACHE_PATH` | `{RAG_DATA_ROOT}/fastembed` | FastEmbed ONNX cache |
+| `BGE_M3_NOVITA_API_KEY` | unset | Preferred Bearer token for embeddings (Novita only) |
 | `NOVITA_API_KEY` | unset | Embedding credential if `BGE_M3_NOVITA_API_KEY` is empty |
 | `OPENAI_TOKEN` | unset | Embedding credential if both Novita-named vars are empty |
 | `OPENAI_API_KEY` | unset | Embedding credential checked last |
@@ -290,10 +293,10 @@ Not configurable without code changes:
 | --- | --- |
 | HTTP bind | `HOST = "0.0.0.0"`, `PORT = 8080` (not `os.getenv("PORT")`) |
 | Collection | `client_domain_knowledge` |
-| Vector size / metric | `EMBEDDING_DIM = 1024` / cosine |
-| Embed model | `baai/bge-m3` |
-| Embed URL | `https://api.novita.ai/openai/v1/embeddings` |
-| Embed timeout | 60 seconds |
+| Vector size / metric | `embedding_dim()` (1024 for both backends) / cosine |
+| Embed model | Novita `baai/bge-m3` or FastEmbed `BAAI/bge-m3` |
+| Embed URL | Novita URL, or none when `EMBEDDING_PROVIDER=fastembed` |
+| Embed timeout | 60 seconds (Novita HTTP only) |
 | Chunk size | `DEFAULT_CHUNK_SIZE = 1000` characters |
 | MCP server name | `Client RAG Node` |
 | FastAPI title | `Lightweight RAG Engine` |
@@ -311,7 +314,7 @@ There is no `.env` file, `.env.example`, or secret manager integration in the re
 - Copies `uv` / `uvx` from `ghcr.io/astral-sh/uv:latest`
 - `WORKDIR /app`
 - `apt-get install curl`
-- `uv pip install --system`: `fastapi`, `uvicorn`, `"mcp[cli]<2"` (comment: FastMCP lives in mcp 1.x; 2.x renames it to MCPServer), `pypdf`, `qdrant-client`, `requests`, `python-multipart`
+- `uv pip install --system`: `fastapi`, `uvicorn`, `"mcp[cli]<2"` (comment: FastMCP lives in mcp 1.x; 2.x renames it to MCPServer), `pypdf`, `"qdrant-client>=1.12,<2"`, `requests`, `python-multipart`, `itsdangerous`, `fastembed`
 - `COPY main.py ./` and `COPY rag ./rag`
 - `EXPOSE 8080`
 - No `VOLUME` instruction (comment: Railway rejects Dockerfile `VOLUME`; use the service volume mount)

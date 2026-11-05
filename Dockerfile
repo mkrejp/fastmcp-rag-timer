@@ -11,6 +11,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
 
 # Pin mcp to 1.x — FastMCP lives there; mcp 2.x renames it to MCPServer
+# fastembed: local BGE-M3 ONNX (~2.3GB download on first embed; plan ~4GB+ RAM)
 RUN uv pip install --system \
     fastapi \
     uvicorn \
@@ -19,7 +20,8 @@ RUN uv pip install --system \
     "qdrant-client>=1.12,<2" \
     requests \
     python-multipart \
-    itsdangerous
+    itsdangerous \
+    fastembed
 
 COPY main.py ./
 COPY rag ./rag

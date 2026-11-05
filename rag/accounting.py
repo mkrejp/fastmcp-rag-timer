@@ -238,6 +238,8 @@ class AccountingStore:
         latency_ms: int = 0,
         model: str | None = None,
         error: str | None = None,
+        count_outbound: bool = True,
+        provider: str | None = None,
     ) -> None:
         """Record one embedding attempt into today's rollup and event log."""
         resolved_source = source or get_accounting_source()
@@ -259,28 +261,29 @@ class AccountingStore:
             }
             _merge_embed_counters(emb, **deltas)
             _merge_embed_counters(by_source, **deltas)
-            outbound = day["outbound"]["novita_embeddings"]
-            _add_ints(outbound, "calls", 1)
-            if not ok:
-                _add_ints(outbound, "errors", 1)
-            _add_ints(outbound, "latency_ms_sum", max(0, latency_ms))
+            if count_outbound:
+                outbound = day["outbound"]["novita_embeddings"]
+                _add_ints(outbound, "calls", 1)
+                if not ok:
+                    _add_ints(outbound, "errors", 1)
+                _add_ints(outbound, "latency_ms_sum", max(0, latency_ms))
             self._save_unlocked(date, day)
-            self._append_event_unlocked(
-                date,
-                {
-                    "kind": "embedding",
-                    "ts": utc_now_iso(),
-                    "source": resolved_source,
-                    "ok": ok,
-                    "chars": input_chars,
-                    "prompt_tokens": prompt_tokens,
-                    "total_tokens": total_tokens,
-                    "tokens_from_api": tokens_from_api,
-                    "latency_ms": latency_ms,
-                    "model": model,
-                    "error": error,
-                },
-            )
+            event: dict[str, Any] = {
+                "kind": "embedding",
+                "ts": utc_now_iso(),
+                "source": resolved_source,
+                "ok": ok,
+                "chars": input_chars,
+                "prompt_tokens": prompt_tokens,
+                "total_tokens": total_tokens,
+                "tokens_from_api": tokens_from_api,
+                "latency_ms": latency_ms,
+                "model": model,
+                "error": error,
+            }
+            if provider:
+                event["provider"] = provider
+            self._append_event_unlocked(date, event)
 
     def record_mcp(
         self,

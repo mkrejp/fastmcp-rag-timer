@@ -11,7 +11,12 @@ from qdrant_client import QdrantClient
 
 from rag.accounting import AccountingStore, utc_today
 from rag.config import COLLECTION_NAME
-from rag.embeddings import EMBEDDING_DIM, EMBEDDING_MODEL, EMBEDDING_URL
+from rag.embeddings import (
+    embedding_dim,
+    embedding_model,
+    embedding_url,
+    resolve_embedding_provider,
+)
 from rag.google_oauth import require_google_user
 from rag.logging_setup import get_log_handler, get_logger
 from rag.storage import RagStorage
@@ -146,9 +151,10 @@ def admin_status(request: Request) -> dict[str, Any]:
             "tool_count": len(mcp_tools),
         },
         "embeddings": {
-            "model": EMBEDDING_MODEL,
-            "url": EMBEDDING_URL,
-            "dimensions": EMBEDDING_DIM,
+            "provider": resolve_embedding_provider(),
+            "model": embedding_model(),
+            "url": embedding_url(),
+            "dimensions": embedding_dim(),
         },
         "vector_store": _collection_stats(_qdrant(request), COLLECTION_NAME),
     }

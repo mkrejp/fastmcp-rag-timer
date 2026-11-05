@@ -15,7 +15,7 @@ import pytest  # noqa: E402
 from qdrant_client import QdrantClient  # noqa: E402
 from qdrant_client.models import Distance, VectorParams  # noqa: E402
 
-from rag.embeddings import EMBEDDING_DIM  # noqa: E402
+from rag.embeddings import EMBEDDING_DIM, reset_fastembed_runtime  # noqa: E402
 from rag.storage import RagStorage  # noqa: E402
 
 TEST_MCP_TOKEN = "test-mcp-token"
@@ -27,9 +27,17 @@ def patched_embeddings(
     fake_embed: Callable[[str], list[float]],
 ) -> Iterator[None]:
     """Patch embedding call sites used by HTTP, ingest, and MCP paths."""
-    with patch("rag.embeddings.get_embedding", side_effect=fake_embed), patch(
-        "rag.ingest.get_embedding", side_effect=fake_embed
-    ), patch("rag.mcp_tools.get_embedding", side_effect=fake_embed):
+
+    def fake_many(texts: list[str], **_kwargs: object) -> list[list[float]]:
+        """Map a batch of texts through ``fake_embed``."""
+        return [fake_embed(text) for text in texts]
+
+    with (
+        patch("rag.embeddings.get_embedding", side_effect=fake_embed),
+        patch("rag.embeddings.get_embeddings", side_effect=fake_many),
+        patch("rag.ingest.get_embeddings", side_effect=fake_many),
+        patch("rag.mcp_tools.get_embedding", side_effect=fake_embed),
+    ):
         yield
 
 
@@ -37,6 +45,13 @@ def patched_embeddings(
 def _mcp_token(monkeypatch: pytest.MonkeyPatch) -> None:
     """Configure the bearer token for /mcp and embedding routes."""
     monkeypatch.setenv("MCP_API_TOKEN", TEST_MCP_TOKEN)
+
+
+@pytest.fixture(autouse=True)
+def _default_embedding_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep tests on the Novita provider unless they opt into FastEmbed."""
+    monkeypatch.delenv("EMBEDDING_PROVIDER", raising=False)
+    reset_fastembed_runtime()
 
 
 @pytest.fixture()
