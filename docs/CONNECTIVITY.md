@@ -117,8 +117,9 @@ Facts:
 
 Runtime network clients in application code:
 
-1. `requests.post` in `rag.embeddings.get_embedding()` — see [Embedding connectivity](#embedding-connectivity).
-2. `requests.get` in `rag.remote.fetch_remote_bytes()` — used by `POST /ingest-json` to download public http(s) JSON/GeoJSON (GitHub blob URLs rewritten to `raw.githubusercontent.com`). Private/loopback destinations are rejected.
+1. `requests.post` in `rag.embeddings` when `EMBEDDING_PROVIDER` is unset or `novita` — see [Embedding connectivity](#embedding-connectivity).
+2. Hugging Face Hub download via FastEmbed on the **first** local embed when `EMBEDDING_PROVIDER=fastembed` (cached under `{RAG_DATA_ROOT}/fastembed` or `FASTEMBED_CACHE_PATH`).
+3. `requests.get` in `rag.remote.fetch_remote_bytes()` — used by `POST /ingest-json` to download public http(s) JSON/GeoJSON (GitHub blob URLs rewritten to `raw.githubusercontent.com`). Private/loopback destinations are rejected.
 
 No code talks to a remote Qdrant URL, PostgreSQL, Redis, SMTP, or webhooks.
 
@@ -154,7 +155,8 @@ No second container is required for the vector store.
 | MCP Streamable HTTP | HTTP on `/mcp` | 8080 | **None** |
 | MCP stdio | — | — | Not started |
 | Embedded Qdrant | in-process + disk | no listen port | n/a |
-| Novita embeddings | HTTPS | 443 | Bearer `BGE_M3_NOVITA_API_KEY` or fallbacks (outbound) |
+| Novita embeddings | HTTPS | 443 | Bearer `BGE_M3_NOVITA_API_KEY` or fallbacks (outbound; skipped when `EMBEDDING_PROVIDER=fastembed`) |
+| FastEmbed model download | HTTPS | 443 | none (Hugging Face Hub, first local embed only) |
 | Remote JSON fetch | HTTPS/HTTP | 443/80 | None (public URLs only) |
 
 Auth points that exist: outbound embedding Bearer header; inbound Bearer on `/ingest-json`.
@@ -169,7 +171,8 @@ Auth points that do not exist: JWT, mTLS, MCP OAuth, auth on other REST/MCP rout
 | External HTTP client | `POST /ingest-json` | HTTP | 8080 | Bearer `RAG_API_TOKEN` | Inbound |
 | MCP client | FastMCP at `/mcp` | HTTP (Streamable HTTP) | 8080 | None | Inbound |
 | Platform edge (**assumption**) | uvicorn | HTTP (TLS already terminated) | 8080 | None at app | Inbound |
-| `get_embedding()` (`requests`) | `https://api.novita.ai/openai/v1/embeddings` | HTTPS | 443 | Bearer `BGE_M3_NOVITA_API_KEY` or fallbacks | Outbound |
+| `get_embedding()` (`requests`) | `https://api.novita.ai/openai/v1/embeddings` | HTTPS | 443 | Bearer `BGE_M3_NOVITA_API_KEY` or fallbacks | Outbound (Novita provider) |
+| FastEmbed `TextEmbedding` | Hugging Face `BAAI/bge-m3` ONNX | HTTPS | 443 | none | Outbound on first FastEmbed embed |
 | `fetch_remote_bytes()` (`requests`) | caller-supplied public http(s) JSON URL | HTTP/HTTPS | 80/443 | None | Outbound |
 | `RagStorage` | `{RAG_DATA_ROOT}` | filesystem | n/a | OS file perms only | Internal read/write |
 | `QdrantClient` | `{RAG_DATA_ROOT}/qdrant` | embedded Qdrant / filesystem | n/a | none | Internal read/write |
@@ -194,7 +197,7 @@ No encryption-at-rest is configured in this repository. Volume confidentiality i
 
 ## Embedding connectivity
 
-This is the only runtime egress to an external API. All of it is in `rag/embeddings.py`, called from `rag.ingest.ingest_bytes` (HTTP upload and MCP `ingest_text`) and `search_domain_knowledge`.
+Default runtime egress for embeddings is Novita. All of it is in `rag/embeddings.py`, called from `rag.ingest.ingest_bytes` (HTTP upload and MCP `ingest_text`) and `search_domain_knowledge`. Set `EMBEDDING_PROVIDER=fastembed` to skip Novita and embed locally; the first FastEmbed call downloads ONNX weights from Hugging Face.
 
 The HTTP API is OpenAI-compatible (`/openai/v1/embeddings`); the host is **Novita**, not `api.openai.com`. There is no chat/completions client.
 
@@ -202,15 +205,15 @@ The HTTP API is OpenAI-compatible (`/openai/v1/embeddings`); the host is **Novit
 
 | Kind | Used? | Evidence |
 | --- | --- | --- |
-| Embeddings | **Yes** | `EMBEDDING_URL = "https://api.novita.ai/openai/v1/embeddings"`, `EMBEDDING_MODEL = "baai/bge-m3"`, `EMBEDDING_DIM = 1024` |
+| Embeddings | **Yes** | Novita: `NOVITA_EMBEDDING_URL`, model `baai/bge-m3`, dim 1024. FastEmbed: `BAAI/bge-m3` ONNX, dim 1024. Selected by `EMBEDDING_PROVIDER`. |
 | Chat / Completions / Responses | **No** | No chat or LLM client in the repository |
-| Azure OpenAI or a configurable base URL | **No** | URL is a module constant; not read from env |
+| Azure OpenAI or a configurable base URL | **No** | Novita URL is a module constant; provider is selected by env |
 
-`open_qdrant()` uses `VectorParams(size=EMBEDDING_DIM, ...)`. `get_embedding()` rejects responses whose vector length is not `1024`.
+`open_qdrant()` uses `VectorParams(size=embedding_dim(), ...)`. `get_embedding()` rejects vectors whose length is not the active provider dimension.
 
 ### Base URL and configuration
 
-The embeddings URL is **hardcoded**. There is no `OPENAI_BASE_URL` or Novita base-URL override, and no organization or project header.
+The Novita embeddings URL is **hardcoded**. There is no `OPENAI_BASE_URL` or Novita base-URL override, and no organization or project header. `EMBEDDING_PROVIDER` selects Novita vs local FastEmbed.
 
 ```text
 POST https://api.novita.ai/openai/v1/embeddings

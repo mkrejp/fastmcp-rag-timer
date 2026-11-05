@@ -9,7 +9,7 @@ from typing import Any, Callable
 from qdrant_client import QdrantClient
 from qdrant_client.models import PointStruct
 
-from rag.embeddings import get_embedding
+from rag.embeddings import get_embeddings
 from rag.logging_setup import get_logger
 from rag.processing import guess_mime, is_supported_filename, process_document
 from rag.storage import DocumentMeta, RagStorage
@@ -90,11 +90,13 @@ def ingest_bytes(
         status="ready",
     )
 
-    embed = embed_fn or get_embedding
+    texts = [str(chunk["text"]) for chunk in chunks]
+    if embed_fn is not None:
+        vectors = [embed_fn(text) for text in texts]
+    else:
+        vectors = get_embeddings(texts)
     points: list[PointStruct] = []
-    for chunk in chunks:
-        text = str(chunk["text"])
-        vector = embed(text)
+    for chunk, text, vector in zip(chunks, texts, vectors, strict=True):
         points.append(
             PointStruct(
                 id=stable_point_id(doc_id, int(chunk["index"])),

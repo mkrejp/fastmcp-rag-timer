@@ -1,3 +1,19 @@
+[project]
+name = "fastmcp-rag-timer"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "mcp[cli]<2",
+    "pypdf",
+    "qdrant-client>=1.12,<2",
+    "requests",
+    "python-multipart",
+    "itsdangerous",
+    "fastembed",
+]
+
 [tool.black]
 line-length = 88
 

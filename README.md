@@ -26,6 +26,8 @@ On Railway, mount a volume at `/data`. The app creates `/data/rag` and `/data/ac
 | --- | --- | --- |
 | `RAG_DATA_ROOT` | `/data/rag` | Persistent originals, processed text, Qdrant |
 | `ACCNT_DATA_ROOT` | `/data/accnt` | Per-day token/comms accounting rollups and event logs |
+| `EMBEDDING_PROVIDER` | `novita` (when unset) | `novita` (HTTP API) or `fastembed` (local ONNX BGE-M3) |
+| `FASTEMBED_CACHE_PATH` | `{RAG_DATA_ROOT}/fastembed` | ONNX model cache when `EMBEDDING_PROVIDER=fastembed` |
 | `BGE_M3_NOVITA_API_KEY` | unset | Preferred Novita API credential for embeddings |
 | `NOVITA_API_KEY` | unset | Embedding credential if `BGE_M3_NOVITA_API_KEY` is empty |
 | `OPENAI_TOKEN` | unset | Embedding credential if both Novita-named vars are empty |
@@ -35,7 +37,7 @@ On Railway, mount a volume at `/data`. The app creates `/data/rag` and `/data/ac
 | `RAG_MAX_REMOTE_JSON_BYTES` | `134217728` (128 MiB) | Remote GeoJSON download cap (`obce.json` is ~95 MiB) |
 | `RAG_REMOTE_FETCH_TIMEOUT` | `120` | Remote fetch timeout in seconds |
 
-Embeddings use Novita's OpenAI-compatible API (`baai/bge-m3`, 1024 dimensions). See [embedding provider](docs/embedding-provider.md). Keep the key in runtime variables; never commit it.
+Embeddings default to Novita's OpenAI-compatible API (`baai/bge-m3`, 1024 dimensions). Set `EMBEDDING_PROVIDER=fastembed` to embed locally with FastEmbed (`BAAI/bge-m3`, also 1024-dim). The ONNX model is downloaded on first embed (~2.3GB) and needs roughly **4GB+ RAM** (8GB preferred). Switching providers recreates the Qdrant collection; re-ingest after a switch. See [embedding provider](docs/embedding-provider.md). Keep Novita keys in runtime variables; never commit them. Do not change production Railway variables unless you intend to switch backends.
 
 ## HTTP API
 
@@ -97,7 +99,7 @@ rag/
   geojson.py            # generic GeoJSON → RAG text
   remote.py             # fetch remote JSON (GitHub blob → raw)
   auth.py               # inbound bearer token for /ingest-json
-  embeddings.py         # Novita BGE-M3 embeddings
+  embeddings.py         # Novita or local FastEmbed BGE-M3 embeddings
   accounting.py         # per-day token/comms accounting under /data/accnt
   ingest.py             # persist + index pipeline
   vectorstore.py        # local Qdrant
@@ -111,12 +113,15 @@ export RAG_DATA_ROOT=./data/rag
 export BGE_M3_NOVITA_API_KEY=your-novita-key
 export RAG_API_TOKEN=your-api-token
 python main.py
+
+# Local ONNX instead of Novita (first embed downloads ~2.3GB):
+# export EMBEDDING_PROVIDER=fastembed
 ```
 
 ## Tests
 
 ```bash
-pip install pytest pytest-mock 'mcp[cli]<2' fastapi uvicorn pypdf qdrant-client requests python-multipart
+pip install pytest pytest-mock 'mcp[cli]<2' fastapi uvicorn pypdf 'qdrant-client>=1.12,<2' requests python-multipart itsdangerous fastembed
 pytest -q
 ```
 
