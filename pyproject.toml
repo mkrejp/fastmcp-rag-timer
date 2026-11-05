@@ -4,8 +4,7 @@ line-length = 88
 [tool.isort]
 profile = "black"
 line_length = 88
-known_first_party = []
-src_paths = []
+known_first_party = ["rag", "tests"]
 
 [tool.flake8]
 max-line-length = 120
