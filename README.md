@@ -180,10 +180,11 @@ Streamable HTTP MCP is mounted at **`/mcp`** (`stateless_http=True`, `streamable
 - `ingest_text`
 - `search_domain_knowledge` (text `text_vector` only; optional `obec_id` / `cast_obce` payload filter; includes image metadata on OCR hits)
 - `search_images` (CLIP `image_vector`; optional `hybrid=true` merges with text OCR hits via RRF)
-- `link_locality` (upsert document-municipality links into payload-only `locality_links`; no embeddings)
+- `link_locality` (upsert document-municipality links into payload-only `locality_links`; forwards to Trails when configured; no embeddings)
 - `list_links` (filter `doc_id` / `obec_id` / `status` / `ambiguous` / `locality_level` / `cast_obce`, paginate with `limit` / `offset`)
-- `verify_link` (set `verification_status` / verifier / notes on an existing locality_links point)
+- `verify_link` (set `verification_status` / verifier / notes on an existing locality_links point; forwards to Trails when configured)
 - `link_stats` (counts by status, method, obec, ambiguous, locality_level)
+- `sync_links_to_trails` (idempotent backfill of `locality_links` to TrailsAssemblage; `dry_run` option)
 
 No MCP resources or prompts. `/mcp` requires bearer auth (see below). There is no stdio MCP entrypoint.
 
@@ -220,6 +221,7 @@ rag/
   accounting.py         # per-day token/comms accounting under /data/accnt
   ingest.py             # persist + index pipeline
   vectorstore.py        # local Qdrant named vectors
+  trails_sync.py        # TrailsAssemblage locality-link HTTP forward + outbox
   logging_setup.py      # rag logger + in-memory ring buffer
   config.py             # env defaults
 static/                 # RAG console (index.html, app.js, styles.css)
@@ -239,6 +241,10 @@ python main.py
 
 # Local ONNX for ingest as well as query (first embed downloads ~2.3GB):
 # export EMBEDDING_PROVIDER=fastembed
+
+# Optional TrailsAssemblage locality-link forward (both required; unset = off):
+# export TRAILS_API_URL=https://trail.animarium.ai
+# export TRAILS_API_TOKEN=...
 ```
 
 ## Tests

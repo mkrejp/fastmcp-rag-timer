@@ -22,6 +22,7 @@ MCP_TOOLS = (
     "list_links",
     "verify_link",
     "link_stats",
+    "sync_links_to_trails",
 )
 HTTP_ROUTES = (
     "upload",
@@ -34,7 +35,7 @@ HTTP_ROUTES = (
     "documents_delete",
     "health",
 )
-OUTBOUND_TARGETS = ("novita_embeddings", "remote_fetch")
+OUTBOUND_TARGETS = ("novita_embeddings", "remote_fetch", "trails_api")
 
 _accounting_source: ContextVar[str] = ContextVar("accounting_source", default="other")
 _global_store: AccountingStore | None = None
@@ -123,6 +124,12 @@ def empty_day_rollup(date: str) -> dict[str, Any]:
         "outbound": {
             "novita_embeddings": {"calls": 0, "errors": 0, "latency_ms_sum": 0},
             "remote_fetch": {"calls": 0, "errors": 0, "bytes_in": 0},
+            "trails_api": {
+                "calls": 0,
+                "errors": 0,
+                "bytes_in": 0,
+                "latency_ms_sum": 0,
+            },
         },
     }
 
@@ -484,11 +491,14 @@ class AccountingStore:
         outbound: dict[str, Any] = (
             outbound_raw if isinstance(outbound_raw, dict) else {}
         )
-        for name in OUTBOUND_TARGETS:
+        for name in set(OUTBOUND_TARGETS) | set(outbound.keys()):
             target_raw = outbound.get(name)
             target: dict[str, Any] = target_raw if isinstance(target_raw, dict) else {}
-            bucket = base["outbound"][name]
-            for key in bucket:
+            bucket = base["outbound"].setdefault(
+                name,
+                {"calls": 0, "errors": 0, "bytes_in": 0, "latency_ms_sum": 0},
+            )
+            for key in list(bucket.keys()):
                 bucket[key] = int(target.get(key) or 0)
         return base
 
@@ -515,8 +525,11 @@ class AccountingStore:
             )
             for key in ("calls", "errors", "bytes_in"):
                 _add_ints(bucket, key, int(route.get(key) or 0))
-        for name in OUTBOUND_TARGETS:
-            src = day["outbound"][name]
-            target = totals["outbound"][name]
-            for key in target:
+        for name in set(OUTBOUND_TARGETS) | set(day["outbound"].keys()):
+            src = day["outbound"].get(name) or {}
+            target = totals["outbound"].setdefault(
+                name,
+                {"calls": 0, "errors": 0, "bytes_in": 0, "latency_ms_sum": 0},
+            )
+            for key in list(target.keys()):
                 _add_ints(target, key, int(src.get(key) or 0))

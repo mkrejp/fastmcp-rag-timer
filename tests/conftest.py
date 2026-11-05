@@ -17,8 +17,8 @@ from qdrant_client.models import Distance, VectorParams  # noqa: E402
 
 from rag.embeddings import EMBEDDING_DIM, reset_fastembed_runtime  # noqa: E402
 from rag.image_embed import IMAGE_EMBEDDING_DIM, reset_image_embed_runtime  # noqa: E402
-from rag.vectorstore import IMAGE_VECTOR_NAME, TEXT_VECTOR_NAME  # noqa: E402
 from rag.storage import RagStorage  # noqa: E402
+from rag.vectorstore import IMAGE_VECTOR_NAME, TEXT_VECTOR_NAME  # noqa: E402
 
 TEST_MCP_TOKEN = "test-mcp-token"
 AUTH_HEADERS = {"Authorization": f"Bearer {TEST_MCP_TOKEN}"}
@@ -47,6 +47,8 @@ def patched_embeddings(
 def _mcp_token(monkeypatch: pytest.MonkeyPatch) -> None:
     """Configure the bearer token for /mcp and embedding routes."""
     monkeypatch.setenv("MCP_API_TOKEN", TEST_MCP_TOKEN)
+    monkeypatch.delenv("TRAILS_API_URL", raising=False)
+    monkeypatch.delenv("TRAILS_API_TOKEN", raising=False)
 
 
 @pytest.fixture(autouse=True)

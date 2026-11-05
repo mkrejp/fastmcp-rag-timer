@@ -133,6 +133,7 @@ class RagStorage:
         self.processed_dir = self.root / "processed"
         self.qdrant_dir = self.root / "qdrant"
         self.index_path = self.root / "index.json"
+        self.trails_outbox_path = self.root / "trails_outbox.json"
 
     def ensure_layout(self) -> None:
         """Create the persistent directory tree if it does not exist."""

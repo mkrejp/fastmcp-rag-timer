@@ -19,6 +19,10 @@ from rag.logging_setup import get_logger
 from rag.payloads import LocalityLinkPayloadError
 from rag.processing import is_supported_filename
 from rag.storage import ImageMeta, RagStorage
+from rag.trails_sync import (
+    forward_locality_links,
+)
+from rag.trails_sync import sync_links_to_trails as run_sync_links_to_trails
 from rag.vectorstore import (
     IMAGE_VECTOR_NAME,
     TEXT_VECTOR_NAME,
@@ -31,6 +35,23 @@ from rag.vectorstore import (
 )
 
 logger = get_logger("rag.mcp")
+
+
+def _safe_trails_forward(
+    qdrant: QdrantClient,
+    link_ids: list[str],
+    *,
+    outbox_path: Any,
+) -> dict[str, Any]:
+    """Forward to Trails; never raise into an MCP tool body."""
+    try:
+        return forward_locality_links(
+            qdrant, link_ids, outbox_path=outbox_path
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Trails forward wrapper failed: %s", exc)
+        return {"enabled": True, "ok": False, "error": str(exc)[:300]}
+
 
 MAX_MCP_IMAGE_BYTES = 5 * 1024 * 1024
 RRF_K = 60
@@ -461,13 +482,20 @@ def register_mcp_tools(
         plus cast_obce_kod when the mention is a municipal part.
         Also denormalizes obec_id / cast_obce onto matching knowledge points
         via set_payload (no re-embedding, no deletes).
-        Does not call embedding APIs.
+        When TRAILS_API_URL and TRAILS_API_TOKEN are set, forwards the batch
+        to TrailsAssemblage POST /locality-links. Failures are queued on the
+        data volume and do not fail this tool. Does not call embedding APIs.
         """
 
         def _body() -> str:
             try:
                 items = _coerce_locality_links(links)
                 result = upsert_locality_links(qdrant, items)
+                result["trails"] = _safe_trails_forward(
+                    qdrant,
+                    list(result.get("ids") or []),
+                    outbox_path=storage.trails_outbox_path,
+                )
                 return json.dumps(result, ensure_ascii=False)
             except LocalityLinkPayloadError as exc:
                 return f"Error link_locality: {exc}"
@@ -542,7 +570,9 @@ def register_mcp_tools(
         ``status`` is unverified, verified, or rejected. Optional verified_by
         and notes are stored on the payload. verified is true only for verified;
         verified_at is set on verified/rejected and cleared on unverified.
-        Does not call embedding APIs. Does not sync Trails.
+        When Trails forwarding is enabled, PATCHes Trails after a local upsert
+        (failures queue to the outbox and do not fail this tool).
+        Does not call embedding APIs.
         """
 
         def _body() -> str:
@@ -553,6 +583,12 @@ def register_mcp_tools(
                     status=status,
                     verified_by=verified_by if verified_by.strip() else None,
                     notes=notes if notes.strip() else None,
+                )
+                trails_id = str((result.get("link") or {}).get("link_id") or link_id)
+                result["trails"] = _safe_trails_forward(
+                    qdrant,
+                    [trails_id],
+                    outbox_path=storage.trails_outbox_path,
                 )
                 return json.dumps(result, ensure_ascii=False)
             except LocalityLinkPayloadError as exc:
@@ -583,6 +619,35 @@ def register_mcp_tools(
         return _run_mcp_tool(
             "link_stats",
             request_chars=0,
+            source=None,
+            fn=_body,
+        )
+
+    @mcp.tool()
+    def sync_links_to_trails(dry_run: bool = False) -> str:
+        """Backfill all locality_links points to TrailsAssemblage (idempotent).
+
+        POSTs existing points to /locality-links in batches, then PATCHes
+        verify for verified/rejected rows. ``dry_run=true`` counts without
+        HTTP. Disabled when TRAILS_API_URL or TRAILS_API_TOKEN is unset
+        (dry_run still reports local counts). Failures queue to the durable
+        outbox. Does not call embedding APIs. Does not delete anything.
+        """
+
+        def _body() -> str:
+            try:
+                result = run_sync_links_to_trails(
+                    qdrant,
+                    outbox_path=storage.trails_outbox_path,
+                    dry_run=bool(dry_run),
+                )
+                return json.dumps(result, ensure_ascii=False)
+            except Exception as exc:  # noqa: BLE001
+                return f"Error sync_links_to_trails: {exc}"
+
+        return _run_mcp_tool(
+            "sync_links_to_trails",
+            request_chars=len(str(dry_run)),
             source=None,
             fn=_body,
         )

@@ -77,7 +77,7 @@ Trust notes from code:
 - `/mcp` requires Bearer `MCP_API_TOKEN` or fallback `RAG_API_TOKEN` (401 invalid, 503 unset). FastMCP also checks `Host` against `MCP_ALLOWED_HOSTS` (421 on mismatch) unless `MCP_DISABLE_DNS_REBINDING_PROTECTION` is set.
 - `POST /upload`, chunked upload routes, `POST /upload-pdf`, `GET /images/...`, and `DELETE /documents/{doc_id}` require that same MCP/RAG bearer **or** a signed-in Google session.
 - `/ui/` and `/api/admin/*` require Google OAuth (`GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET`) and optional email/domain allow-lists.
-- Secrets: outbound Novita embedding key (`BGE_M3_NOVITA_API_KEY`, then `NOVITA_API_KEY`, `OPENAI_TOKEN`, `OPENAI_API_KEY`); inbound `RAG_API_TOKEN` / `MCP_API_TOKEN`; Google client secret; `SESSION_SECRET`.
+- Secrets: outbound Novita embedding key (`BGE_M3_NOVITA_API_KEY`, then `NOVITA_API_KEY`, `OPENAI_TOKEN`, `OPENAI_API_KEY`); inbound `RAG_API_TOKEN` / `MCP_API_TOKEN`; Google client secret; `SESSION_SECRET`; optional Trails Bearer `TRAILS_API_TOKEN` (never logged).
 - Embedded Qdrant does **not** listen on a network port; it uses `{RAG_DATA_ROOT}/qdrant`.
 - The process binds `0.0.0.0`, so it is reachable on every container/host interface.
 
@@ -236,6 +236,7 @@ Auth points that do not exist: JWT (other than Google session cookie), mTLS, MCP
 | Inbound `/mcp` | Tool arguments and return strings (including document text/chunks); optional inline image bytes up to 5 MiB |
 | Inbound `/ui` and `/api/admin` | Google profile in session; volume listings, log buffer, accounting rollups |
 | Outbound Novita embedding | Chunk **plaintext** plus the API key — ingest only; see [Embedding connectivity](#embedding-connectivity) |
+| Outbound TrailsAssemblage | Locality-link JSON to `TRAILS_API_URL` (`POST /locality-links`, `PATCH /locality-links/{id}/verify`) with Bearer `TRAILS_API_TOKEN` when both env vars are set. Token is never logged. Failures retry then persist to `{RAG_DATA_ROOT}/trails_outbox.json`. |
 | Outbound FastEmbed/CLIP | Model weights from Hugging Face; query plaintext stays local after download |
 | Disk Qdrant | Named vectors and payloads (`source_type`, `text`/`content_summary`, `source`/`parent_document`, `doc_id`, `page_number`, `chunk_index`, `image_id`, `file_path`, `sha256`) |
 

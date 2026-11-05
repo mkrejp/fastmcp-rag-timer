@@ -193,6 +193,7 @@ From `rag/mcp_tools.py`, registered in `create_app()` and served at **`/mcp`** (
 | Tool | `ingest_text(filename: str, content: str) -> str` | Yes |
 | Tool | `search_domain_knowledge(query: str, limit: int = 3, obec_id: str = "", cast_obce: str = "") -> str` | Yes |
 | Tool | `search_images(query: str, limit: int = 5, hybrid: bool = False) -> str` | Yes |
+| Tool | `sync_links_to_trails(dry_run: bool = False) -> str` | Yes |
 | Resource | — | None |
 | Prompt | — | None |
 
@@ -205,6 +206,8 @@ Tool behavior:
 - `ingest_text`: if the filename is not a supported suffix, appends `.txt`; calls `ingest_bytes`; returns JSON or `"Error ingesting text: ..."`
 - `search_domain_knowledge`: `get_query_embedding` (FastEmbed) → `search_similar` on `text_vector` with optional `obec_id` / `cast_obce` payload filter on denormalized `localities` / `cast_obce` arrays → format `Source:` / `Content:` blocks (OCR image hits included when they have text vectors); empty → `"No relevant facts found."`; exceptions → `"Error executing RAG search: ..."`
 - `search_images`: requires `IMAGE_EMBEDDING_ENABLED=true`; CLIP text tower → `image_vector`; `hybrid=true` RRF-merges CLIP hits with `pdf_image` text hits
+- `link_locality` / `verify_link`: when `TRAILS_API_URL` and `TRAILS_API_TOKEN` are set, forward to TrailsAssemblage `POST /locality-links` and `PATCH /locality-links/{id}/verify`. Failures retry with backoff then land in `{RAG_DATA_ROOT}/trails_outbox.json`; MCP tools still succeed. Unset env leaves tools unchanged.
+- `sync_links_to_trails`: idempotent backfill of all `locality_links` points; `dry_run` counts without HTTP.
 
 No stdio MCP entrypoint (`mcp.run()` is not called). Tests post JSON-RPC `initialize` / `tools/list` to `/mcp/`.
 
