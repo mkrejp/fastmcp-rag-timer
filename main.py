@@ -22,4 +22,5 @@ if __name__ == "__main__":
         port=PORT,
         proxy_headers=True,
         forwarded_allow_ips="*",
+        timeout_graceful_shutdown=15,
     )

@@ -15,6 +15,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from rag.accounting import AccountingStore, set_global_store
 from rag.admin_routes import router as admin_router
+from rag.asgi_shutdown import CompleteResponseOnExit
 from rag.auth import McpBearerAuth
 from rag.config import (
     COLLECTION_NAME,
@@ -117,9 +118,15 @@ def create_app(
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         """Run the MCP session manager lifespan alongside FastAPI."""
         logger.info("Starting MCP session manager at /mcp")
-        async with mcp_app.router.lifespan_context(mcp_app):
-            yield
-        logger.info("MCP session manager stopped")
+        try:
+            async with mcp_app.router.lifespan_context(mcp_app):
+                yield
+        finally:
+            logger.info("MCP session manager stopped")
+            try:
+                qdrant.close()
+            except Exception:  # noqa: BLE001 - best-effort on shutdown
+                logger.debug("Qdrant client close failed", exc_info=True)
 
     public_base = resolve_public_base_url() or ""
     app = FastAPI(title="Lightweight RAG Engine", lifespan=lifespan)
@@ -165,6 +172,6 @@ def create_app(
         # CSS/JS are public; HTML shell and /api/admin require Google session.
         app.mount("/ui", StaticFiles(directory=str(STATIC_DIR)), name="ui-static")
 
-    app.mount("/mcp", McpBearerAuth(mcp_app))
+    app.mount("/mcp", McpBearerAuth(CompleteResponseOnExit(mcp_app)))
     logger.info("Application routes ready; UI at /ui (Google OAuth)")
     return app
