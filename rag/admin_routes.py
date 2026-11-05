@@ -14,8 +14,15 @@ from rag.config import COLLECTION_NAME
 from rag.embeddings import (
     embedding_dim,
     embedding_model,
+    embedding_provider_status,
     embedding_url,
     resolve_embedding_provider,
+)
+from rag.image_embed import (
+    CLIP_TEXT_MODEL,
+    CLIP_VISION_MODEL,
+    IMAGE_EMBEDDING_DIM,
+    image_embedding_enabled,
 )
 from rag.google_oauth import require_google_user
 from rag.logging_setup import get_log_handler, get_logger
@@ -101,6 +108,20 @@ def _collection_stats(qdrant: QdrantClient, collection_name: str) -> dict[str, A
             }
         info = qdrant.get_collection(collection_name)
         vectors = info.config.params.vectors
+        if isinstance(vectors, dict):
+            named_sizes = {
+                str(name): int(params.size)
+                for name, params in vectors.items()
+                if getattr(params, "size", None) is not None
+            }
+            return {
+                "name": collection_name,
+                "exists": True,
+                "points_count": int(info.points_count or 0),
+                "vector_size": named_sizes.get("text_vector"),
+                "named_vectors": named_sizes,
+                "status": str(info.status),
+            }
         size = getattr(vectors, "size", None)
         return {
             "name": collection_name,
@@ -155,6 +176,13 @@ def admin_status(request: Request) -> dict[str, Any]:
             "model": embedding_model(),
             "url": embedding_url(),
             "dimensions": embedding_dim(),
+            **embedding_provider_status(),
+        },
+        "image_embeddings": {
+            "enabled": image_embedding_enabled(),
+            "vision_model": CLIP_VISION_MODEL,
+            "text_model": CLIP_TEXT_MODEL,
+            "dimensions": IMAGE_EMBEDDING_DIM,
         },
         "vector_store": _collection_stats(_qdrant(request), COLLECTION_NAME),
     }

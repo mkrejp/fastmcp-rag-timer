@@ -1,4 +1,4 @@
-"""Tests for Qdrant embedding-dimension initialization."""
+"""Tests for Qdrant named-vector initialization."""
 
 from __future__ import annotations
 
@@ -9,8 +9,15 @@ from _pytest.monkeypatch import MonkeyPatch
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams
 
-from rag.embeddings import EMBEDDING_DIM, FASTEMBED_DIM, FASTEMBED_MODEL
-from rag.vectorstore import BACKEND_MARKER_NAME, open_qdrant
+from rag.embeddings import EMBEDDING_DIM, FASTEMBED_MODEL
+from rag.image_embed import IMAGE_EMBEDDING_DIM
+from rag.vectorstore import (
+    BACKEND_MARKER_NAME,
+    IMAGE_VECTOR_NAME,
+    MARKER_SCHEMA_VERSION,
+    TEXT_VECTOR_NAME,
+    open_qdrant,
+)
 
 
 def _marker_payload(qdrant_dir: Path) -> dict[str, object]:
@@ -19,24 +26,26 @@ def _marker_payload(qdrant_dir: Path) -> dict[str, object]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def test_open_qdrant_creates_active_embedding_dimension(tmp_path: Path) -> None:
-    """A new collection matches the active BGE-M3 vector dimension."""
+def test_open_qdrant_creates_named_vectors(tmp_path: Path) -> None:
+    """A new collection exposes text_vector and image_vector with expected sizes."""
     qdrant_dir = tmp_path / "qdrant"
     client = open_qdrant(qdrant_dir)
     try:
         info = client.get_collection("client_domain_knowledge")
-        assert info.config.params.vectors.size == EMBEDDING_DIM
-        assert _marker_payload(qdrant_dir) == {
-            "provider": "novita",
-            "model": "baai/bge-m3",
-            "dim": EMBEDDING_DIM,
-        }
+        vectors = info.config.params.vectors
+        assert isinstance(vectors, dict)
+        assert vectors[TEXT_VECTOR_NAME].size == EMBEDDING_DIM
+        assert vectors[IMAGE_VECTOR_NAME].size == IMAGE_EMBEDDING_DIM
+        marker = _marker_payload(qdrant_dir)
+        assert marker["schema_version"] == MARKER_SCHEMA_VERSION
+        assert marker["text_dim"] == EMBEDDING_DIM
+        assert marker["image_dim"] == IMAGE_EMBEDDING_DIM
     finally:
         client.close()
 
 
-def test_open_qdrant_recreates_collection_with_old_dimension(tmp_path: Path) -> None:
-    """A persisted collection with an old dimension is replaced on startup."""
+def test_open_qdrant_recreates_legacy_single_vector_collection(tmp_path: Path) -> None:
+    """A persisted single-vector collection is replaced with named vectors."""
     qdrant_dir = tmp_path / "qdrant"
     old_client = QdrantClient(path=str(qdrant_dir))
     old_client.create_collection(
@@ -48,67 +57,56 @@ def test_open_qdrant_recreates_collection_with_old_dimension(tmp_path: Path) -> 
     client = open_qdrant(qdrant_dir)
     try:
         info = client.get_collection("client_domain_knowledge")
-        assert info.config.params.vectors.size == EMBEDDING_DIM
+        vectors = info.config.params.vectors
+        assert isinstance(vectors, dict)
+        assert vectors[TEXT_VECTOR_NAME].size == EMBEDDING_DIM
     finally:
         client.close()
 
 
-def test_open_qdrant_keeps_unmarked_novita_collection(tmp_path: Path) -> None:
-    """Pre-switch Novita indexes are kept when the provider stays Novita."""
+def test_open_qdrant_keeps_matching_named_collection(tmp_path: Path) -> None:
+    """An existing named-vector collection with the expected schema is kept."""
     qdrant_dir = tmp_path / "qdrant"
     old_client = QdrantClient(path=str(qdrant_dir))
     old_client.create_collection(
         collection_name="client_domain_knowledge",
-        vectors_config=VectorParams(size=EMBEDDING_DIM, distance=Distance.COSINE),
+        vectors_config={
+            TEXT_VECTOR_NAME: VectorParams(size=EMBEDDING_DIM, distance=Distance.COSINE),
+            IMAGE_VECTOR_NAME: VectorParams(
+                size=IMAGE_EMBEDDING_DIM, distance=Distance.COSINE
+            ),
+        },
     )
     old_client.close()
-    assert not (tmp_path / BACKEND_MARKER_NAME).exists()
 
     client = open_qdrant(qdrant_dir)
     try:
         info = client.get_collection("client_domain_knowledge")
-        assert info.config.params.vectors.size == EMBEDDING_DIM
-        assert _marker_payload(qdrant_dir)["provider"] == "novita"
+        vectors = info.config.params.vectors
+        assert isinstance(vectors, dict)
+        assert vectors[TEXT_VECTOR_NAME].size == EMBEDDING_DIM
     finally:
         client.close()
 
 
-def test_open_qdrant_recreates_collection_when_provider_changes(
+def test_open_qdrant_allows_ingest_provider_switch_without_recreate(
     tmp_path: Path, monkeypatch: MonkeyPatch
 ) -> None:
-    """Switching to FastEmbed rebuilds the collection even at the same dimension."""
+    """Switching ingest novita→fastembed keeps the named collection (same BGE-M3 dim)."""
+    monkeypatch.setenv("EMBEDDING_PROVIDER_QUERY", "fastembed")
     qdrant_dir = tmp_path / "qdrant"
     first = open_qdrant(qdrant_dir)
     first.close()
-    assert _marker_payload(qdrant_dir)["provider"] == "novita"
+    assert _marker_payload(qdrant_dir)["ingest_provider"] == "novita"
 
     monkeypatch.setenv("EMBEDDING_PROVIDER", "fastembed")
     client = open_qdrant(qdrant_dir)
     try:
         info = client.get_collection("client_domain_knowledge")
-        assert info.config.params.vectors.size == FASTEMBED_DIM
-        assert _marker_payload(qdrant_dir) == {
-            "provider": "fastembed",
-            "model": FASTEMBED_MODEL,
-            "dim": FASTEMBED_DIM,
-        }
-    finally:
-        client.close()
-
-
-def test_open_qdrant_uses_embedding_dim_function(
-    tmp_path: Path, monkeypatch: MonkeyPatch
-) -> None:
-    """Collection size follows ``embedding_dim()``, not a hardcoded constant."""
-    monkeypatch.setattr("rag.vectorstore.embedding_dim", lambda: 384)
-    monkeypatch.setattr(
-        "rag.vectorstore.resolve_embedding_provider", lambda: "fastembed"
-    )
-    monkeypatch.setattr("rag.vectorstore.embedding_model", lambda: "tiny-test")
-
-    client = open_qdrant(tmp_path / "qdrant")
-    try:
-        info = client.get_collection("client_domain_knowledge")
-        assert info.config.params.vectors.size == 384
+        vectors = info.config.params.vectors
+        assert isinstance(vectors, dict)
+        assert _marker_payload(qdrant_dir)["ingest_provider"] == "fastembed"
+        assert _marker_payload(qdrant_dir)["ingest_model"] == FASTEMBED_MODEL
+        assert info.points_count == 0
     finally:
         client.close()

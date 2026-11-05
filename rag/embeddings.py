@@ -15,9 +15,11 @@ from rag.config import resolve_rag_data_root
 from rag.logging_setup import get_logger
 
 EmbeddingProvider = Literal["novita", "fastembed"]
+QueryEmbeddingProvider = Literal["fastembed"]
 
 DEFAULT_EMBEDDING_PROVIDER: EmbeddingProvider = "novita"
 SUPPORTED_EMBEDDING_PROVIDERS: tuple[EmbeddingProvider, ...] = ("novita", "fastembed")
+BGE_M3_MODEL_FAMILY = "bge-m3"
 
 NOVITA_EMBEDDING_MODEL = "baai/bge-m3"
 NOVITA_EMBEDDING_URL = "https://api.novita.ai/openai/v1/embeddings"
@@ -38,6 +40,7 @@ FASTEMBED_SIZE_GB = 2.27
 EMBEDDING_MODEL = NOVITA_EMBEDDING_MODEL
 EMBEDDING_URL = NOVITA_EMBEDDING_URL
 EMBEDDING_DIM = NOVITA_EMBEDDING_DIM
+TEXT_EMBEDDING_DIM = NOVITA_EMBEDDING_DIM
 
 logger = get_logger("rag.embeddings")
 
@@ -46,41 +49,113 @@ _fastembed_model: Any = None
 _fastembed_registered = False
 
 
-def resolve_embedding_provider() -> EmbeddingProvider:
-    """Return the active embedding backend from ``EMBEDDING_PROVIDER``.
-
-    Unset or empty values keep the Novita HTTP API so production is unchanged.
-    """
-    raw = os.getenv("EMBEDDING_PROVIDER", "").strip().lower()
+def _parse_provider_env(name: str) -> EmbeddingProvider | None:
+    """Parse one provider env var, or return ``None`` when unset."""
+    raw = os.getenv(name, "").strip().lower()
     if not raw:
-        return DEFAULT_EMBEDDING_PROVIDER
+        return None
     if raw not in SUPPORTED_EMBEDDING_PROVIDERS:
         supported = ", ".join(SUPPORTED_EMBEDDING_PROVIDERS)
-        raise ValueError(
-            f"Unknown EMBEDDING_PROVIDER={raw!r}. Use one of: {supported}."
-        )
+        raise ValueError(f"Unknown {name}={raw!r}. Use one of: {supported}.")
     return cast(EmbeddingProvider, raw)
 
 
-def embedding_model() -> str:
-    """Return the model id used by the active embedding provider."""
-    if resolve_embedding_provider() == "fastembed":
+def resolve_embedding_provider() -> EmbeddingProvider:
+    """Return the default embedding backend from ``EMBEDDING_PROVIDER``.
+
+    Unset or empty values keep the Novita HTTP API so production is unchanged.
+    """
+    parsed = _parse_provider_env("EMBEDDING_PROVIDER")
+    return parsed if parsed is not None else DEFAULT_EMBEDDING_PROVIDER
+
+
+def resolve_embedding_provider_ingest() -> EmbeddingProvider:
+    """Return the ingest/reindex embedding backend (process-wide)."""
+    parsed = _parse_provider_env("EMBEDDING_PROVIDER_INGEST")
+    return parsed if parsed is not None else resolve_embedding_provider()
+
+
+def resolve_embedding_provider_query_unvalidated() -> EmbeddingProvider:
+    """Return the query provider before startup validation."""
+    for name in ("EMBEDDING_PROVIDER_QUERY", "EMBEDDING_PROVIDER_SEARCH"):
+        parsed = _parse_provider_env(name)
+        if parsed is not None:
+            return parsed
+    return resolve_embedding_provider()
+
+
+def validate_embedding_configuration() -> None:
+    """Refuse startup when search would use a remote provider or text spaces mismatch."""
+    ingest = resolve_embedding_provider_ingest()
+    query = resolve_embedding_provider_query_unvalidated()
+    if query != "fastembed":
+        raise ValueError(
+            "Search paths must use local fastembed (BAAI/bge-m3, 1024-dim). "
+            f"Resolved EMBEDDING_PROVIDER_QUERY/SEARCH={query!r}. "
+            "Set EMBEDDING_PROVIDER_QUERY=fastembed (ingest may stay novita)."
+        )
+    ingest_dim = provider_text_dim(ingest)
+    query_dim = provider_text_dim("fastembed")
+    if ingest_dim != query_dim:
+        raise ValueError(
+            f"Ingest provider {ingest!r} uses {ingest_dim}-dim text vectors but "
+            f"query fastembed uses {query_dim}-dim. Both must be BGE-M3 1024."
+        )
+    if ingest not in SUPPORTED_EMBEDDING_PROVIDERS:
+        raise ValueError(f"Unsupported ingest provider: {ingest!r}")
+
+
+def resolve_embedding_provider_query() -> QueryEmbeddingProvider:
+    """Return the query embedding backend (always local fastembed after validation)."""
+    validate_embedding_configuration()
+    return "fastembed"
+
+
+def provider_text_dim(provider: EmbeddingProvider) -> int:
+    """Return the BGE-M3 text dimension for ``provider``."""
+    if provider == "fastembed":
+        return FASTEMBED_DIM
+    return NOVITA_EMBEDDING_DIM
+
+
+def provider_text_model(provider: EmbeddingProvider) -> str:
+    """Return the model id used for text embeddings by ``provider``."""
+    if provider == "fastembed":
         return FASTEMBED_MODEL
     return NOVITA_EMBEDDING_MODEL
 
 
+def embedding_provider_status() -> dict[str, str | int | None]:
+    """Summarize ingest vs query providers for health/admin (no secrets)."""
+    ingest = resolve_embedding_provider_ingest()
+    query = resolve_embedding_provider_query_unvalidated()
+    return {
+        "default_provider": resolve_embedding_provider(),
+        "ingest_provider": ingest,
+        "ingest_model": provider_text_model(ingest),
+        "ingest_dim": provider_text_dim(ingest),
+        "query_provider": query,
+        "query_model": provider_text_model("fastembed"),
+        "query_dim": provider_text_dim("fastembed"),
+        "text_model_family": BGE_M3_MODEL_FAMILY,
+    }
+
+
+def embedding_model() -> str:
+    """Return the ingest-side text model id (Qdrant ``text_vector`` family)."""
+    return provider_text_model(resolve_embedding_provider_ingest())
+
+
 def embedding_url() -> str | None:
-    """Return the Novita embeddings URL, or ``None`` for the local FastEmbed path."""
-    if resolve_embedding_provider() == "fastembed":
+    """Return the Novita embeddings URL when ingest uses Novita."""
+    if resolve_embedding_provider_ingest() == "fastembed":
         return None
     return NOVITA_EMBEDDING_URL
 
 
 def embedding_dim() -> int:
-    """Return the vector size required by the active embedding provider."""
-    if resolve_embedding_provider() == "fastembed":
-        return FASTEMBED_DIM
-    return NOVITA_EMBEDDING_DIM
+    """Return the ``text_vector`` size (always BGE-M3 1024)."""
+    return TEXT_EMBEDDING_DIM
 
 
 def resolve_fastembed_cache_dir() -> str:
@@ -240,7 +315,9 @@ def _get_fastembed_model() -> Any:
         return _fastembed_model
 
 
-def _get_novita_embedding(text: str, *, api_key: str | None = None) -> list[float]:
+def _get_novita_embedding(
+    text: str, *, api_key: str | None = None, expected_dim: int | None = None
+) -> list[float]:
     """Embed ``text`` with Novita's OpenAI-compatible BGE-M3 endpoint."""
     key = api_key if api_key is not None else resolve_api_key()
     if not key:
@@ -260,7 +337,7 @@ def _get_novita_embedding(text: str, *, api_key: str | None = None) -> list[floa
         response.raise_for_status()
         body = response.json()
         embedding = body["data"][0]["embedding"]
-        expected = embedding_dim()
+        expected = expected_dim if expected_dim is not None else TEXT_EMBEDDING_DIM
         if len(embedding) != expected:
             raise ValueError(
                 f"Novita model {NOVITA_EMBEDDING_MODEL} returned "
@@ -294,9 +371,11 @@ def _get_novita_embedding(text: str, *, api_key: str | None = None) -> list[floa
         raise
 
 
-def _get_fastembed_embeddings(texts: Sequence[str]) -> list[list[float]]:
+def _get_fastembed_embeddings(
+    texts: Sequence[str], *, expected_dim: int | None = None
+) -> list[list[float]]:
     """Embed ``texts`` with the locally loaded BGE-M3 FastEmbed model."""
-    expected = embedding_dim()
+    expected = expected_dim if expected_dim is not None else TEXT_EMBEDDING_DIM
     input_chars_list = [len(text) for text in texts]
     started = time.perf_counter()
     try:
@@ -343,21 +422,48 @@ def _get_fastembed_embeddings(texts: Sequence[str]) -> list[list[float]]:
         raise
 
 
+def get_ingest_embeddings(
+    texts: Sequence[str], *, api_key: str | None = None
+) -> list[list[float]]:
+    """Embed ``texts`` on the ingest path (``EMBEDDING_PROVIDER_INGEST``)."""
+    if not texts:
+        return []
+    provider = resolve_embedding_provider_ingest()
+    expected = provider_text_dim(provider)
+    if provider == "fastembed":
+        return _get_fastembed_embeddings(texts, expected_dim=expected)
+    return [
+        _get_novita_embedding(text, api_key=api_key, expected_dim=expected)
+        for text in texts
+    ]
+
+
+def get_ingest_embedding(text: str, *, api_key: str | None = None) -> list[float]:
+    """Embed one string on the ingest path."""
+    return get_ingest_embeddings([text], api_key=api_key)[0]
+
+
+def get_query_embeddings(texts: Sequence[str]) -> list[list[float]]:
+    """Embed ``texts`` on the search path (local fastembed only; no outbound tokens)."""
+    if not texts:
+        return []
+    validate_embedding_configuration()
+    expected = provider_text_dim("fastembed")
+    return _get_fastembed_embeddings(texts, expected_dim=expected)
+
+
+def get_query_embedding(text: str) -> list[float]:
+    """Embed one query string with local fastembed (MCP/HTTP search)."""
+    return get_query_embeddings([text])[0]
+
+
 def get_embeddings(
     texts: Sequence[str], *, api_key: str | None = None
 ) -> list[list[float]]:
-    """Embed ``texts`` with the active provider.
-
-    Novita still issues one HTTP request per string (existing behavior, no
-    retries). FastEmbed encodes the batch with one local model call.
-    """
-    if not texts:
-        return []
-    if resolve_embedding_provider() == "fastembed":
-        return _get_fastembed_embeddings(texts)
-    return [_get_novita_embedding(text, api_key=api_key) for text in texts]
+    """Embed ``texts`` with the ingest provider (backward-compatible alias)."""
+    return get_ingest_embeddings(texts, api_key=api_key)
 
 
 def get_embedding(text: str, *, api_key: str | None = None) -> list[float]:
-    """Embed ``text`` with the active provider (Novita HTTP or local FastEmbed)."""
-    return get_embeddings([text], api_key=api_key)[0]
+    """Embed ``text`` with the ingest provider (backward-compatible alias)."""
+    return get_ingest_embedding(text, api_key=api_key)

@@ -23,6 +23,8 @@ from rag.remote import (
     fetch_remote_bytes,
     filename_from_url,
 )
+from rag.embeddings import embedding_provider_status, validate_embedding_configuration
+from rag.image_embed import image_embedding_enabled
 from rag.storage import RagStorage
 
 MAX_IMAGE_HTTP_BYTES = 50 * 1024 * 1024
@@ -87,10 +89,16 @@ def _ingest_upload(
 
 
 @router.get("/health")
-def health(request: Request) -> dict[str, str]:
+def health(request: Request) -> dict[str, object]:
     """Liveness probe for container orchestration."""
     try:
-        body = {"status": "ok", "rag_data_root": _rag_data_root(request)}
+        validate_embedding_configuration()
+        body: dict[str, object] = {
+            "status": "ok",
+            "rag_data_root": _rag_data_root(request),
+            "embeddings": embedding_provider_status(),
+            "image_embedding_enabled": image_embedding_enabled(),
+        }
         _record_http(route="health", ok=True)
         return body
     except Exception as exc:  # noqa: BLE001 - still report health accounting failures
