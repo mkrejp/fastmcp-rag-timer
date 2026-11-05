@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from _pytest.monkeypatch import MonkeyPatch
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams
@@ -12,6 +13,7 @@ from qdrant_client.models import Distance, VectorParams
 from rag.config import LOCALITY_LINKS_COLLECTION
 from rag.embeddings import EMBEDDING_DIM, FASTEMBED_MODEL
 from rag.image_embed import IMAGE_EMBEDDING_DIM
+from rag.payloads import LocalityLinkNotFoundError, LocalityLinkPayloadError
 from rag.vectorstore import (
     BACKEND_MARKER_NAME,
     IMAGE_VECTOR_NAME,
@@ -19,8 +21,10 @@ from rag.vectorstore import (
     TEXT_VECTOR_NAME,
     ensure_locality_links_collection,
     list_locality_links,
+    locality_link_stats,
     open_qdrant,
     upsert_locality_links,
+    verify_locality_link,
 )
 
 
@@ -219,5 +223,72 @@ def test_upsert_locality_links_is_idempotent_on_unique_key(tmp_path: Path) -> No
         assert verified["links"][0]["char_start"] == 99
         unverified = list_locality_links(client, status="unverified", doc_id="doc-1")
         assert unverified["returned"] == 2
+    finally:
+        client.close()
+
+
+def test_verify_and_stats_and_cast_obce_filters(tmp_path: Path) -> None:
+    """verify_link, stats, and 005 locality_level/cast_obce filters should work."""
+    qdrant_dir = tmp_path / "qdrant"
+    client = open_qdrant(qdrant_dir)
+    try:
+        praha = upsert_locality_links(client, [_sample_link()])
+        karlin = upsert_locality_links(
+            client,
+            [
+                _sample_link(
+                    locality_level="cast_obce",
+                    cast_obce="400637",
+                    cast_obce_name="Karlín",
+                    matched_text="Karlín",
+                    ambiguous=True,
+                )
+            ],
+        )
+        brno = upsert_locality_links(
+            client,
+            [_sample_link(obec_id="582786", name="Brno", char_start=40)],
+        )
+        assert praha["ids"][0] != karlin["ids"][0]
+        verified = verify_locality_link(
+            client,
+            link_id=praha["ids"][0],
+            status="verified",
+            verified_by="reviewer",
+            notes="looks good",
+        )
+        assert verified["link"]["verification_status"] == "verified"
+        assert verified["link"]["verified"] is True
+        assert verified["link"]["verified_by"] == "reviewer"
+        assert verified["link"]["verified_at"]
+        verify_locality_link(
+            client, link_id=brno["ids"][0], status="rejected"
+        )
+        missing = "00000000-0000-0000-0000-000000000000"
+        with pytest.raises(LocalityLinkNotFoundError, match="not found"):
+            verify_locality_link(client, link_id=missing, status="verified")
+        with pytest.raises(LocalityLinkPayloadError, match="status"):
+            verify_locality_link(
+                client, link_id=praha["ids"][0], status="maybe"
+            )
+
+        by_level = list_locality_links(client, locality_level="cast_obce")
+        assert by_level["returned"] == 1
+        assert by_level["links"][0]["cast_obce_kod"] == "400637"
+        by_cast = list_locality_links(client, cast_obce="400637")
+        assert by_cast["returned"] == 1
+        assert by_cast["links"][0]["cast_obce_name"] == "Karlín"
+
+        stats = locality_link_stats(client)
+        assert stats["total"] == 3
+        assert stats["by_status"]["verified"] == 1
+        assert stats["by_status"]["rejected"] == 1
+        assert stats["by_status"]["unverified"] == 1
+        assert stats["by_locality_level"]["obec"] == 2
+        assert stats["by_locality_level"]["cast_obce"] == 1
+        assert stats["ambiguous"]["true"] == 1
+        assert stats["docs_covered"] == 1
+        assert stats["top_obce"][0]["obec_id"] == "554782"
+        assert stats["top_obce"][0]["count"] == 2
     finally:
         client.close()

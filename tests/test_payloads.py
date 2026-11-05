@@ -8,6 +8,7 @@ import pytest
 
 from rag.payloads import (
     LocalityLinkPayloadError,
+    apply_locality_link_verification,
     build_locality_link_payload,
     stable_locality_link_id,
 )
@@ -64,6 +65,9 @@ def test_build_locality_link_payload_defaults_and_required_fields() -> None:
     assert payload["candidates"] == []
     assert payload["chunk_index"] == 0
     assert payload["lau_id"] == "CZ0100554782"
+    assert payload["locality_level"] == "obec"
+    assert payload["cast_obce"] is None
+    assert payload["cast_obce_kod"] is None
     assert payload["created_at"] == "2026-11-05T12:00:00+00:00"
     assert payload["updated_at"] == "2026-11-05T12:00:00+00:00"
     with pytest.raises(LocalityLinkPayloadError, match="obec_id"):
@@ -96,3 +100,77 @@ def test_build_locality_link_payload_verified_follows_status() -> None:
     )
     assert payload["verified"] is True
     assert payload["verification_status"] == "verified"
+
+
+def test_obec_level_link_id_matches_pre_cast_obce_formula() -> None:
+    """Obec-level ids must stay stable so existing points are not duplicated."""
+    expected = str(
+        uuid.uuid5(uuid.NAMESPACE_URL, "locality_link:doc-1:0:554782:12")
+    )
+    assert (
+        stable_locality_link_id(
+            doc_id="doc-1", chunk_index=0, obec_id="554782", char_start=12
+        )
+        == expected
+    )
+
+
+def test_cast_obce_payload_and_distinct_link_id() -> None:
+    """Karlín (část obce) should store 005 fields and a different point id."""
+    link_id, payload = build_locality_link_payload(
+        _sample_link(
+            locality_level="cast_obce",
+            cast_obce="400637",
+            cast_obce_name="Karlín",
+            matched_text="Karlín",
+        )
+    )
+    obec_id, obec_payload = build_locality_link_payload(_sample_link())
+    assert payload["locality_level"] == "cast_obce"
+    assert payload["cast_obce"] == "400637"
+    assert payload["cast_obce_kod"] == "400637"
+    assert payload["cast_obce_name"] == "Karlín"
+    assert link_id != obec_id
+    with pytest.raises(LocalityLinkPayloadError, match="cast_obce_kod"):
+        build_locality_link_payload(
+            _sample_link(locality_level="cast_obce")
+        )
+    with pytest.raises(LocalityLinkPayloadError, match="empty"):
+        build_locality_link_payload(
+            _sample_link(locality_level="obec", cast_obce_kod="400637")
+        )
+
+
+def test_apply_locality_link_verification_state_machine() -> None:
+    """verified/rejected/unverified should set verified, verified_at, and notes."""
+    _link_id, payload = build_locality_link_payload(
+        _sample_link(), now="2026-11-05T12:00:00+00:00"
+    )
+    verified = apply_locality_link_verification(
+        payload,
+        status="verified",
+        verified_by="agent",
+        notes="ok",
+        now="2026-11-05T12:10:00+00:00",
+    )
+    assert verified["verification_status"] == "verified"
+    assert verified["verified"] is True
+    assert verified["verified_by"] == "agent"
+    assert verified["verified_at"] == "2026-11-05T12:10:00+00:00"
+    assert verified["notes"] == "ok"
+    assert verified["created_at"] == payload["created_at"]
+    rejected = apply_locality_link_verification(
+        verified, status="rejected", now="2026-11-05T12:11:00+00:00"
+    )
+    assert rejected["verification_status"] == "rejected"
+    assert rejected["verified"] is False
+    assert rejected["verified_at"] == "2026-11-05T12:11:00+00:00"
+    assert rejected["verified_by"] == "agent"
+    reset = apply_locality_link_verification(
+        rejected, status="unverified", now="2026-11-05T12:12:00+00:00"
+    )
+    assert reset["verification_status"] == "unverified"
+    assert reset["verified"] is False
+    assert reset["verified_at"] is None
+    with pytest.raises(LocalityLinkPayloadError, match="status"):
+        apply_locality_link_verification(payload, status="maybe")

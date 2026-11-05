@@ -56,6 +56,8 @@ MCP_TOOL_DOCS = {
     "search_images": "Search PDF images by CLIP visual similarity (optional hybrid).",
     "link_locality": "Upsert document-municipality links into locality_links (no embeddings).",
     "list_links": "List locality_links with optional filters and pagination.",
+    "verify_link": "Set verification_status on an existing locality_links point.",
+    "link_stats": "Aggregate locality_links counts by status, obec, method, ambiguous.",
 }
 
 

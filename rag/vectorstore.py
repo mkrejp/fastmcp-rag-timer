@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from collections import Counter
+from typing import Any, Iterator, Mapping, Sequence
 
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import ScoredPoint
@@ -34,8 +35,11 @@ from rag.image_embed import (
 )
 from rag.logging_setup import get_logger
 from rag.payloads import (
+    LOCALITY_LEVELS,
     LOCALITY_VERIFICATION_STATUSES,
+    LocalityLinkNotFoundError,
     LocalityLinkPayloadError,
+    apply_locality_link_verification,
     build_locality_link_payload,
 )
 
@@ -50,7 +54,11 @@ _LOCALITY_LINK_INDEXES: tuple[tuple[str, PayloadSchemaType], ...] = (
     ("obec_id", PayloadSchemaType.KEYWORD),
     ("verification_status", PayloadSchemaType.KEYWORD),
     ("ambiguous", PayloadSchemaType.BOOL),
+    ("locality_level", PayloadSchemaType.KEYWORD),
+    ("cast_obce_kod", PayloadSchemaType.KEYWORD),
+    ("cast_obce", PayloadSchemaType.KEYWORD),
 )
+DEFAULT_TOP_OBCE = 20
 
 logger = get_logger("rag.vectorstore")
 
@@ -271,6 +279,8 @@ def _locality_links_filter(
     obec_id: str | None = None,
     status: str | None = None,
     ambiguous: bool | None = None,
+    locality_level: str | None = None,
+    cast_obce: str | None = None,
 ) -> Filter | None:
     """Build a Qdrant payload filter for ``list_locality_links``."""
     must: list[FieldCondition] = []
@@ -299,6 +309,25 @@ def _locality_links_filter(
             FieldCondition(
                 key="ambiguous",
                 match=MatchValue(value=bool(ambiguous)),
+            )
+        )
+    if locality_level:
+        if locality_level not in LOCALITY_LEVELS:
+            allowed = ", ".join(sorted(LOCALITY_LEVELS))
+            raise LocalityLinkPayloadError(
+                f"locality_level must be one of: {allowed}"
+            )
+        must.append(
+            FieldCondition(
+                key="locality_level",
+                match=MatchValue(value=locality_level),
+            )
+        )
+    if cast_obce:
+        must.append(
+            FieldCondition(
+                key="cast_obce_kod",
+                match=MatchValue(value=cast_obce),
             )
         )
     if not must:
@@ -366,6 +395,8 @@ def list_locality_links(
     obec_id: str | None = None,
     status: str | None = None,
     ambiguous: bool | None = None,
+    locality_level: str | None = None,
+    cast_obce: str | None = None,
     limit: int = DEFAULT_LOCALITY_LIST_LIMIT,
     offset: int = 0,
 ) -> dict[str, Any]:
@@ -386,6 +417,8 @@ def list_locality_links(
         obec_id=obec_id or None,
         status=status or None,
         ambiguous=ambiguous,
+        locality_level=locality_level or None,
+        cast_obce=cast_obce or None,
     )
     gathered: list[Any] = []
     next_offset: Any = None
@@ -416,6 +449,141 @@ def list_locality_links(
         "offset": offset_n,
         "returned": len(links),
         "has_more": len(gathered) > offset_n + limit_n,
+    }
+
+
+def _iter_locality_link_points(
+    client: QdrantClient,
+) -> Iterator[Any]:
+    """Yield every locality_links point (payload only, no vectors)."""
+    ensure_locality_links_collection(client)
+    next_offset: Any = None
+    while True:
+        batch, next_offset = client.scroll(
+            collection_name=LOCALITY_LINKS_COLLECTION,
+            limit=100,
+            offset=next_offset,
+            with_payload=True,
+            with_vectors=False,
+        )
+        if not batch:
+            break
+        yield from batch
+        if next_offset is None:
+            break
+
+
+def verify_locality_link(
+    client: QdrantClient,
+    *,
+    link_id: str,
+    status: str,
+    verified_by: str | None = None,
+    notes: str | None = None,
+) -> dict[str, Any]:
+    """Set verification fields on an existing locality_links point."""
+    trimmed = str(link_id).strip()
+    if not trimmed:
+        raise LocalityLinkPayloadError("link_id is required")
+    ensure_locality_links_collection(client)
+    found = client.retrieve(
+        collection_name=LOCALITY_LINKS_COLLECTION,
+        ids=[trimmed],
+        with_payload=True,
+        with_vectors=False,
+    )
+    if not found:
+        raise LocalityLinkNotFoundError(f"link not found: {trimmed}")
+    point = found[0]
+    existing = dict(point.payload or {})
+    existing.setdefault("link_id", str(point.id))
+    payload = apply_locality_link_verification(
+        existing,
+        status=status,
+        verified_by=verified_by,
+        notes=notes,
+    )
+    client.upsert(
+        collection_name=LOCALITY_LINKS_COLLECTION,
+        points=[
+            PointStruct(
+                id=str(point.id),
+                vector=_locality_point_vector(client),
+                payload=payload,
+            )
+        ],
+        wait=True,
+    )
+    return {"status": "ok", "link": payload}
+
+
+def locality_link_stats(
+    client: QdrantClient,
+    *,
+    top_obce: int = DEFAULT_TOP_OBCE,
+) -> dict[str, Any]:
+    """Aggregate locality_links counts by status, method, obec, and ambiguous."""
+    ensure_locality_links_collection(client)
+    try:
+        top_n = int(top_obce)
+    except (TypeError, ValueError) as exc:
+        raise LocalityLinkPayloadError("top_obce must be an integer") from exc
+    top_n = min(max(top_n, 1), 100)
+    by_status: Counter[str] = Counter()
+    by_method: Counter[str] = Counter()
+    by_level: Counter[str] = Counter()
+    ambiguous_true = 0
+    obec_counts: Counter[str] = Counter()
+    obec_names: dict[str, str] = {}
+    docs: set[str] = set()
+    total = 0
+    for point in _iter_locality_link_points(client):
+        payload = point.payload or {}
+        total += 1
+        status = str(payload.get("verification_status") or "unverified")
+        by_status[status] += 1
+        method = str(payload.get("method") or "")
+        if method:
+            by_method[method] += 1
+        level = str(payload.get("locality_level") or "obec")
+        by_level[level] += 1
+        if payload.get("ambiguous"):
+            ambiguous_true += 1
+        obec_id = str(payload.get("obec_id") or "")
+        if obec_id and status != "rejected":
+            obec_counts[obec_id] += 1
+            name = payload.get("name")
+            if isinstance(name, str) and name and obec_id not in obec_names:
+                obec_names[obec_id] = name
+        doc_id = payload.get("doc_id")
+        if doc_id and status != "rejected":
+            docs.add(str(doc_id))
+    ranked = obec_counts.most_common(top_n)
+    return {
+        "total": total,
+        "by_status": {
+            "unverified": by_status.get("unverified", 0),
+            "verified": by_status.get("verified", 0),
+            "rejected": by_status.get("rejected", 0),
+        },
+        "by_method": dict(by_method),
+        "by_locality_level": {
+            "obec": by_level.get("obec", 0),
+            "cast_obce": by_level.get("cast_obce", 0),
+        },
+        "ambiguous": {
+            "true": ambiguous_true,
+            "false": total - ambiguous_true,
+        },
+        "docs_covered": len(docs),
+        "top_obce": [
+            {
+                "obec_id": obec_id,
+                "name": obec_names.get(obec_id, ""),
+                "count": count,
+            }
+            for obec_id, count in ranked
+        ],
     }
 
 

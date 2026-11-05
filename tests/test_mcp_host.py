@@ -42,6 +42,8 @@ def test_mcp_accepts_railway_host_with_token(client):
         "search_domain_knowledge",
         "link_locality",
         "list_links",
+        "verify_link",
+        "link_stats",
     ):
         assert name in r.text
 

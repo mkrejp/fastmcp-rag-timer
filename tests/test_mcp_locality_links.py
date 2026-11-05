@@ -132,6 +132,8 @@ def test_mcp_lists_locality_link_tools(client: TestClient) -> None:
     body = listed.text
     assert "link_locality" in body
     assert "list_links" in body
+    assert "verify_link" in body
+    assert "link_stats" in body
 
 
 def test_link_locality_and_list_links_round_trip(client: TestClient) -> None:
@@ -231,3 +233,69 @@ def test_link_locality_rejects_invalid_payload(client: TestClient) -> None:
     text = _tool_text(payload)
     assert text.startswith("Error link_locality:")
     assert "missing required field" in text
+
+
+def test_verify_link_and_link_stats_round_trip(client: TestClient) -> None:
+    """verify_link should patch an existing point; link_stats should aggregate it."""
+    _initialize(client)
+    upsert = _call_tool(
+        client,
+        "link_locality",
+        {
+            "links": [
+                _sample_link(),
+                _sample_link(
+                    locality_level="cast_obce",
+                    cast_obce={"kod": "400637", "name": "Karlín"},
+                    matched_text="Karlín",
+                    ambiguous=True,
+                ),
+            ]
+        },
+    )
+    upsert_body = json.loads(_tool_text(upsert))
+    praha_id = upsert_body["ids"][0]
+    verified = _call_tool(
+        client,
+        "verify_link",
+        {
+            "link_id": praha_id,
+            "status": "verified",
+            "verified_by": "pytest",
+            "notes": "ok",
+        },
+        call_id=3,
+    )
+    verified_body = json.loads(_tool_text(verified))
+    assert verified_body["link"]["verification_status"] == "verified"
+    assert verified_body["link"]["verified_by"] == "pytest"
+    assert verified_body["link"]["notes"] == "ok"
+
+    listed = _call_tool(
+        client,
+        "list_links",
+        {"locality_level": "cast_obce", "cast_obce": "400637"},
+        call_id=4,
+    )
+    listed_body = json.loads(_tool_text(listed))
+    assert listed_body["returned"] == 1
+    assert listed_body["links"][0]["cast_obce_name"] == "Karlín"
+
+    stats = _call_tool(client, "link_stats", {}, call_id=5)
+    stats_body = json.loads(_tool_text(stats))
+    assert stats_body["total"] == 2
+    assert stats_body["by_status"]["verified"] == 1
+    assert stats_body["by_locality_level"]["cast_obce"] == 1
+    assert stats_body["ambiguous"]["true"] == 1
+
+    missing = _call_tool(
+        client,
+        "verify_link",
+        {
+            "link_id": "00000000-0000-0000-0000-000000000000",
+            "status": "rejected",
+        },
+        call_id=6,
+    )
+    assert "Error verify_link:" in _tool_text(missing)
+    assert "not found" in _tool_text(missing)

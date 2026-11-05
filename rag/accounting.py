@@ -20,6 +20,8 @@ MCP_TOOLS = (
     "search_domain_knowledge",
     "link_locality",
     "list_links",
+    "verify_link",
+    "link_stats",
 )
 HTTP_ROUTES = (
     "upload",
