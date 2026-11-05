@@ -16,6 +16,8 @@ from qdrant_client import QdrantClient  # noqa: E402
 from qdrant_client.models import Distance, VectorParams  # noqa: E402
 
 from rag.embeddings import EMBEDDING_DIM, reset_fastembed_runtime  # noqa: E402
+from rag.image_embed import IMAGE_EMBEDDING_DIM, reset_image_embed_runtime  # noqa: E402
+from rag.vectorstore import IMAGE_VECTOR_NAME, TEXT_VECTOR_NAME  # noqa: E402
 from rag.storage import RagStorage  # noqa: E402
 
 TEST_MCP_TOKEN = "test-mcp-token"
@@ -35,8 +37,8 @@ def patched_embeddings(
     with (
         patch("rag.embeddings.get_embedding", side_effect=fake_embed),
         patch("rag.embeddings.get_embeddings", side_effect=fake_many),
-        patch("rag.ingest.get_embeddings", side_effect=fake_many),
-        patch("rag.mcp_tools.get_embedding", side_effect=fake_embed),
+        patch("rag.ingest.get_ingest_embeddings", side_effect=fake_many),
+        patch("rag.mcp_tools.get_query_embedding", side_effect=fake_embed),
     ):
         yield
 
@@ -49,9 +51,15 @@ def _mcp_token(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def _default_embedding_provider(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep tests on the Novita provider unless they opt into FastEmbed."""
+    """Keep tests on Novita ingest + local fastembed query unless overridden."""
     monkeypatch.delenv("EMBEDDING_PROVIDER", raising=False)
+    monkeypatch.delenv("EMBEDDING_PROVIDER_INGEST", raising=False)
+    monkeypatch.delenv("EMBEDDING_PROVIDER_QUERY", raising=False)
+    monkeypatch.delenv("EMBEDDING_PROVIDER_SEARCH", raising=False)
+    monkeypatch.setenv("EMBEDDING_PROVIDER_QUERY", "fastembed")
+    monkeypatch.setenv("IMAGE_EMBEDDING_ENABLED", "false")
     reset_fastembed_runtime()
+    reset_image_embed_runtime()
 
 
 @pytest.fixture()
@@ -84,7 +92,14 @@ def qdrant_client(rag_storage: RagStorage) -> Iterator[QdrantClient]:
     client = QdrantClient(path=str(rag_storage.qdrant_dir))
     client.create_collection(
         collection_name="client_domain_knowledge",
-        vectors_config=VectorParams(size=EMBEDDING_DIM, distance=Distance.COSINE),
+        vectors_config={
+            TEXT_VECTOR_NAME: VectorParams(
+                size=EMBEDDING_DIM, distance=Distance.COSINE
+            ),
+            IMAGE_VECTOR_NAME: VectorParams(
+                size=IMAGE_EMBEDDING_DIM, distance=Distance.COSINE
+            ),
+        },
     )
     try:
         yield client

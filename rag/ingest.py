@@ -10,13 +10,15 @@ from typing import Any, Callable
 from qdrant_client import QdrantClient
 from qdrant_client.models import PointStruct
 
-from rag.embeddings import get_embeddings
+from rag.embeddings import get_ingest_embeddings
+from rag.image_embed import embed_image_paths, image_embedding_enabled
 from rag.logging_setup import get_logger
 from rag.ocr import build_content_summary, ocr_image_file
 from rag.payloads import build_chunk_payload, build_image_payload
 from rag.pdf_images import extract_pdf_images
 from rag.processing import guess_mime, is_supported_filename, process_document
 from rag.storage import DocumentMeta, ImageMeta, RagStorage
+from rag.vectorstore import build_named_vector
 
 EmbedFn = Callable[[str], list[float]]
 logger = get_logger("rag.ingest")
@@ -79,6 +81,31 @@ def _process_pdf_images(
             )
         )
     return images_meta
+
+
+def _embed_pdf_images(
+    storage: RagStorage,
+    doc_id: str,
+    images: list[ImageMeta],
+) -> dict[str, list[float]]:
+    """Return ``image_id`` → CLIP vision vector for on-disk images."""
+    if not image_embedding_enabled() or not images:
+        return {}
+    paths: list[Path] = []
+    ids: list[str] = []
+    for img in images:
+        path = storage.image_file_path(doc_id, img)
+        if path.is_file():
+            paths.append(path)
+            ids.append(img.image_id)
+    if not paths:
+        return {}
+    try:
+        vectors = embed_image_paths(paths)
+    except Exception as exc:  # noqa: BLE001 - visual embed is optional enrichment
+        logger.warning("CLIP image embedding failed doc_id=%s: %s", doc_id, exc)
+        return {}
+    return dict(zip(ids, vectors, strict=True))
 
 
 def ingest_bytes(
@@ -160,10 +187,11 @@ def ingest_bytes(
     if embed_fn is not None:
         vectors = [embed_fn(text) for text in embed_inputs]
     else:
-        vectors = get_embeddings(embed_inputs) if embed_inputs else []
+        vectors = get_ingest_embeddings(embed_inputs) if embed_inputs else []
 
     chunk_vectors = vectors[: len(texts)]
-    image_vectors = vectors[len(texts) :]
+    image_text_vectors = vectors[len(texts) :]
+    visual_vectors = _embed_pdf_images(storage, doc_id, images)
 
     points: list[PointStruct] = []
     for chunk, text, vector in zip(chunks, texts, chunk_vectors, strict=True):
@@ -171,7 +199,7 @@ def ingest_bytes(
         points.append(
             PointStruct(
                 id=stable_point_id(doc_id, int(chunk["index"])),
-                vector=vector,
+                vector=build_named_vector(text_vector=vector),
                 payload=build_chunk_payload(
                     doc_id=doc_id,
                     parent_document=filename,
@@ -184,11 +212,18 @@ def ingest_bytes(
             )
         )
 
-    for (img, summary), vector in zip(image_summaries, image_vectors, strict=True):
+    indexed_images = 0
+    for (img, summary), text_vector in zip(
+        image_summaries, image_text_vectors, strict=True
+    ):
+        image_vector = visual_vectors.get(img.image_id)
         points.append(
             PointStruct(
                 id=stable_image_point_id(doc_id, img.image_id),
-                vector=vector,
+                vector=build_named_vector(
+                    text_vector=text_vector,
+                    image_vector=image_vector,
+                ),
                 payload=build_image_payload(
                     doc_id=doc_id,
                     parent_document=filename,
@@ -200,6 +235,32 @@ def ingest_bytes(
                 ),
             )
         )
+        indexed_images += 1
+
+    ocr_image_ids = {img.image_id for img, _ in image_summaries}
+    for img in images:
+        if img.image_id in ocr_image_ids:
+            continue
+        image_vector = visual_vectors.get(img.image_id)
+        if image_vector is None:
+            continue
+        summary = build_content_summary(img.page_number, img.ocr_text or "")
+        points.append(
+            PointStruct(
+                id=stable_image_point_id(doc_id, img.image_id),
+                vector=build_named_vector(image_vector=image_vector),
+                payload=build_image_payload(
+                    doc_id=doc_id,
+                    parent_document=filename,
+                    page_number=img.page_number,
+                    file_path=img.file_path,
+                    image_id=img.image_id,
+                    image_sha256=img.sha256,
+                    content_summary=summary,
+                ),
+            )
+        )
+        indexed_images += 1
 
     if points:
         qdrant.upsert(collection_name=collection_name, points=points)
@@ -209,7 +270,7 @@ def ingest_bytes(
         "doc_id": meta.doc_id,
         "filename": meta.filename,
         "chunks_indexed": meta.chunk_count,
-        "images_indexed": len(image_summaries),
+        "images_indexed": indexed_images,
         "images_extracted": len(images),
         "sha256": meta.sha256,
         "reused": False,
@@ -221,7 +282,7 @@ def ingest_bytes(
         meta.doc_id,
         meta.filename,
         meta.chunk_count,
-        len(image_summaries),
+        indexed_images,
     )
     return result
 

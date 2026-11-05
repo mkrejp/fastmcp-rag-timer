@@ -12,16 +12,35 @@ from qdrant_client import QdrantClient
 
 from rag.accounting import accounting_source, get_global_store
 from rag.config import COLLECTION_NAME, resolve_public_base_url
-from rag.embeddings import get_embedding
+from rag.embeddings import get_query_embedding
+from rag.image_embed import embed_image_query, image_embedding_enabled
 from rag.ingest import ingest_bytes
 from rag.logging_setup import get_logger
 from rag.processing import is_supported_filename
 from rag.storage import ImageMeta, RagStorage
-from rag.vectorstore import search_similar
+from rag.vectorstore import IMAGE_VECTOR_NAME, TEXT_VECTOR_NAME, search_similar
 
 logger = get_logger("rag.mcp")
 
 MAX_MCP_IMAGE_BYTES = 5 * 1024 * 1024
+RRF_K = 60
+
+
+def _reciprocal_rank_fusion(
+    ranked_lists: list[list[Any]],
+    *,
+    limit: int,
+) -> list[Any]:
+    """Merge ranked hit lists with reciprocal rank fusion (simple hybrid)."""
+    scores: dict[str | int, float] = {}
+    by_id: dict[str | int, Any] = {}
+    for ranked in ranked_lists:
+        for rank, point in enumerate(ranked):
+            point_id = point.id
+            scores[point_id] = scores.get(point_id, 0.0) + 1.0 / (RRF_K + rank + 1)
+            by_id[point_id] = point
+    ordered = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+    return [by_id[point_id] for point_id, _ in ordered[:limit]]
 
 
 def _record_mcp(
@@ -275,12 +294,13 @@ def register_mcp_tools(
                     len(query),
                     limit,
                 )
-                query_vector = get_embedding(query)
+                query_vector = get_query_embedding(query)
                 results = search_similar(
                     qdrant,
                     query_vector=query_vector,
                     limit=limit,
                     collection_name=collection_name,
+                    vector_name=TEXT_VECTOR_NAME,
                 )
                 logger.info("MCP search returned %s hits", len(results))
                 context_blocks: list[str] = []
@@ -315,6 +335,76 @@ def register_mcp_tools(
 
         return _run_mcp_tool(
             "search_domain_knowledge",
+            request_chars=len(query),
+            source="search_mcp",
+            fn=_body,
+        )
+
+    @mcp.tool()
+    def search_images(query: str, limit: int = 5, hybrid: bool = False) -> str:
+        """Search PDF images by visual similarity (local CLIP) with optional text hybrid."""
+
+        def _body() -> str:
+            if not image_embedding_enabled():
+                return (
+                    "IMAGE_EMBEDDING_ENABLED is false. Set it to true and re-ingest "
+                    "PDFs to index image_vector fields before using search_images."
+                )
+            try:
+                query_vector = embed_image_query(query)
+                visual_hits = search_similar(
+                    qdrant,
+                    query_vector=query_vector,
+                    limit=limit,
+                    collection_name=collection_name,
+                    vector_name=IMAGE_VECTOR_NAME,
+                )
+                if hybrid:
+                    text_vector = get_query_embedding(query)
+                    text_hits = search_similar(
+                        qdrant,
+                        query_vector=text_vector,
+                        limit=limit,
+                        collection_name=collection_name,
+                        vector_name=TEXT_VECTOR_NAME,
+                    )
+                    filter_image = [
+                        hit
+                        for hit in text_hits
+                        if (hit.payload or {}).get("source_type") == "pdf_image"
+                    ]
+                    results = _reciprocal_rank_fusion(
+                        [visual_hits, filter_image], limit=limit
+                    )
+                else:
+                    results = visual_hits
+                blocks: list[str] = []
+                for res in results:
+                    payload: dict[str, Any] = res.payload or {}
+                    if payload.get("source_type") != "pdf_image":
+                        continue
+                    doc_id = str(payload.get("doc_id", ""))
+                    image_id = str(payload.get("image_id", ""))
+                    page_number = payload.get("page_number")
+                    parent = payload.get("parent_document") or payload.get("source")
+                    url = _image_public_url(doc_id, image_id) if doc_id and image_id else None
+                    summary = payload.get("content_summary") or payload.get("text", "")
+                    header = f"Source: {parent} (pdf_image)"
+                    if doc_id:
+                        header += f" doc_id={doc_id}"
+                    if page_number is not None:
+                        header += f" page_number={page_number}"
+                    if image_id:
+                        header += f" image_id={image_id}"
+                    if url:
+                        header += f" url={url}"
+                    blocks.append(f"{header}\nContent: {summary}\n")
+                return "\n---\n".join(blocks) if blocks else "No relevant images found."
+            except Exception as exc:  # noqa: BLE001
+                return f"Error executing search_images: {exc}"
+
+        return _run_mcp_tool(
+            "search_images",
             request_chars=len(query),
             source="search_mcp",
             fn=_body,

@@ -27,8 +27,12 @@ On Railway, mount a volume at `/data`. The app creates `/data/rag` and `/data/ac
 | --- | --- | --- |
 | `RAG_DATA_ROOT` | `/data/rag` | Persistent originals, processed text, Qdrant |
 | `ACCNT_DATA_ROOT` | `/data/accnt` | Per-day token/comms accounting rollups and event logs |
-| `EMBEDDING_PROVIDER` | `novita` (when unset) | `novita` (HTTP API) or `fastembed` (local ONNX BGE-M3) |
-| `FASTEMBED_CACHE_PATH` | `{RAG_DATA_ROOT}/fastembed` | ONNX model cache when `EMBEDDING_PROVIDER=fastembed` |
+| `EMBEDDING_PROVIDER` | `novita` (when unset) | Default for both paths when ingest/query overrides are unset |
+| `EMBEDDING_PROVIDER_INGEST` | falls back to `EMBEDDING_PROVIDER` | Ingest / OCR / reindex only (`novita` or `fastembed`, BGE-M3 1024) |
+| `EMBEDDING_PROVIDER_QUERY` | falls back to `EMBEDDING_PROVIDER` | Search paths only; **must be `fastembed`** (alias: `EMBEDDING_PROVIDER_SEARCH`) |
+| `FASTEMBED_CACHE_PATH` | `{RAG_DATA_ROOT}/fastembed` | ONNX cache for local BGE-M3 (query path always uses this backend) |
+| `IMAGE_EMBEDDING_ENABLED` | `false` | Load CLIP and index/search `image_vector` (adds RAM beside BGE-M3) |
+| `IMAGE_EMBEDDING_CACHE_PATH` | `{RAG_DATA_ROOT}/clip` | ONNX cache for CLIP ViT-B/32 vision + text towers |
 | `BGE_M3_NOVITA_API_KEY` | unset | Preferred Novita API credential for embeddings |
 | `NOVITA_API_KEY` | unset | Embedding credential if `BGE_M3_NOVITA_API_KEY` is empty |
 | `OPENAI_TOKEN` | unset | Embedding credential if both Novita-named vars are empty |
@@ -43,19 +47,19 @@ On Railway, mount a volume at `/data`. The app creates `/data/rag` and `/data/ac
 | `OCR_MIN_CHARS` | `20` | Minimum cleaned OCR length to index a `pdf_image` point |
 | `PUBLIC_BASE_URL` | unset | Public base URL for image links in MCP search (`/images/...`) |
 
-Embeddings default to Novita's OpenAI-compatible API (`baai/bge-m3`, 1024 dimensions).
-Set `EMBEDDING_PROVIDER=fastembed` to embed locally with FastEmbed (`BAAI/bge-m3`, also 1024-dim).
-The ONNX model is downloaded on first embed (~2.3GB) and needs roughly **4GB+ RAM** (8GB preferred).
-Switching providers recreates the Qdrant collection; re-ingest after a switch.
+**Phase D — split providers:** Ingest may use Novita (`baai/bge-m3`, 1024-dim) while every search path uses **local** FastEmbed (`BAAI/bge-m3`, 1024-dim). Search never calls Novita (zero tokens on query). When the default is Novita, set `EMBEDDING_PROVIDER_QUERY=fastembed`. Startup refuses `EMBEDDING_PROVIDER_QUERY=novita`. Novita HTTP vs local ONNX can differ slightly; re-check recall after switching ingest provider (optional `scripts/golden_recall_smoke.py`).
+
+**Phase C — named vectors:** Qdrant uses `text_vector` (BGE-M3 1024) and `image_vector` (CLIP `Qdrant/clip-ViT-B-32-vision`, 512). Legacy single-vector collections are recreated on startup; **re-ingest all documents** after upgrade. Enable visual search with `IMAGE_EMBEDDING_ENABLED=true` (lazy CLIP load; ~extra RAM on top of BGE-M3 — risky on 8GB Railway).
+
+The FastEmbed BGE-M3 ONNX download is ~2.3GB on first query/ingest (~4GB+ RAM peak; 8GB preferred for BGE-M3 alone).
 See [embedding provider](docs/embedding-provider.md).
 Keep Novita keys in runtime variables; never commit them.
-Do not change production Railway variables unless you intend to switch backends.
 
 ### PDF images and OCR
 
-During PDF ingest, embedded images are extracted with PyMuPDF, deduplicated by SHA-256, and stored under `processed/{doc_id}/images/`. Images smaller than 64×64 px or 4 KiB are skipped. Local Tesseract OCR (`ces+eng` in Docker) fills `DocumentMeta.images[]` with optional `ocr_text` / `ocr_confidence`. When OCR text is long enough, a **`pdf_image`** vector point is upserted using the same BGE-M3 text embedding backend as body chunks (`pdf_chunk`). Qdrant payload fields include `source_type`, `doc_id`, `parent_document`, `page_number`, `file_path`, `image_id`, `sha256`, and `content_summary` (no image blobs in Qdrant).
+During PDF ingest, embedded images are extracted with PyMuPDF, deduplicated by SHA-256, and stored under `processed/{doc_id}/images/`. Images smaller than 64×64 px or 4 KiB are skipped. Local Tesseract OCR (`ces+eng` in Docker) fills `DocumentMeta.images[]` with optional `ocr_text` / `ocr_confidence`. When OCR text is long enough, a **`pdf_image`** point gets a `text_vector` (BGE-M3 ingest backend). With `IMAGE_EMBEDDING_ENABLED=true`, each kept image also receives an `image_vector` (CLIP vision), including images without OCR. Payloads include `source_type`, `doc_id`, `parent_document`, `page_number`, `file_path`, `image_id`, `sha256`, and `content_summary` (no image blobs in Qdrant).
 
-**Re-ingest:** Existing deployments do **not** need a Qdrant collection recreate for this feature; re-upload PDFs to populate images and `pdf_image` points. A future phase with CLIP/`image_vector` named vectors **will** require collection recreate.
+**Re-ingest:** Named vectors require collection recreate on first deploy of phase C; re-upload/re-index all PDFs. Toggle CLIP without schema change does not recreate; new uploads need re-ingest to backfill `image_vector`.
 
 **Delete:** Removing a document (via `delete_document` helper used in tests/admin flows) deletes its `images/` directory and all Qdrant points with matching `doc_id` (chunks and images).
 
@@ -69,7 +73,7 @@ During PDF ingest, embedded images are extracted with PyMuPDF, deduplicated by S
 - `GET /documents/{doc_id}` — metadata
 - `GET /documents/{doc_id}/text` — processed full text (no re-parse)
 - `GET /images/{doc_id}/{image_id}` — extracted PDF image bytes (same auth as `POST /upload`)
-- `GET /health` — liveness
+- `GET /health` — liveness (+ ingest/query embedding providers, `IMAGE_EMBEDDING_ENABLED`)
 
 Listen address is `0.0.0.0:8080` (not configurable via `PORT`). Most routes have no inbound auth; `POST /ingest-json` requires `Authorization: Bearer $RAG_API_TOKEN`. `GET /images/...` uses the same bearer or Google session as upload routes.
 
@@ -98,7 +102,8 @@ Streamable HTTP MCP is mounted at **`/mcp`**. Tools:
 - `get_document_images`
 - `get_image` (inline image up to 5 MiB, otherwise a URL hint)
 - `ingest_text`
-- `search_domain_knowledge` (includes `source_type`, `page_number`, and `image_id`/URL for image hits)
+- `search_domain_knowledge` (text `text_vector` only; includes image metadata on OCR hits)
+- `search_images` (CLIP `image_vector`; optional `hybrid=true` merges with text OCR hits via RRF)
 
 No MCP resources or prompts. `/mcp` requires bearer auth (see below).
 
