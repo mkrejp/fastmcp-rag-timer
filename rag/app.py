@@ -42,6 +42,7 @@ from rag.logging_setup import configure_logging, get_logger
 from rag.mcp_tools import register_mcp_tools
 from rag.routes import router
 from rag.storage import RagStorage
+from rag.trails_sync import maybe_drain_on_startup
 from rag.vectorstore import open_qdrant
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
@@ -58,6 +59,7 @@ MCP_TOOL_DOCS = {
     "list_links": "List locality_links with optional filters and pagination.",
     "verify_link": "Set verification_status on an existing locality_links point.",
     "link_stats": "Aggregate locality_links counts by status, obec, method, ambiguous.",
+    "sync_links_to_trails": "Backfill locality_links to TrailsAssemblage (optional dry_run).",
 }
 
 
@@ -80,6 +82,7 @@ def create_app(
     accounting.ensure_layout()
     set_global_store(accounting)
     qdrant = open_qdrant(storage.qdrant_dir, collection_name=COLLECTION_NAME)
+    maybe_drain_on_startup(qdrant, storage.trails_outbox_path)
     providers = embedding_provider_status()
     logger.info(
         "Opened RAG data root=%s accnt_root=%s collection=%s ingest=%s query=%s dim=%s "

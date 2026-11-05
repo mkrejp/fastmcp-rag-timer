@@ -210,6 +210,30 @@ def resolve_upload_ttl_seconds() -> int:
     return _positive_int_env("RAG_UPLOAD_TTL_SECONDS", DEFAULT_UPLOAD_TTL_SECONDS)
 
 
+DEFAULT_TRAILS_API_TIMEOUT_SECONDS = 20
+TRAILS_LINKS_BATCH_MAX = 500
+
+
+def resolve_trails_api_url() -> str | None:
+    """Return TrailsAssemblage base URL (no trailing slash), or ``None``."""
+    value = os.getenv("TRAILS_API_URL", "").strip().rstrip("/")
+    return value or None
+
+
+def resolve_trails_api_token() -> str | None:
+    """Return the Trails service Bearer token, or ``None``.
+
+    Callers must never log the return value.
+    """
+    value = os.getenv("TRAILS_API_TOKEN", "").strip()
+    return value or None
+
+
+def trails_forwarding_enabled() -> bool:
+    """Forward locality links only when both URL and token are set."""
+    return bool(resolve_trails_api_url() and resolve_trails_api_token())
+
+
 def resolve_mcp_token() -> str | None:
     """Bearer token for ``/mcp`` and embedding REST routes.
 

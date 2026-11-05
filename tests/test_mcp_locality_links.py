@@ -134,6 +134,7 @@ def test_mcp_lists_locality_link_tools(client: TestClient) -> None:
     assert "list_links" in body
     assert "verify_link" in body
     assert "link_stats" in body
+    assert "sync_links_to_trails" in body
 
 
 def test_link_locality_and_list_links_round_trip(client: TestClient) -> None:
