@@ -8,21 +8,30 @@ from pathlib import Path
 import pytest
 from _pytest.monkeypatch import MonkeyPatch
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams
+from qdrant_client.models import Distance, PointStruct, VectorParams
 
 from rag.config import LOCALITY_LINKS_COLLECTION
 from rag.embeddings import EMBEDDING_DIM, FASTEMBED_MODEL
 from rag.image_embed import IMAGE_EMBEDDING_DIM
-from rag.payloads import LocalityLinkNotFoundError, LocalityLinkPayloadError
+from rag.ingest import stable_point_id
+from rag.payloads import (
+    LocalityLinkNotFoundError,
+    LocalityLinkPayloadError,
+    chunk_text_sha256,
+)
 from rag.vectorstore import (
     BACKEND_MARKER_NAME,
     IMAGE_VECTOR_NAME,
     MARKER_SCHEMA_VERSION,
     TEXT_VECTOR_NAME,
+    backfill_chunk_payload_fields,
+    build_named_vector,
     ensure_locality_links_collection,
+    knowledge_locality_filter,
     list_locality_links,
     locality_link_stats,
     open_qdrant,
+    search_similar,
     upsert_locality_links,
     verify_locality_link,
 )
@@ -290,5 +299,144 @@ def test_verify_and_stats_and_cast_obce_filters(tmp_path: Path) -> None:
         assert stats["docs_covered"] == 1
         assert stats["top_obce"][0]["obec_id"] == "554782"
         assert stats["top_obce"][0]["count"] == 2
+    finally:
+        client.close()
+
+
+def test_backfill_chunk_payload_fields_is_payload_only(tmp_path: Path) -> None:
+    """Existing points missing new fields should be patched without re-embedding."""
+    qdrant_dir = tmp_path / "qdrant"
+    client = open_qdrant(qdrant_dir)
+    try:
+        text = "legacy chunk without locality fields"
+        original_vector = [0.25] * EMBEDDING_DIM
+        point_id = "11111111-1111-4111-8111-111111111111"
+        client.upsert(
+            collection_name="client_domain_knowledge",
+            points=[
+                PointStruct(
+                    id=point_id,
+                    vector=build_named_vector(text_vector=original_vector),
+                    payload={
+                        "doc_id": "legacy-doc",
+                        "text": text,
+                        "sha256": "doc-hash",
+                        "source_type": "pdf_chunk",
+                        "chunk_index": 0,
+                    },
+                )
+            ],
+            wait=True,
+        )
+        before = client.retrieve(
+            collection_name="client_domain_knowledge",
+            ids=[point_id],
+            with_payload=True,
+            with_vectors=True,
+        )
+        first = backfill_chunk_payload_fields(client)
+        assert first["scanned"] == 1
+        assert first["updated"] == 1
+        after = client.retrieve(
+            collection_name="client_domain_knowledge",
+            ids=[point_id],
+            with_payload=True,
+            with_vectors=True,
+        )
+        payload = after[0].payload or {}
+        assert payload["localities"] == []
+        assert payload["cast_obce"] == []
+        assert payload["chunk_sha256"] == chunk_text_sha256(text)
+        assert payload["sha256"] == "doc-hash"
+        assert after[0].vector == before[0].vector
+        second = backfill_chunk_payload_fields(client)
+        assert second["updated"] == 0
+        count = client.count("client_domain_knowledge")
+        assert count.count == 1
+    finally:
+        client.close()
+
+
+def test_link_locality_denormalizes_knowledge_payload(tmp_path: Path) -> None:
+    """link upsert should merge obec_id onto the matching chunk via set_payload."""
+    qdrant_dir = tmp_path / "qdrant"
+    client = open_qdrant(qdrant_dir)
+    try:
+        doc_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        point_id = stable_point_id(doc_id, 0)
+        text = "Praha timer mention"
+        original_vector = [0.1] * EMBEDDING_DIM
+        client.upsert(
+            collection_name="client_domain_knowledge",
+            points=[
+                PointStruct(
+                    id=point_id,
+                    vector=build_named_vector(text_vector=original_vector),
+                    payload={
+                        "doc_id": doc_id,
+                        "text": text,
+                        "sha256": "doc-hash",
+                        "chunk_sha256": chunk_text_sha256(text),
+                        "source_type": "pdf_chunk",
+                        "chunk_index": 0,
+                        "localities": [],
+                        "cast_obce": [],
+                    },
+                )
+            ],
+            wait=True,
+        )
+        before = client.retrieve(
+            collection_name="client_domain_knowledge",
+            ids=[point_id],
+            with_payload=True,
+            with_vectors=True,
+        )
+        result = upsert_locality_links(
+            client,
+            [
+                _sample_link(
+                    doc_id=doc_id,
+                    locality_level="cast_obce",
+                    cast_obce="400637",
+                    cast_obce_name="Karlín",
+                    matched_text="Karlín",
+                )
+            ],
+        )
+        assert result["chunks_updated"] == 1
+        after = client.retrieve(
+            collection_name="client_domain_knowledge",
+            ids=[point_id],
+            with_payload=True,
+            with_vectors=True,
+        )
+        payload = after[0].payload or {}
+        assert payload["localities"] == ["554782"]
+        assert payload["cast_obce"] == ["400637"]
+        assert after[0].vector == before[0].vector
+        hits = search_similar(
+            client,
+            query_vector=original_vector,
+            limit=3,
+            query_filter=knowledge_locality_filter(obec_id="554782"),
+        )
+        assert [str(hit.id) for hit in hits] == [point_id]
+        none = search_similar(
+            client,
+            query_vector=original_vector,
+            limit=3,
+            query_filter=knowledge_locality_filter(obec_id="582786"),
+        )
+        assert none == []
+        part = search_similar(
+            client,
+            query_vector=original_vector,
+            limit=3,
+            query_filter=knowledge_locality_filter(cast_obce="400637"),
+        )
+        assert [str(hit.id) for hit in part] == [point_id]
+        count = client.count("client_domain_knowledge")
+        assert count.count == 1
     finally:
         client.close()

@@ -185,25 +185,25 @@ From `rag/mcp_tools.py`, registered in `create_app()` and served at **`/mcp`** (
 
 | Kind | Name | Present? |
 | --- | --- | --- |
-| Tool | `list_documents() -> str` | Yes |
+| Tool | `list_documents(since: str = "") -> str` | Yes |
 | Tool | `get_document_text(doc_id: str) -> str` | Yes |
 | Tool | `get_document_chunks(doc_id: str) -> str` | Yes |
 | Tool | `get_document_images(doc_id: str) -> str` | Yes |
 | Tool | `get_image(image_id: str) -> list[TextContent \| ImageContent]` | Yes |
 | Tool | `ingest_text(filename: str, content: str) -> str` | Yes |
-| Tool | `search_domain_knowledge(query: str, limit: int = 3) -> str` | Yes |
+| Tool | `search_domain_knowledge(query: str, limit: int = 3, obec_id: str = "", cast_obce: str = "") -> str` | Yes |
 | Tool | `search_images(query: str, limit: int = 5, hybrid: bool = False) -> str` | Yes |
 | Resource | — | None |
 | Prompt | — | None |
 
 Tool behavior:
 
-- `list_documents`: JSON of `storage.list_documents()`, or `"No documents stored."`
+- `list_documents`: JSON of `storage.list_documents(since=)`, or `"No documents stored."` when the catalog is empty and `since` is omitted. `since` is an ISO-8601 timestamp compared inclusively to `uploaded_at`.
 - `get_document_text` / `get_document_chunks`: disk reads of processed artifacts; missing ID returns a not-found string
 - `get_document_images`: JSON of `DocumentMeta.images` plus optional public URL from `PUBLIC_BASE_URL`
 - `get_image`: inline MCP image up to 5 MiB; larger files return a fetch hint (`PUBLIC_BASE_URL/images/...` or a relative path)
 - `ingest_text`: if the filename is not a supported suffix, appends `.txt`; calls `ingest_bytes`; returns JSON or `"Error ingesting text: ..."`
-- `search_domain_knowledge`: `get_query_embedding` (FastEmbed) → `search_similar` on `text_vector` → format `Source:` / `Content:` blocks (OCR image hits included when they have text vectors); empty → `"No relevant facts found."`; exceptions → `"Error executing RAG search: ..."`
+- `search_domain_knowledge`: `get_query_embedding` (FastEmbed) → `search_similar` on `text_vector` with optional `obec_id` / `cast_obce` payload filter on denormalized `localities` / `cast_obce` arrays → format `Source:` / `Content:` blocks (OCR image hits included when they have text vectors); empty → `"No relevant facts found."`; exceptions → `"Error executing RAG search: ..."`
 - `search_images`: requires `IMAGE_EMBEDDING_ENABLED=true`; CLIP text tower → `image_vector`; `hybrid=true` RRF-merges CLIP hits with `pdf_image` text hits
 
 No stdio MCP entrypoint (`mcp.run()` is not called). Tests post JSON-RPC `initialize` / `tools/list` to `/mcp/`.
@@ -253,15 +253,15 @@ See [Embedding connectivity](./CONNECTIVITY.md#embedding-connectivity) and [Embe
 - `QdrantClient(path=str(storage.qdrant_dir))` — embedded on-disk, not a remote Qdrant URL.
 - Default directory: `{RAG_DATA_ROOT}/qdrant` → `/data/rag/qdrant` in the image.
 - Collection name (hardcoded): `client_domain_knowledge`.
-- Named vectors: `text_vector` (1024, cosine) and `image_vector` (512, cosine). Payload indexes on `source_type` and `doc_id`.
+- Named vectors: `text_vector` (1024, cosine) and `image_vector` (512, cosine). Payload indexes on `source_type`, `doc_id`, `chunk_sha256`, `localities`, and `cast_obce`. New ingests store empty `localities` / `cast_obce` arrays and `chunk_sha256` (hash of chunk text). Existing points are backfilled with `set_payload` only (no re-embed, no delete). `link_locality` denormalizes `obec_id` / `cast_obce` onto matching knowledge points.
 - Created in `open_qdrant()` if missing. Unnamed single-vector collections, or a marker/`embedding_backend.json` whose schema/dimensions do not match, are **deleted and recreated** (vectors in it are lost; files on disk are not). Switching ingest provider (`novita` ↔ `fastembed`) at 1024-dim BGE-M3 does **not** recreate. Toggling `IMAGE_EMBEDDING_ENABLED` does not recreate.
 - In-memory mode (`:memory:`) is not used.
 
 ### Retrieval
 
-- `search_domain_knowledge`: FastEmbed query → cosine search on `text_vector` with `limit` (default 3). Hits may be PDF chunks or OCR image points. Citations use `parent_document`/`source`, `source_type`, `doc_id`, optional `page_number` / `image_id` / URL.
+- `search_domain_knowledge`: FastEmbed query → cosine search on `text_vector` with `limit` (default 3). Optional `obec_id` / `cast_obce` filters on payload arrays. Hits may be PDF chunks or OCR image points. Citations use `parent_document`/`source`, `source_type`, `doc_id`, optional `page_number` / `image_id` / URL.
 - `search_images`: CLIP query → `image_vector` (default limit 5); optional hybrid RRF with OCR text hits. Disabled unless `IMAGE_EMBEDDING_ENABLED=true`.
-- No metadata filters on the search call, no rerank, no REST search.
+- Optional locality payload filters on search; no rerank, no REST search.
 
 ### Timer / scheduling
 

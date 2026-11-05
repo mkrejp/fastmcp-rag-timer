@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Callable
 
-from rag.ingest import ingest_bytes
+from rag.ingest import ingest_bytes, stable_point_id
+from rag.payloads import chunk_text_sha256
 from rag.storage import RagStorage
 
 if TYPE_CHECKING:
@@ -31,6 +32,20 @@ def test_ingest_text_writes_originals_and_processed(
     assert rag_storage.read_fulltext(doc_id) is not None
     assert rag_storage.read_chunks(doc_id) is not None
     assert rag_storage.list_documents()
+    points = qdrant_client.retrieve(
+        collection_name="client_domain_knowledge",
+        ids=[stable_point_id(doc_id, 0)],
+        with_payload=True,
+        with_vectors=True,
+    )
+    assert len(points) == 1
+    payload = points[0].payload or {}
+    text = "The timer service stores documents under /data/rag."
+    assert payload["chunk_sha256"] == chunk_text_sha256(text)
+    assert payload["sha256"]
+    assert payload["localities"] == []
+    assert payload["cast_obce"] == []
+    assert points[0].vector is not None
 
 
 def test_ingest_skips_duplicate_sha256(

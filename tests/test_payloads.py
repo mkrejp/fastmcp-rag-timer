@@ -9,7 +9,11 @@ import pytest
 from rag.payloads import (
     LocalityLinkPayloadError,
     apply_locality_link_verification,
+    build_chunk_payload,
+    build_image_payload,
     build_locality_link_payload,
+    chunk_text_sha256,
+    knowledge_point_id_for_link,
     stable_locality_link_id,
 )
 
@@ -33,6 +37,68 @@ def _sample_link(**overrides: object) -> dict[str, object]:
     }
     payload.update(overrides)
     return payload
+
+
+def test_chunk_payload_includes_sha256_and_empty_localities() -> None:
+    """New chunk payloads should hash text and start with empty locality lists."""
+    payload = build_chunk_payload(
+        doc_id="d",
+        parent_document="f.pdf",
+        page_number=1,
+        doc_sha256="doc-hash",
+        text="hello chunk",
+        chunk_index=0,
+    )
+    assert payload["sha256"] == "doc-hash"
+    assert payload["chunk_sha256"] == chunk_text_sha256("hello chunk")
+    assert payload["chunk_sha256"] != payload["sha256"]
+    assert payload["localities"] == []
+    assert payload["cast_obce"] == []
+    with_links = build_chunk_payload(
+        doc_id="d",
+        parent_document="f.pdf",
+        page_number=1,
+        doc_sha256="doc-hash",
+        text="hello chunk",
+        chunk_index=0,
+        localities=["554782"],
+        cast_obce=["400637"],
+    )
+    assert with_links["localities"] == ["554782"]
+    assert with_links["cast_obce"] == ["400637"]
+
+
+def test_image_payload_hashes_content_summary() -> None:
+    """Image payloads should hash content_summary, not the document hash."""
+    payload = build_image_payload(
+        doc_id="d",
+        parent_document="f.pdf",
+        page_number=1,
+        file_path="processed/d/images/ab.png",
+        image_id="abcd1234abcd1234",
+        image_sha256="image-hash",
+        content_summary="OCR text",
+    )
+    assert payload["sha256"] == "image-hash"
+    assert payload["chunk_sha256"] == chunk_text_sha256("OCR text")
+    assert payload["localities"] == []
+    assert payload["cast_obce"] == []
+
+
+def test_knowledge_point_id_for_link_matches_ingest_formula() -> None:
+    """Link denormalization should reuse ingest's uuid5(doc_id:chunk_index)."""
+    expected = str(uuid.uuid5(uuid.NAMESPACE_URL, "doc-1:0"))
+    assert (
+        knowledge_point_id_for_link({"doc_id": "doc-1", "chunk_index": 0})
+        == expected
+    )
+    assert (
+        knowledge_point_id_for_link(
+            {"doc_id": "doc-1", "chunk_index": 0, "point_id": "explicit-id"}
+        )
+        == "explicit-id"
+    )
+    assert knowledge_point_id_for_link({"doc_id": "doc-1"}) is None
 
 
 def test_stable_locality_link_id_is_uuid5_and_stable() -> None:

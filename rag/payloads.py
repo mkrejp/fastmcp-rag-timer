@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 LOCALITY_LINK_TYPE_DEFAULT = "mentions_locality"
 LOCALITY_SOURCE_DATASET_DEFAULT = "rag-timer"
@@ -29,6 +30,32 @@ class LocalityLinkNotFoundError(LocalityLinkPayloadError):
 def _utc_now_iso() -> str:
     """Return the current UTC timestamp in ISO-8601 form (seconds)."""
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def chunk_text_sha256(text: str) -> str:
+    """Return SHA-256 of UTF-8 chunk text (distinct from the source document hash)."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def knowledge_point_id_for_link(payload: Mapping[str, Any]) -> str | None:
+    """Return the knowledge-collection point UUID matching a locality link.
+
+    Prefer an explicit ``point_id`` on the link. Otherwise reconstruct the
+    ingest-time text-chunk UUID from ``doc_id`` + ``chunk_index``. Image
+    points use a different formula and are not reconstructed here.
+    """
+    explicit = payload.get("point_id")
+    if explicit is not None and str(explicit).strip():
+        return str(explicit).strip()
+    doc_id = payload.get("doc_id")
+    chunk_index = payload.get("chunk_index")
+    if not doc_id or chunk_index is None:
+        return None
+    try:
+        index = int(chunk_index)
+    except (TypeError, ValueError):
+        return None
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"{str(doc_id)}:{index}"))
 
 
 def stable_locality_link_id(
@@ -368,18 +395,28 @@ def build_chunk_payload(
     text: str,
     chunk_index: int,
     source_url: str | None = None,
+    localities: Sequence[str] | None = None,
+    cast_obce: Sequence[str] | None = None,
 ) -> dict[str, Any]:
-    """Build the payload for a ``pdf_chunk`` (or non-PDF text chunk) point."""
+    """Build the payload for a ``pdf_chunk`` (or non-PDF text chunk) point.
+
+    ``sha256`` is the source-document hash. ``chunk_sha256`` hashes this
+    chunk's UTF-8 text. ``localities`` / ``cast_obce`` are denormalized
+    obec_id / cast_obce kod lists (empty until ``link_locality``).
+    """
     payload: dict[str, Any] = {
         "source_type": "pdf_chunk",
         "doc_id": doc_id,
         "parent_document": parent_document,
         "page_number": page_number,
         "sha256": doc_sha256,
+        "chunk_sha256": chunk_text_sha256(text),
         "content_summary": text,
         "text": text,
         "chunk_index": chunk_index,
         "source": parent_document,
+        "localities": list(localities) if localities else [],
+        "cast_obce": list(cast_obce) if cast_obce else [],
     }
     if source_url:
         payload["source_url"] = source_url
@@ -395,8 +432,14 @@ def build_image_payload(
     image_id: str,
     image_sha256: str,
     content_summary: str,
+    localities: Sequence[str] | None = None,
+    cast_obce: Sequence[str] | None = None,
 ) -> dict[str, Any]:
-    """Build the payload for a ``pdf_image`` point (OCR text embedded as vector)."""
+    """Build the payload for a ``pdf_image`` point (OCR text embedded as vector).
+
+    ``chunk_sha256`` hashes ``content_summary`` (the text used for the
+    image vector). Locality lists stay empty until ``link_locality``.
+    """
     return {
         "source_type": "pdf_image",
         "doc_id": doc_id,
@@ -405,7 +448,10 @@ def build_image_payload(
         "file_path": file_path,
         "image_id": image_id,
         "sha256": image_sha256,
+        "chunk_sha256": chunk_text_sha256(content_summary),
         "content_summary": content_summary,
         "text": content_summary,
         "source": parent_document,
+        "localities": list(localities) if localities else [],
+        "cast_obce": list(cast_obce) if cast_obce else [],
     }

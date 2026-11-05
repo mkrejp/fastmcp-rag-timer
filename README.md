@@ -172,13 +172,13 @@ curl -sS -X DELETE \
 
 Streamable HTTP MCP is mounted at **`/mcp`** (`stateless_http=True`, `streamable_http_path="/"` so the endpoint is `/mcp`, not `/mcp/mcp`). The mount is wrapped with bearer auth and an ASGI helper that finishes SSE responses on process shutdown. Tools:
 
-- `list_documents`
+- `list_documents` (optional `since=` ISO timestamp vs `uploaded_at`)
 - `get_document_text`
 - `get_document_chunks`
 - `get_document_images`
 - `get_image` (inline image up to 5 MiB, otherwise a URL hint)
 - `ingest_text`
-- `search_domain_knowledge` (text `text_vector` only; includes image metadata on OCR hits)
+- `search_domain_knowledge` (text `text_vector` only; optional `obec_id` / `cast_obce` payload filter; includes image metadata on OCR hits)
 - `search_images` (CLIP `image_vector`; optional `hybrid=true` merges with text OCR hits via RRF)
 - `link_locality` (upsert document-municipality links into payload-only `locality_links`; no embeddings)
 - `list_links` (filter `doc_id` / `obec_id` / `status` / `ambiguous` / `locality_level` / `cast_obce`, paginate with `limit` / `offset`)

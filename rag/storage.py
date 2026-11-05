@@ -23,6 +23,25 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def parse_iso_timestamp(value: str) -> datetime:
+    """Parse an ISO-8601 timestamp; naive values are treated as UTC.
+
+    Accepts a trailing ``Z``. Date-only values become midnight UTC.
+    """
+    text = value.strip()
+    if not text:
+        raise ValueError("timestamp is empty")
+    if text.endswith("Z") or text.endswith("z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError as exc:
+        raise ValueError(f"invalid ISO timestamp: {value}") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
 @dataclass
 class ImageMeta:
     """Metadata for one extracted PDF image on disk."""
@@ -258,14 +277,34 @@ class RagStorage:
                     return meta
         return None
 
-    def list_documents(self) -> list[dict[str, Any]]:
-        """Return the document catalog from ``index.json``."""
+    def list_documents(self, since: str | None = None) -> list[dict[str, Any]]:
+        """Return the document catalog from ``index.json``.
+
+        ``since`` is an optional ISO-8601 timestamp. When set, only entries
+        whose ``uploaded_at`` is greater than or equal to ``since`` are
+        returned. Naive timestamps are treated as UTC.
+        """
         if not self.index_path.exists():
             return []
         data = json.loads(self.index_path.read_text(encoding="utf-8"))
         if not isinstance(data, list):
             return []
-        return data
+        cutoff_raw = str(since).strip() if since is not None else ""
+        if not cutoff_raw:
+            return data
+        cutoff = parse_iso_timestamp(cutoff_raw)
+        filtered: list[dict[str, Any]] = []
+        for entry in data:
+            uploaded = str(entry.get("uploaded_at") or "")
+            if not uploaded:
+                continue
+            try:
+                uploaded_at = parse_iso_timestamp(uploaded)
+            except ValueError:
+                continue
+            if uploaded_at >= cutoff:
+                filtered.append(entry)
+        return filtered
 
     def upsert_index_entry(self, meta: DocumentMeta) -> None:
         """Insert or replace a catalog entry for ``meta``."""

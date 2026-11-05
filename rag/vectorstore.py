@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from collections import Counter
+from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence
 
 from qdrant_client import QdrantClient
@@ -41,6 +41,8 @@ from rag.payloads import (
     LocalityLinkPayloadError,
     apply_locality_link_verification,
     build_locality_link_payload,
+    chunk_text_sha256,
+    knowledge_point_id_for_link,
 )
 
 BACKEND_MARKER_NAME = "embedding_backend.json"
@@ -196,7 +198,13 @@ def ensure_payload_indexes(
     """Create keyword indexes used by filters and admin tooling."""
     if not client.collection_exists(collection_name):
         return
-    for field_name in ("source_type", "doc_id"):
+    for field_name in (
+        "source_type",
+        "doc_id",
+        "chunk_sha256",
+        "localities",
+        "cast_obce",
+    ):
         try:
             client.create_payload_index(
                 collection_name=collection_name,
@@ -248,6 +256,162 @@ def _ensure_locality_link_indexes(client: QdrantClient) -> None:
                 LOCALITY_LINKS_COLLECTION,
                 exc,
             )
+
+
+def _as_keyword_list(value: object) -> list[str]:
+    """Normalize a payload value into a de-duplicated list of strings."""
+    items: list[str] = []
+    if isinstance(value, list):
+        raw_items: Sequence[object] = value
+    elif value in (None, ""):
+        raw_items = []
+    else:
+        raw_items = [value]
+    for item in raw_items:
+        text = str(item).strip()
+        if text and text not in items:
+            items.append(text)
+    return items
+
+
+def _merge_keyword_list(existing: object, value: str) -> list[str]:
+    """Append ``value`` to ``existing`` without duplicates."""
+    merged = _as_keyword_list(existing)
+    text = value.strip()
+    if text and text not in merged:
+        merged.append(text)
+    return merged
+
+
+def backfill_chunk_payload_fields(
+    client: QdrantClient,
+    *,
+    collection_name: str = COLLECTION_NAME,
+) -> dict[str, int]:
+    """Fill missing ``chunk_sha256`` / ``localities`` / ``cast_obce`` via set_payload.
+
+    Does not upsert vectors, re-embed, or delete points. Existing non-empty
+    locality lists and hashes are left unchanged.
+    """
+    if not client.collection_exists(collection_name):
+        return {"scanned": 0, "updated": 0}
+    scanned = 0
+    updated = 0
+    next_offset: Any = None
+    while True:
+        batch, next_offset = client.scroll(
+            collection_name=collection_name,
+            limit=64,
+            offset=next_offset,
+            with_payload=True,
+            with_vectors=False,
+        )
+        if not batch:
+            break
+        for point in batch:
+            scanned += 1
+            payload = point.payload or {}
+            patch: dict[str, Any] = {}
+            if "localities" not in payload or payload.get("localities") is None:
+                patch["localities"] = []
+            if "cast_obce" not in payload or payload.get("cast_obce") is None:
+                patch["cast_obce"] = []
+            if not payload.get("chunk_sha256"):
+                text = payload.get("text") or payload.get("content_summary") or ""
+                if text:
+                    patch["chunk_sha256"] = chunk_text_sha256(str(text))
+            if not patch:
+                continue
+            client.set_payload(
+                collection_name=collection_name,
+                payload=patch,
+                points=[point.id],
+                wait=True,
+            )
+            updated += 1
+        if next_offset is None:
+            break
+    if updated:
+        logger.info(
+            "Backfilled chunk payload fields on %s: scanned=%s updated=%s",
+            collection_name,
+            scanned,
+            updated,
+        )
+    return {"scanned": scanned, "updated": updated}
+
+
+def denormalize_knowledge_localities(
+    client: QdrantClient,
+    payloads: Sequence[Mapping[str, Any]],
+    *,
+    collection_name: str = COLLECTION_NAME,
+) -> int:
+    """Merge obec_id / cast_obce onto matching knowledge points via set_payload.
+
+    Missing knowledge points are skipped. Vectors are never rewritten.
+    """
+    if not payloads or not client.collection_exists(collection_name):
+        return 0
+    updated = 0
+    for payload in payloads:
+        point_id = knowledge_point_id_for_link(payload)
+        if not point_id:
+            continue
+        found = client.retrieve(
+            collection_name=collection_name,
+            ids=[point_id],
+            with_payload=True,
+            with_vectors=False,
+        )
+        if not found:
+            continue
+        existing = dict(found[0].payload or {})
+        obec_id = str(payload.get("obec_id") or "").strip()
+        if not obec_id:
+            continue
+        patch: dict[str, Any] = {
+            "localities": _merge_keyword_list(existing.get("localities"), obec_id),
+        }
+        kod = str(
+            payload.get("cast_obce_kod") or payload.get("cast_obce") or ""
+        ).strip()
+        if kod:
+            patch["cast_obce"] = _merge_keyword_list(existing.get("cast_obce"), kod)
+        elif "cast_obce" not in existing or existing.get("cast_obce") is None:
+            patch["cast_obce"] = _as_keyword_list(existing.get("cast_obce"))
+        if not existing.get("chunk_sha256"):
+            text = existing.get("text") or existing.get("content_summary") or ""
+            if text:
+                patch["chunk_sha256"] = chunk_text_sha256(str(text))
+        client.set_payload(
+            collection_name=collection_name,
+            payload=patch,
+            points=[found[0].id],
+            wait=True,
+        )
+        updated += 1
+    return updated
+
+
+def knowledge_locality_filter(
+    *,
+    obec_id: str | None = None,
+    cast_obce: str | None = None,
+) -> Filter | None:
+    """Build a payload filter for ``search_domain_knowledge`` locality args."""
+    must: list[FieldCondition] = []
+    if obec_id:
+        must.append(
+            FieldCondition(key="localities", match=MatchValue(value=obec_id))
+        )
+    if cast_obce:
+        must.append(
+            FieldCondition(key="cast_obce", match=MatchValue(value=cast_obce))
+        )
+    if not must:
+        return None
+    return Filter(must=must)
 
 
 def _locality_point_vector(
@@ -362,6 +526,7 @@ def upsert_locality_links(
     }
     points: list[PointStruct] = []
     ids: list[str] = []
+    built_payloads: list[dict[str, Any]] = []
     inserted = 0
     updated = 0
     vector = _locality_point_vector(client)
@@ -374,17 +539,20 @@ def upsert_locality_links(
             inserted += 1
         points.append(PointStruct(id=link_id, vector=vector, payload=payload))
         ids.append(link_id)
+        built_payloads.append(payload)
     client.upsert(
         collection_name=LOCALITY_LINKS_COLLECTION,
         points=points,
         wait=True,
     )
+    chunks_updated = denormalize_knowledge_localities(client, built_payloads)
     return {
         "status": "ok",
         "inserted": inserted,
         "updated": updated,
         "upserted": len(ids),
         "ids": ids,
+        "chunks_updated": chunks_updated,
     }
 
 
@@ -596,7 +764,8 @@ def open_qdrant(
 
     Collections with a single unnamed vector are recreated. Re-ingest after recreate.
     Also ensures the payload-only ``locality_links`` collection exists (never
-    deletes it).
+    deletes it). Existing knowledge points missing ``chunk_sha256`` /
+    ``localities`` / ``cast_obce`` are updated with ``set_payload`` only.
     """
     marker_path = backend_marker_path(qdrant_dir)
     marker = _read_backend_marker(marker_path)
@@ -647,6 +816,7 @@ def open_qdrant(
         )
     _write_backend_marker(marker_path, expected_marker)
     ensure_payload_indexes(client, collection_name=collection_name)
+    backfill_chunk_payload_fields(client, collection_name=collection_name)
     ensure_locality_links_collection(client)
     return client
 
@@ -658,6 +828,7 @@ def search_similar(
     limit: int = 3,
     collection_name: str = COLLECTION_NAME,
     vector_name: str = TEXT_VECTOR_NAME,
+    query_filter: Filter | None = None,
 ) -> list[ScoredPoint]:
     """Return nearest points for ``query_vector`` on ``vector_name``."""
     response = client.query_points(
@@ -666,6 +837,7 @@ def search_similar(
         using=vector_name,
         limit=limit,
         with_payload=True,
+        query_filter=query_filter,
     )
     return list(response.points)
 
