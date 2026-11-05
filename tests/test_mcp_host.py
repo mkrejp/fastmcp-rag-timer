@@ -68,6 +68,11 @@ def test_upload_requires_bearer(client):
     assert client.post("/upload", files=files).status_code == 401
 
 
+def test_delete_document_requires_bearer(client):
+    """DELETE /documents/{doc_id} should reject missing bearer tokens."""
+    assert client.delete("/documents/not-a-real-doc").status_code == 401
+
+
 def test_fail_closed_without_token(client, monkeypatch):
     monkeypatch.delenv("MCP_API_TOKEN", raising=False)
     monkeypatch.delenv("RAG_API_TOKEN", raising=False)
@@ -78,3 +83,4 @@ def test_fail_closed_without_token(client, monkeypatch):
         ).status_code
         == 503
     )
+    assert client.delete("/documents/not-a-real-doc").status_code == 503

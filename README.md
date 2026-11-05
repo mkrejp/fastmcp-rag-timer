@@ -61,7 +61,7 @@ During PDF ingest, embedded images are extracted with PyMuPDF, deduplicated by S
 
 **Re-ingest:** Named vectors require collection recreate on first deploy of phase C; re-upload/re-index all PDFs. Toggle CLIP without schema change does not recreate; new uploads need re-ingest to backfill `image_vector`.
 
-**Delete:** Removing a document (via `delete_document` helper used in tests/admin flows) deletes its `images/` directory and all Qdrant points with matching `doc_id` (chunks and images).
+**Delete:** `DELETE /documents/{doc_id}` (and the `delete_document` helper used in tests) removes originals, processed files including `images/`, the catalog row, and all Qdrant points with matching `doc_id` (chunks and images).
 
 ## HTTP API
 
@@ -72,10 +72,13 @@ During PDF ingest, embedded images are extracted with PyMuPDF, deduplicated by S
 - `GET /documents` — catalog
 - `GET /documents/{doc_id}` — metadata
 - `GET /documents/{doc_id}/text` — processed full text (no re-parse)
+- `DELETE /documents/{doc_id}` — remove originals, processed files (including `images/`), catalog row, and Qdrant points
 - `GET /images/{doc_id}/{image_id}` — extracted PDF image bytes (same auth as `POST /upload`)
 - `GET /health` — liveness (+ ingest/query embedding providers, `IMAGE_EMBEDDING_ENABLED`)
 
-Listen address is `0.0.0.0:8080` (not configurable via `PORT`). Most routes have no inbound auth; `POST /ingest-json` requires `Authorization: Bearer $RAG_API_TOKEN`. `GET /images/...` uses the same bearer or Google session as upload routes.
+Listen address is `0.0.0.0:8080` (not configurable via `PORT`). Most routes have no inbound auth.
+`POST /ingest-json` requires `Authorization: Bearer $RAG_API_TOKEN`.
+`POST /upload`, `POST /upload-pdf`, `GET /images/...`, and `DELETE /documents/{doc_id}` require a bearer token (`MCP_API_TOKEN`, else `RAG_API_TOKEN`) or a signed-in Google session.
 
 ### Remote GeoJSON (`POST /ingest-json`)
 
@@ -91,6 +94,21 @@ curl -sS -X POST http://127.0.0.1:8080/ingest-json \
 ```
 
 `obce.json` is large (~95 MiB); ingest embeds attribute chunks and may take several minutes.
+
+### Delete a document (`DELETE /documents/{doc_id}`)
+
+Removes the original file, processed artifacts (including `images/`), catalog entry, and Qdrant vectors (chunks and image points) for one `doc_id`. Auth matches `POST /upload`: `Authorization: Bearer $MCP_API_TOKEN` (or `$RAG_API_TOKEN` if MCP token is unset), or a signed-in Google session.
+
+Success: `{"status":"deleted","doc_id":"...","filename":"...","chunks_removed":N}`.
+Unknown id: `404` `{"detail":"Document not found"}`. Missing/invalid token: `401`.
+
+```bash
+export RAG_API_TOKEN=your-api-token
+
+curl -sS -X DELETE \
+  -H "Authorization: Bearer $RAG_API_TOKEN" \
+  http://127.0.0.1:8080/documents/{doc_id}
+```
 
 ## MCP (AI clients)
 
@@ -127,7 +145,7 @@ rag/
   pdf_images.py         # PyMuPDF embedded image extraction
   ocr.py                # local Tesseract OCR for extracted images
   payloads.py           # Qdrant payload builders
-  document_delete.py    # delete doc files + Qdrant points
+  document_delete.py    # remove one document from disk + Qdrant
   geojson.py            # generic GeoJSON → RAG text
   remote.py             # fetch remote JSON (GitHub blob → raw)
   auth.py               # inbound bearer token for /ingest-json
@@ -165,8 +183,8 @@ Endpoint: `https://rag-timer-00001-production.up.railway.app/mcp/` (Streamable H
 
 Auth: the **whole `/mcp` endpoint** requires `Authorization: Bearer <token>`.
 The token comes from `MCP_API_TOKEN`; if that is unset, `RAG_API_TOKEN` is used.
-If neither is set, `/mcp` and the embedding REST routes `/upload` and `/upload-pdf` fail closed with 503 and log a warning.
-`/upload` and `/upload-pdf` also accept a signed-in Google session, which the console uses.
+If neither is set, `/mcp` and the embedding REST routes `/upload`, `/upload-pdf`, `GET /images/...`, and `DELETE /documents/{doc_id}` fail closed with 503 and log a warning.
+`/upload`, `/upload-pdf`, `GET /images/...`, and `DELETE /documents/{doc_id}` also accept a signed-in Google session, which the console uses.
 `/ingest-json` still requires `RAG_API_TOKEN`. Tokens are compared in constant time.
 
 Host allow-list (MCP DNS-rebinding protection): `MCP_ALLOWED_HOSTS` takes a comma-separated list. The default is `rag-timer-00001-production.up.railway.app` plus localhost/127.0.0.1. Set `MCP_DISABLE_DNS_REBINDING_PROTECTION=1` to accept any Host. The server honors `PORT` (default 8080) and trusts `X-Forwarded-*` headers.

@@ -1,4 +1,4 @@
-"""HTTP routes for document ingest and retrieval."""
+"""HTTP routes for document ingest, retrieval, and deletion."""
 
 from __future__ import annotations
 
@@ -13,6 +13,9 @@ from qdrant_client import QdrantClient
 from rag.accounting import accounting_source, get_global_store
 from rag.auth import require_api_token, require_embed_access
 from rag.config import COLLECTION_NAME
+from rag.document_delete import DocumentNotFoundError, delete_document
+from rag.embeddings import embedding_provider_status, validate_embedding_configuration
+from rag.image_embed import image_embedding_enabled
 from rag.ingest import ingest_bytes, meta_to_public
 from rag.logging_setup import get_logger
 from rag.processing import is_supported_filename
@@ -23,8 +26,6 @@ from rag.remote import (
     fetch_remote_bytes,
     filename_from_url,
 )
-from rag.embeddings import embedding_provider_status, validate_embedding_configuration
-from rag.image_embed import image_embedding_enabled
 from rag.storage import RagStorage
 
 MAX_IMAGE_HTTP_BYTES = 50 * 1024 * 1024
@@ -37,6 +38,18 @@ class IngestJsonRequest(BaseModel):
     """Body for remote JSON/GeoJSON ingest."""
 
     url: str = Field(..., min_length=8, max_length=2048)
+
+
+class DeleteDocumentResponse(BaseModel):
+    """Success body for ``DELETE /documents/{doc_id}``."""
+
+    status: str = Field(..., description="Always ``deleted`` on success.")
+    doc_id: str
+    filename: str
+    chunks_removed: int = Field(
+        ...,
+        description="Number of Qdrant points removed for this document.",
+    )
 
 
 def _storage(request: Request) -> RagStorage:
@@ -290,3 +303,31 @@ def get_document_text_http(doc_id: str, request: Request) -> dict[str, Any]:
         "filename": meta.filename if meta else None,
         "text": text,
     }
+
+
+@router.delete(
+    "/documents/{doc_id}",
+    response_model=DeleteDocumentResponse,
+    dependencies=[Depends(require_embed_access)],
+)
+def delete_document_http(doc_id: str, request: Request) -> dict[str, Any]:
+    """Remove a document from the catalog, disk, and Qdrant index.
+
+    Requires ``Authorization: Bearer`` matching ``MCP_API_TOKEN`` or
+    ``RAG_API_TOKEN``, or a signed-in Google session (same as ``POST /upload``).
+    """
+    try:
+        result = delete_document(
+            storage=_storage(request),
+            qdrant=_qdrant(request),
+            collection_name=COLLECTION_NAME,
+            doc_id=doc_id,
+        )
+    except DocumentNotFoundError:
+        _record_http(route="documents_delete", ok=False, error="not found")
+        raise HTTPException(status_code=404, detail="Document not found") from None
+    except Exception as exc:  # noqa: BLE001 - surface delete failures to clients
+        _record_http(route="documents_delete", ok=False, error=str(exc))
+        raise HTTPException(status_code=500, detail=f"Delete failed: {exc}") from exc
+    _record_http(route="documents_delete", ok=True)
+    return result

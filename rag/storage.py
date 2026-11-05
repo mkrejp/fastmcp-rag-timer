@@ -87,9 +87,7 @@ class DocumentMeta:
         """Deserialize metadata from a dictionary."""
         raw_images = data.get("images") or []
         images = [
-            ImageMeta.from_dict(item)
-            for item in raw_images
-            if isinstance(item, dict)
+            ImageMeta.from_dict(item) for item in raw_images if isinstance(item, dict)
         ]
         return cls(
             doc_id=str(data["doc_id"]),
@@ -309,7 +307,18 @@ class RagStorage:
         self.validate_image_id(image_id)
         ext = extension if extension.startswith(".") else f".{extension}"
         safe_ext = Path(ext).suffix.lower()
-        if safe_ext not in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff", ".jpx", ".jb2"}:
+        if safe_ext not in {
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".gif",
+            ".webp",
+            ".bmp",
+            ".tif",
+            ".tiff",
+            ".jpx",
+            ".jb2",
+        }:
             safe_ext = ".png"
         dest_dir = self.images_dir(doc_id)
         dest_dir.mkdir(parents=True, exist_ok=True)
@@ -344,7 +353,10 @@ class RagStorage:
         return self.resolve_under_root(image_meta.file_path)
 
     def remove_document_files(self, doc_id: str) -> None:
-        """Delete original and processed files for ``doc_id`` (includes ``images/``)."""
+        """Delete original and processed files for ``doc_id`` and drop the catalog row.
+
+        Processed cleanup includes the extracted ``images/`` directory.
+        """
         for path in (self.original_dir(doc_id), self.processed_doc_dir(doc_id)):
             if path.exists():
                 shutil.rmtree(path)
