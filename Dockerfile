@@ -7,6 +7,7 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 WORKDIR /app
 
 # Install basic system curl requirements for healthchecks
+# hadolint ignore=DL3008 -- apt package versions float with the slim base image
 RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
 
 # Pin mcp to 1.x — FastMCP lives there; mcp 2.x renames it to MCPServer
@@ -15,7 +16,7 @@ RUN uv pip install --system \
     uvicorn \
     "mcp[cli]<2" \
     pypdf \
-    qdrant-client \
+    "qdrant-client>=1.12,<2" \
     requests \
     python-multipart \
     itsdangerous
