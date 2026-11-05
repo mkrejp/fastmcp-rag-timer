@@ -86,6 +86,21 @@ def test_delete_document_missing_id_raises(
     qdrant_client: QdrantClient,
 ) -> None:
     """A missing catalog id should raise ``DocumentNotFoundError``."""
+    missing = "00000000-0000-0000-0000-000000000000"
+    with pytest.raises(DocumentNotFoundError, match=missing):
+        delete_document(
+            storage=rag_storage,
+            qdrant=qdrant_client,
+            collection_name=COLLECTION,
+            doc_id=missing,
+        )
+
+
+def test_delete_document_invalid_id_raises(
+    rag_storage: RagStorage,
+    qdrant_client: QdrantClient,
+) -> None:
+    """A non-UUID id should raise ``DocumentNotFoundError`` (no path traversal)."""
     with pytest.raises(DocumentNotFoundError, match="missing-doc"):
         delete_document(
             storage=rag_storage,

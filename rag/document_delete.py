@@ -1,11 +1,11 @@
-"""Remove a document from persistent storage and the vector index."""
+"""Remove a document from disk and from the Qdrant index."""
 
 from __future__ import annotations
 
 from typing import Any
 
 from qdrant_client import QdrantClient
-from qdrant_client.models import FieldCondition, Filter, MatchValue
+from qdrant_client.models import FieldCondition, Filter, FilterSelector, MatchValue
 
 from rag.logging_setup import get_logger
 from rag.storage import RagStorage
@@ -34,6 +34,34 @@ def _doc_id_filter(doc_id: str) -> Filter:
     )
 
 
+def delete_qdrant_points_for_doc(
+    qdrant: QdrantClient,
+    *,
+    collection_name: str,
+    doc_id: str,
+) -> int:
+    """Delete all vector points whose payload ``doc_id`` matches.
+
+    Returns the number of points removed (text chunks and image points).
+    """
+    if not qdrant.collection_exists(collection_name):
+        return 0
+    selector = _doc_id_filter(doc_id)
+    removed = int(
+        qdrant.count(
+            collection_name=collection_name,
+            count_filter=selector,
+            exact=True,
+        ).count
+    )
+    qdrant.delete(
+        collection_name=collection_name,
+        points_selector=FilterSelector(filter=selector),
+        wait=True,
+    )
+    return removed
+
+
 def delete_document(
     *,
     storage: RagStorage,
@@ -44,29 +72,21 @@ def delete_document(
     """Delete one document's Qdrant points and on-disk artifacts.
 
     Vectors are removed first so a retry can still find catalog metadata if
-    filesystem cleanup fails. Missing documents raise
+    filesystem cleanup fails. Missing or invalid ids raise
     ``DocumentNotFoundError``.
     """
+    try:
+        storage.validate_doc_id(doc_id)
+    except ValueError as exc:
+        raise DocumentNotFoundError(doc_id) from exc
+
     meta = storage.read_meta(doc_id)
     if meta is None:
         raise DocumentNotFoundError(doc_id)
 
-    chunks_removed = 0
-    if qdrant.collection_exists(collection_name):
-        selector = _doc_id_filter(doc_id)
-        chunks_removed = int(
-            qdrant.count(
-                collection_name=collection_name,
-                count_filter=selector,
-                exact=True,
-            ).count
-        )
-        qdrant.delete(
-            collection_name=collection_name,
-            points_selector=selector,
-            wait=True,
-        )
-
+    chunks_removed = delete_qdrant_points_for_doc(
+        qdrant, collection_name=collection_name, doc_id=doc_id
+    )
     storage.remove_document_files(doc_id)
     logger.info(
         "Deleted document doc_id=%s filename=%s chunks_removed=%s",

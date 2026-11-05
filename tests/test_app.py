@@ -140,10 +140,13 @@ def test_delete_document_removes_catalog_and_text(client: TestClient) -> None:
 
 
 def test_delete_missing_document_returns_404(client: TestClient) -> None:
-    """DELETE of an unknown doc_id should return 404 without deleting others."""
-    response = client.delete("/documents/missing-doc-id")
-    assert response.status_code == 404
-    assert response.json()["detail"] == "Document not found"
+    """DELETE of an unknown or invalid doc_id should return 404."""
+    missing = client.delete("/documents/00000000-0000-0000-0000-000000000000")
+    assert missing.status_code == 404
+    assert missing.json()["detail"] == "Document not found"
+    invalid = client.delete("/documents/missing-doc-id")
+    assert invalid.status_code == 404
+    assert invalid.json()["detail"] == "Document not found"
 
 
 def test_delete_document_requires_bearer(

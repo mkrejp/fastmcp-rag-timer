@@ -94,6 +94,8 @@ sequenceDiagram
     API-->>Client: 200 or 404
   else DELETE /documents/{doc_id}
     API-->>Client: 401/503 without token, else 200 or 404
+  else GET /images/{doc_id}/{image_id}
+    API-->>Client: 401/503 without token, else 200 or 404
   else /mcp Streamable HTTP
     API-->>Client: MCP session / tool result
   else other path
@@ -152,7 +154,7 @@ No second container is required for the vector store.
 | Interface | Transport | Port | Auth in repository |
 | --- | --- | --- | --- |
 | FastAPI REST (most routes) | HTTP/1.1 via uvicorn | **8080/tcp** | **None** |
-| `POST /upload`, `POST /upload-pdf`, `DELETE /documents/{doc_id}` | HTTP/1.1 via uvicorn | 8080 | Bearer `MCP_API_TOKEN`/`RAG_API_TOKEN` or Google session |
+| `POST /upload`, `POST /upload-pdf`, `GET /images/...`, `DELETE /documents/{doc_id}` | HTTP/1.1 via uvicorn | 8080 | Bearer `MCP_API_TOKEN`/`RAG_API_TOKEN` or Google session |
 | `POST /ingest-json` | HTTP/1.1 via uvicorn | 8080 | Bearer `RAG_API_TOKEN` |
 | FastAPI OpenAPI UI | HTTP GET | 8080 | **None** |
 | MCP Streamable HTTP | HTTP on `/mcp` | 8080 | **None** |
@@ -162,7 +164,7 @@ No second container is required for the vector store.
 | FastEmbed model download | HTTPS | 443 | none (Hugging Face Hub, first local embed only) |
 | Remote JSON fetch | HTTPS/HTTP | 443/80 | None (public URLs only) |
 
-Auth points that exist: outbound embedding Bearer header; inbound Bearer on `/ingest-json`; inbound Bearer or Google session on `/upload`, `/upload-pdf`, and `DELETE /documents/{doc_id}`.
+Auth points that exist: outbound embedding Bearer header; inbound Bearer on `/ingest-json`; inbound Bearer or Google session on `/upload`, `/upload-pdf`, `GET /images/...`, and `DELETE /documents/{doc_id}`.
 
 Auth points that do not exist: JWT, mTLS, MCP OAuth, auth on other REST/MCP routes, network policies in the repository.
 

@@ -26,7 +26,14 @@ from rag.config import (
     resolve_rag_data_root,
     resolve_session_secret,
 )
-from rag.embeddings import embedding_dim, embedding_model, resolve_embedding_provider
+from rag.embeddings import (
+    embedding_dim,
+    embedding_model,
+    embedding_provider_status,
+    resolve_embedding_provider,
+    validate_embedding_configuration,
+)
+from rag.image_embed import image_embedding_enabled
 from rag.google_oauth import current_user
 from rag.google_oauth import router as auth_router
 from rag.logging_setup import configure_logging, get_logger
@@ -40,8 +47,11 @@ MCP_TOOL_DOCS = {
     "list_documents": "List documents stored in the persistent RAG catalog.",
     "get_document_text": "Return processed full text for a document id.",
     "get_document_chunks": "Return processed chunks JSON for a document id.",
+    "get_document_images": "List extracted PDF images and metadata for a document.",
+    "get_image": "Fetch one extracted image (inline or URL when large).",
     "ingest_text": "Ingest plain-text or markdown via MCP.",
     "search_domain_knowledge": "Query local RAG vector storage for contextual facts.",
+    "search_images": "Search PDF images by CLIP visual similarity (optional hybrid).",
 }
 
 
@@ -53,6 +63,7 @@ def create_app(
     """Build the FastAPI application with MCP mounted at ``/mcp``."""
     configure_logging()
     logger = get_logger("rag.app")
+    validate_embedding_configuration()
     root = resolve_rag_data_root(rag_data_root)
     storage = RagStorage(root)
     storage.ensure_layout()
@@ -61,15 +72,23 @@ def create_app(
     accounting.ensure_layout()
     set_global_store(accounting)
     qdrant = open_qdrant(storage.qdrant_dir, collection_name=COLLECTION_NAME)
+    providers = embedding_provider_status()
     logger.info(
-        "Opened RAG data root=%s accnt_root=%s collection=%s provider=%s model=%s dim=%s",
+        "Opened RAG data root=%s accnt_root=%s collection=%s ingest=%s query=%s dim=%s "
+        "image_embedding=%s",
         root,
         accnt_root,
         COLLECTION_NAME,
-        resolve_embedding_provider(),
-        embedding_model(),
+        providers.get("ingest_provider"),
+        providers.get("query_provider"),
         embedding_dim(),
+        image_embedding_enabled(),
     )
+    if image_embedding_enabled():
+        logger.warning(
+            "IMAGE_EMBEDDING_ENABLED loads CLIP beside BGE-M3 fastembed; on 8GB hosts "
+            "consider extra RAM or disable visual search."
+        )
 
     mcp = FastMCP(
         "Client RAG Node",
@@ -89,7 +108,7 @@ def create_app(
         collection_name=COLLECTION_NAME,
     )
     mcp_app = mcp.streamable_http_app()
-    mcp_tool_names = list(MCP_TOOL_DOCS.keys())
+    mcp_tool_names = sorted(MCP_TOOL_DOCS.keys())
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:

@@ -4,16 +4,60 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+_IMAGE_ID_RE = re.compile(r"^[a-f0-9]{16}$")
+_DOC_ID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
 
 
 def utc_now_iso() -> str:
     """Return the current UTC timestamp in ISO-8601 format."""
     return datetime.now(timezone.utc).isoformat()
+
+
+@dataclass
+class ImageMeta:
+    """Metadata for one extracted PDF image on disk."""
+
+    image_id: str
+    sha256: str
+    file_path: str
+    page_number: int
+    width: int
+    height: int
+    mime: str
+    ocr_text: str | None = None
+    ocr_confidence: float | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize image metadata to a plain dictionary."""
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ImageMeta:
+        """Deserialize image metadata from a dictionary."""
+        ocr_conf = data.get("ocr_confidence")
+        return cls(
+            image_id=str(data["image_id"]),
+            sha256=str(data["sha256"]),
+            file_path=str(data["file_path"]),
+            page_number=int(data["page_number"]),
+            width=int(data["width"]),
+            height=int(data["height"]),
+            mime=str(data["mime"]),
+            ocr_text=(
+                str(data["ocr_text"]) if data.get("ocr_text") is not None else None
+            ),
+            ocr_confidence=float(ocr_conf) if ocr_conf is not None else None,
+        )
 
 
 @dataclass
@@ -30,14 +74,21 @@ class DocumentMeta:
     original_path: str
     fulltext_path: str
     chunks_path: str
+    images: list[ImageMeta] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize metadata to a plain dictionary."""
-        return asdict(self)
+        payload = asdict(self)
+        payload["images"] = [img.to_dict() for img in self.images]
+        return payload
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> DocumentMeta:
         """Deserialize metadata from a dictionary."""
+        raw_images = data.get("images") or []
+        images = [
+            ImageMeta.from_dict(item) for item in raw_images if isinstance(item, dict)
+        ]
         return cls(
             doc_id=str(data["doc_id"]),
             filename=str(data["filename"]),
@@ -49,6 +100,7 @@ class DocumentMeta:
             original_path=str(data["original_path"]),
             fulltext_path=str(data["fulltext_path"]),
             chunks_path=str(data["chunks_path"]),
+            images=images,
         )
 
 
@@ -83,6 +135,37 @@ class RagStorage:
         """Return the processed artifacts directory for ``doc_id``."""
         return self.processed_dir / doc_id
 
+    def images_dir(self, doc_id: str) -> Path:
+        """Return the extracted images directory for ``doc_id``."""
+        return self.processed_doc_dir(doc_id) / "images"
+
+    @staticmethod
+    def validate_doc_id(doc_id: str) -> str:
+        """Reject path traversal in document identifiers."""
+        if not _DOC_ID_RE.fullmatch(doc_id):
+            raise ValueError("Invalid doc_id")
+        return doc_id
+
+    @staticmethod
+    def validate_image_id(image_id: str) -> str:
+        """Reject path traversal in image identifiers."""
+        if not _IMAGE_ID_RE.fullmatch(image_id):
+            raise ValueError("Invalid image_id")
+        return image_id
+
+    def relative_to_root(self, path: Path) -> str:
+        """Return ``path`` relative to the RAG data root using forward slashes."""
+        rel = path.resolve().relative_to(self.root.resolve())
+        return rel.as_posix()
+
+    def resolve_under_root(self, relative_path: str) -> Path:
+        """Resolve a catalog-relative path and ensure it stays under ``root``."""
+        candidate = (self.root / relative_path).resolve()
+        root = self.root.resolve()
+        if not str(candidate).startswith(str(root)):
+            raise ValueError("Path escapes RAG data root")
+        return candidate
+
     def save_original(self, doc_id: str, filename: str, data: bytes) -> Path:
         """Persist the raw uploaded file and return its path."""
         dest_dir = self.original_dir(doc_id)
@@ -101,6 +184,7 @@ class RagStorage:
         sha256: str,
         fulltext: str,
         chunks: list[dict[str, Any]],
+        images: list[ImageMeta] | None = None,
         status: str = "ready",
         uploaded_at: str | None = None,
     ) -> DocumentMeta:
@@ -131,6 +215,7 @@ class RagStorage:
             original_path=str(original_path),
             fulltext_path=str(fulltext_path),
             chunks_path=str(chunks_path),
+            images=list(images or []),
         )
         meta_path.write_text(
             json.dumps(meta.to_dict(), ensure_ascii=False, indent=2),
@@ -209,8 +294,69 @@ class RagStorage:
         )
         os.replace(tmp_path, self.index_path)
 
+    def save_image_bytes(
+        self,
+        doc_id: str,
+        *,
+        image_id: str,
+        extension: str,
+        data: bytes,
+    ) -> Path:
+        """Persist extracted image bytes under ``processed/{doc_id}/images/``."""
+        self.validate_doc_id(doc_id)
+        self.validate_image_id(image_id)
+        ext = extension if extension.startswith(".") else f".{extension}"
+        safe_ext = Path(ext).suffix.lower()
+        if safe_ext not in {
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".gif",
+            ".webp",
+            ".bmp",
+            ".tif",
+            ".tiff",
+            ".jpx",
+            ".jb2",
+        }:
+            safe_ext = ".png"
+        dest_dir = self.images_dir(doc_id)
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest = (dest_dir / f"{image_id}{safe_ext}").resolve()
+        if not str(dest).startswith(str(dest_dir.resolve())):
+            raise ValueError("Invalid image destination")
+        dest.write_bytes(data)
+        return dest
+
+    def find_image(self, doc_id: str, image_id: str) -> ImageMeta | None:
+        """Return image metadata for ``doc_id`` + ``image_id``, if present."""
+        meta = self.read_meta(doc_id)
+        if meta is None:
+            return None
+        for img in meta.images:
+            if img.image_id == image_id:
+                return img
+        return None
+
+    def find_image_global(self, image_id: str) -> tuple[str, ImageMeta] | None:
+        """Locate ``image_id`` across the catalog (first match)."""
+        self.validate_image_id(image_id)
+        for entry in self.list_documents():
+            doc_id = str(entry.get("doc_id", ""))
+            found = self.find_image(doc_id, image_id)
+            if found is not None:
+                return doc_id, found
+        return None
+
+    def image_file_path(self, doc_id: str, image_meta: ImageMeta) -> Path:
+        """Resolve the on-disk path for ``image_meta`` with traversal checks."""
+        return self.resolve_under_root(image_meta.file_path)
+
     def remove_document_files(self, doc_id: str) -> None:
-        """Delete original and processed files for ``doc_id`` and drop the catalog row."""
+        """Delete original and processed files for ``doc_id`` and drop the catalog row.
+
+        Processed cleanup includes the extracted ``images/`` directory.
+        """
         for path in (self.original_dir(doc_id), self.processed_doc_dir(doc_id)):
             if path.exists():
                 shutil.rmtree(path)

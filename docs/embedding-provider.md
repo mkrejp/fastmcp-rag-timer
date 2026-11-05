@@ -1,74 +1,66 @@
 # Embedding provider and Qdrant index
 
-Runtime switch: **`EMBEDDING_PROVIDER`**. Unset or `novita` keeps the production Novita HTTP API. `fastembed` embeds locally with ONNX BGE-M3. Do not change production variables unless you intend to switch backends and re-ingest.
+Runtime defaults: **`EMBEDDING_PROVIDER`** (`novita` when unset). Phase **D** adds **`EMBEDDING_PROVIDER_INGEST`** and **`EMBEDDING_PROVIDER_QUERY`** (alias **`EMBEDDING_PROVIDER_SEARCH`**) so ingest can stay on Novita while search uses local FastEmbed only.
 
-## Provider
+## Split ingest vs query (phase D)
 
-| `EMBEDDING_PROVIDER` | Backend | Model | Vector dimension | Credentials |
-| --- | --- | --- | --- | --- |
-| unset / `novita` (default) | Novita OpenAI-compatible HTTP | `baai/bge-m3` | `1024` | `BGE_M3_NOVITA_API_KEY`, then `NOVITA_API_KEY`, `OPENAI_TOKEN`, `OPENAI_API_KEY` |
-| `fastembed` | Local FastEmbed (lazy-loaded) | `BAAI/bge-m3` | `1024` | none |
+| Path | Env | Allowed values | Model family |
+| --- | --- | --- | --- |
+| Ingest / OCR / reindex | `EMBEDDING_PROVIDER_INGEST` → else `EMBEDDING_PROVIDER` | `novita`, `fastembed` | BGE-M3, 1024-dim |
+| Search (`search_domain_knowledge`, hybrid text leg) | `EMBEDDING_PROVIDER_QUERY` → else `EMBEDDING_PROVIDER` | **`fastembed` only** | BGE-M3, 1024-dim |
 
-Configured in `rag/embeddings.py`. The model is loaded on the **first** `get_embedding` / `get_embeddings` call, not at process import or `/health`. Cold start without search or ingest does not download or load ONNX weights.
+Startup calls `validate_embedding_configuration()`: `EMBEDDING_PROVIDER_QUERY=novita` (or unset default `novita` without override) **refuses to start**. Typical production split:
 
-### Novita (default)
+```bash
+EMBEDDING_PROVIDER=novita
+EMBEDDING_PROVIDER_INGEST=novita
+EMBEDDING_PROVIDER_QUERY=fastembed
+```
+
+Search never issues Novita HTTP requests (zero embedding tokens on query). Ingest may still use Novita when configured.
+
+Novita HTTP vs local ONNX BGE-M3 vectors can **drift slightly**. After changing ingest provider, re-ingest and optionally run `scripts/golden_recall_smoke.py` on golden phrases.
+
+`GET /health` and admin status expose ingest vs query providers (no secrets).
+
+## Provider backends
+
+| Backend | Model | Dimension | Used on |
+| --- | --- | --- | --- |
+| Novita HTTP | `baai/bge-m3` | 1024 | Ingest when `EMBEDDING_PROVIDER_INGEST=novita` |
+| FastEmbed ONNX | `BAAI/bge-m3` | 1024 | Query (required) and ingest when set to `fastembed` |
+
+Configured in `rag/embeddings.py`. FastEmbed BGE-M3 loads on the **first** query or fastembed ingest call.
+
+### Novita (ingest)
 
 | Item | Value |
 | --- | --- |
 | API | `https://api.novita.ai/openai/v1/embeddings` |
 | Model | `baai/bge-m3` |
-| Vector dimension | `1024` |
 | Timeout | 60 seconds |
-| Batching | one HTTP request per string (unchanged) |
-| Retries | none (unchanged) |
-| Preferred credential | `BGE_M3_NOVITA_API_KEY` |
-| Other credentials (first non-empty wins) | `NOVITA_API_KEY`, `OPENAI_TOKEN`, `OPENAI_API_KEY` |
+| Credentials | `BGE_M3_NOVITA_API_KEY`, then fallbacks (see README) |
 
-The key is read at runtime and sent as a Bearer token. Do not put its value in source, docs, or logs.
+Full connectivity notes: [Embedding connectivity](./CONNECTIVITY.md#embedding-connectivity).
 
-Request shape is OpenAI-compatible (`{"input": text, "model": "baai/bge-m3"}`). The host is Novita. There is no chat/completions client.
+### FastEmbed (query + optional ingest)
 
-Full request/response, privacy, and cost notes: [Embedding connectivity](./CONNECTIVITY.md#embedding-connectivity).
+Registers Hugging Face ONNX `BAAI/bge-m3` (~2.3GB cache under `FASTEMBED_CACHE_PATH` or `{RAG_DATA_ROOT}/fastembed`). Plan **4GB+ RAM**, **8GB preferred** for BGE-M3 alone.
 
-### FastEmbed (local)
+## Named vectors (phase C)
 
-FastEmbed's built-in dense catalog does not include BGE-M3 (`qdrant/fastembed#107`). This service registers the official Hugging Face ONNX export (`BAAI/bge-m3`, `onnx/model.onnx` + `onnx/model.onnx_data`) with CLS pooling and L2 normalization so the local path stays **1024-dim multilingual BGE-M3**.
+Qdrant collection `client_domain_knowledge` uses **named vectors**:
 
-| Item | Value |
-| --- | --- |
-| Package | `fastembed` (Dockerfile / `pyproject.toml`) |
-| Model ID | `BAAI/bge-m3` |
-| Source | Hugging Face `BAAI/bge-m3` ONNX files |
-| Vector dimension | `1024` (same as Novita; Qdrant size stays 1024) |
-| First call | downloads ~2.3GB of ONNX weights unless already cached |
-| Cache | `FASTEMBED_CACHE_PATH`, else `{RAG_DATA_ROOT}/fastembed` |
-| RAM | plan **at least 4GB**, prefer 8GB, for ONNX Runtime + Qdrant + the app |
-| Hugging Face egress | required on first embed (and after cache eviction) |
+| Name | Model | Dim | Purpose |
+| --- | --- | --- | --- |
+| `text_vector` | BGE-M3 (ingest backend) | 1024 | Chunks, OCR text |
+| `image_vector` | `Qdrant/clip-ViT-B-32-vision` | 512 | PDF image pixels |
 
-Local vectors are **not guaranteed bit-identical** to Novita's hosted BGE-M3 (different runtime/quantization). Switching providers requires a re-ingest even though the collection dimension does not change. `open_qdrant()` recreates `client_domain_knowledge` when the recorded provider/model/dim in `{RAG_DATA_ROOT}/embedding_backend.json` does not match the active backend.
+Text queries for images use CLIP text tower `Qdrant/clip-ViT-B-32-text` (`rag/image_embed.py`). Enable with `IMAGE_EMBEDDING_ENABLED=true` (default **false**). CLIP loads lazily; cache under `{RAG_DATA_ROOT}/clip`. Loading CLIP beside BGE-M3 can OOM on **8GB** hosts — increase RAM or leave visual search disabled.
 
-## Collection dimension
+Legacy **single-vector** collections are recreated on startup; **re-ingest** required. Marker file `{RAG_DATA_ROOT}/embedding_backend.json` records schema version 2 and vector layout.
 
-Qdrant requires every vector in a collection to match that collection’s configured size. `open_qdrant()` (`rag/vectorstore.py`):
-
-1. Opens the on-disk client at `{RAG_DATA_ROOT}/qdrant`.
-2. Reads `{RAG_DATA_ROOT}/embedding_backend.json` (written on each successful open).
-3. If collection `client_domain_knowledge` exists and `vectors.size` is not the **active** `embedding_dim()`, **deletes** that collection.
-4. If the marker's provider/model/dim does not match the active backend, **deletes** that collection (covers Novita → FastEmbed at 1024-dim).
-5. If the collection is missing, creates it with `VectorParams(size=embedding_dim(), distance=COSINE)`.
-6. Writes the marker for the active provider.
-
-A missing marker is treated as the historical Novita index so an unchanged production deploy does not wipe vectors.
-
-Deleting a mismatched collection **removes its vectors**. Originals and processed text under `{RAG_DATA_ROOT}` are not deleted. Semantic search is empty until documents are ingested again.
-
-## Environment variables
-
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `EMBEDDING_PROVIDER` | `novita` (when unset) | `novita` or `fastembed` |
-| `FASTEMBED_CACHE_PATH` | `{RAG_DATA_ROOT}/fastembed` | ONNX model cache for the local backend |
-| `BGE_M3_NOVITA_API_KEY` (and fallbacks) | unset | Required only for `novita` |
+Switching ingest provider (`novita` ↔ `fastembed`) at the same 1024-dim BGE-M3 family does **not** recreate the collection; recall still depends on re-embedding via re-ingest.
 
 ## Verification
 
@@ -76,4 +68,4 @@ Deleting a mismatched collection **removes its vectors**. Originals and processe
 pytest -q
 ```
 
-Upload a document, then search for content from that document via MCP `search_domain_knowledge`.
+Upload a document with `EMBEDDING_PROVIDER_QUERY=fastembed`, search via MCP `search_domain_knowledge`. With `IMAGE_EMBEDDING_ENABLED=true`, re-ingest a PDF and try `search_images`.

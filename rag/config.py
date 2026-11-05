@@ -141,6 +141,38 @@ def google_oauth_configured() -> bool:
     return bool(resolve_google_client_id() and resolve_google_client_secret())
 
 
+def resolve_ocr_enabled() -> bool:
+    """Return whether OCR runs during PDF ingest (default true)."""
+    raw = os.getenv("OCR_ENABLED", "true").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def resolve_ocr_langs() -> str:
+    """Return Tesseract language string (default ``ces+eng``)."""
+    raw = os.getenv("OCR_LANGS", "ces+eng").strip()
+    return raw or "ces+eng"
+
+
+def resolve_ocr_min_confidence() -> int:
+    """Minimum per-word OCR confidence to keep (default 60)."""
+    raw = os.getenv("OCR_MIN_CONFIDENCE", "60").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        return 60
+    return max(0, min(100, value))
+
+
+def resolve_ocr_min_chars() -> int:
+    """Minimum cleaned OCR length required to index an image point (default 20)."""
+    raw = os.getenv("OCR_MIN_CHARS", "20").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        return 20
+    return max(0, value)
+
+
 def resolve_mcp_token() -> str | None:
     """Bearer token for ``/mcp`` and embedding REST routes.
 

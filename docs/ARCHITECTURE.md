@@ -123,7 +123,8 @@ From `rag/routes.py`:
 | `GET` | `/documents` | Catalog from `index.json` |
 | `GET` | `/documents/{doc_id}` | Metadata |
 | `GET` | `/documents/{doc_id}/text` | Processed full text from disk (no re-parse, no embedding call) |
-| `DELETE` | `/documents/{doc_id}` | Bearer or Google session (same as `/upload`); remove files, catalog row, and Qdrant points. `200` `{"status":"deleted","doc_id","filename","chunks_removed"}`; `404` if missing; `401`/`503` if unauthorized |
+| `DELETE` | `/documents/{doc_id}` | Bearer or Google session (same as `/upload`); remove files (including `images/`), catalog row, and Qdrant points. `200` `{"status":"deleted","doc_id","filename","chunks_removed"}`; `404` if missing; `401`/`503` if unauthorized |
+| `GET` | `/images/{doc_id}/{image_id}` | Extracted PDF image bytes (same auth as `/upload`) |
 
 There is **no REST search** endpoint. Similarity search is MCP-only (`search_domain_knowledge`). There is no HTTP reindex route. `rag.document_delete.delete_document` deletes Qdrant points by `payload.doc_id` then calls `RagStorage.remove_document_files`.
 
