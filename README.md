@@ -9,9 +9,10 @@ All RAG server data lives under **`/data/rag`** (override with `RAG_DATA_ROOT`):
 ```text
 /data/rag/
   originals/{doc_id}/...
-  processed/{doc_id}/meta.json, fulltext.txt, chunks.json
+  processed/{doc_id}/meta.json, fulltext.txt, chunks.json, images/{image_id}.{ext}
   qdrant/
   index.json
+  embedding_backend.json
 
 /data/accnt/
   YYYY-MM-DD.json          # daily rollups (embeddings, MCP, HTTP, outbound)
@@ -36,6 +37,11 @@ On Railway, mount a volume at `/data`. The app creates `/data/rag` and `/data/ac
 | `RAG_API_TOKEN` | unset | Bearer token required by `POST /ingest-json` |
 | `RAG_MAX_REMOTE_JSON_BYTES` | `134217728` (128 MiB) | Remote GeoJSON download cap (`obce.json` is ~95 MiB) |
 | `RAG_REMOTE_FETCH_TIMEOUT` | `120` | Remote fetch timeout in seconds |
+| `OCR_ENABLED` | `true` | Run local Tesseract OCR on PDF images during ingest |
+| `OCR_LANGS` | `ces+eng` | Tesseract language pack string |
+| `OCR_MIN_CONFIDENCE` | `60` | Drop OCR words below this confidence (0–100) |
+| `OCR_MIN_CHARS` | `20` | Minimum cleaned OCR length to index a `pdf_image` point |
+| `PUBLIC_BASE_URL` | unset | Public base URL for image links in MCP search (`/images/...`) |
 
 Embeddings default to Novita's OpenAI-compatible API (`baai/bge-m3`, 1024 dimensions).
 Set `EMBEDDING_PROVIDER=fastembed` to embed locally with FastEmbed (`BAAI/bge-m3`, also 1024-dim).
@@ -44,6 +50,14 @@ Switching providers recreates the Qdrant collection; re-ingest after a switch.
 See [embedding provider](docs/embedding-provider.md).
 Keep Novita keys in runtime variables; never commit them.
 Do not change production Railway variables unless you intend to switch backends.
+
+### PDF images and OCR
+
+During PDF ingest, embedded images are extracted with PyMuPDF, deduplicated by SHA-256, and stored under `processed/{doc_id}/images/`. Images smaller than 64×64 px or 4 KiB are skipped. Local Tesseract OCR (`ces+eng` in Docker) fills `DocumentMeta.images[]` with optional `ocr_text` / `ocr_confidence`. When OCR text is long enough, a **`pdf_image`** vector point is upserted using the same BGE-M3 text embedding backend as body chunks (`pdf_chunk`). Qdrant payload fields include `source_type`, `doc_id`, `parent_document`, `page_number`, `file_path`, `image_id`, `sha256`, and `content_summary` (no image blobs in Qdrant).
+
+**Re-ingest:** Existing deployments do **not** need a Qdrant collection recreate for this feature; re-upload PDFs to populate images and `pdf_image` points. A future phase with CLIP/`image_vector` named vectors **will** require collection recreate.
+
+**Delete:** Removing a document (via `delete_document` helper used in tests/admin flows) deletes its `images/` directory and all Qdrant points with matching `doc_id` (chunks and images).
 
 ## HTTP API
 
@@ -54,9 +68,10 @@ Do not change production Railway variables unless you intend to switch backends.
 - `GET /documents` — catalog
 - `GET /documents/{doc_id}` — metadata
 - `GET /documents/{doc_id}/text` — processed full text (no re-parse)
+- `GET /images/{doc_id}/{image_id}` — extracted PDF image bytes (same auth as `POST /upload`)
 - `GET /health` — liveness
 
-Listen address is `0.0.0.0:8080` (not configurable via `PORT`). Most routes have no inbound auth; `POST /ingest-json` requires `Authorization: Bearer $RAG_API_TOKEN`.
+Listen address is `0.0.0.0:8080` (not configurable via `PORT`). Most routes have no inbound auth; `POST /ingest-json` requires `Authorization: Bearer $RAG_API_TOKEN`. `GET /images/...` uses the same bearer or Google session as upload routes.
 
 ### Remote GeoJSON (`POST /ingest-json`)
 
@@ -80,10 +95,12 @@ Streamable HTTP MCP is mounted at **`/mcp`**. Tools:
 - `list_documents`
 - `get_document_text`
 - `get_document_chunks`
+- `get_document_images`
+- `get_image` (inline image up to 5 MiB, otherwise a URL hint)
 - `ingest_text`
-- `search_domain_knowledge`
+- `search_domain_knowledge` (includes `source_type`, `page_number`, and `image_id`/URL for image hits)
 
-No MCP resources or prompts. No inbound MCP authentication.
+No MCP resources or prompts. `/mcp` requires bearer auth (see below).
 
 ## Documentation
 
@@ -102,6 +119,10 @@ rag/
   mcp_tools.py          # FastMCP tools
   storage.py            # /data/rag originals + processed + index
   processing.py         # PDF/text/GeoJSON extract + chunk
+  pdf_images.py         # PyMuPDF embedded image extraction
+  ocr.py                # local Tesseract OCR for extracted images
+  payloads.py           # Qdrant payload builders
+  document_delete.py    # delete doc files + Qdrant points
   geojson.py            # generic GeoJSON → RAG text
   remote.py             # fetch remote JSON (GitHub blob → raw)
   auth.py               # inbound bearer token for /ingest-json
@@ -127,9 +148,11 @@ python main.py
 ## Tests
 
 ```bash
-pip install pytest pytest-mock 'mcp[cli]<2' fastapi uvicorn pypdf 'qdrant-client>=1.12,<2' requests python-multipart itsdangerous fastembed
+pip install pytest pytest-mock 'mcp[cli]<2' fastapi uvicorn pypdf pymupdf pillow pytesseract 'qdrant-client>=1.12,<2' requests python-multipart itsdangerous fastembed
 pytest -q
 ```
+
+Optional integration tests (phrase-only-in-image search) require the Tesseract binary (`tesseract-ocr`, `tesseract-ocr-ces`, `tesseract-ocr-eng`). They are marked `integration` and skip when Tesseract is missing.
 
 ## Connecting MCP clients
 

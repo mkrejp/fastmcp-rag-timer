@@ -6,18 +6,22 @@ import json
 from typing import Any, Callable
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp.utilities.types import Image
+from mcp.types import ImageContent, TextContent
 from qdrant_client import QdrantClient
 
 from rag.accounting import accounting_source, get_global_store
-from rag.config import COLLECTION_NAME
+from rag.config import COLLECTION_NAME, resolve_public_base_url
 from rag.embeddings import get_embedding
 from rag.ingest import ingest_bytes
 from rag.logging_setup import get_logger
 from rag.processing import is_supported_filename
-from rag.storage import RagStorage
+from rag.storage import ImageMeta, RagStorage
 from rag.vectorstore import search_similar
 
 logger = get_logger("rag.mcp")
+
+MAX_MCP_IMAGE_BYTES = 5 * 1024 * 1024
 
 
 def _record_mcp(
@@ -76,6 +80,24 @@ def _run_mcp_tool(
         return message
 
 
+def _image_public_url(doc_id: str, image_id: str) -> str | None:
+    """Build an absolute image URL when ``PUBLIC_BASE_URL`` is configured."""
+    base = resolve_public_base_url()
+    if not base:
+        return None
+    return f"{base}/images/{doc_id}/{image_id}"
+
+
+def _image_meta_with_url(
+    doc_id: str,
+    image: ImageMeta,
+) -> dict[str, Any]:
+    """Serialize ``image`` and attach a public HTTP URL when available."""
+    payload = image.to_dict()
+    payload["url"] = _image_public_url(doc_id, image.image_id)
+    return payload
+
+
 def register_mcp_tools(
     mcp: FastMCP,
     *,
@@ -132,6 +154,90 @@ def register_mcp_tools(
         )
 
     @mcp.tool()
+    def get_document_images(doc_id: str) -> str:
+        """Return extracted PDF image metadata (including optional public URLs)."""
+
+        def _body() -> str:
+            meta = storage.read_meta(doc_id)
+            if meta is None:
+                return f"Document not found: {doc_id}"
+            items = [_image_meta_with_url(doc_id, img) for img in meta.images]
+            return json.dumps(items, ensure_ascii=False, indent=2)
+
+        return _run_mcp_tool(
+            "get_document_images",
+            request_chars=len(doc_id),
+            source=None,
+            fn=_body,
+        )
+
+    @mcp.tool()
+    def get_image(image_id: str) -> list[TextContent | ImageContent]:
+        """Return image bytes (≤5MB) or a URL when the file is larger."""
+        request_chars = len(image_id)
+        try:
+            located = storage.find_image_global(image_id)
+            if located is None:
+                message = f"Image not found: {image_id}"
+                _record_mcp(
+                    tool="get_image",
+                    ok=False,
+                    request_chars=request_chars,
+                    response_chars=len(message),
+                    error=message,
+                )
+                return [TextContent(type="text", text=message)]
+
+            doc_id, image_meta = located
+            path = storage.image_file_path(doc_id, image_meta)
+            size = path.stat().st_size if path.is_file() else 0
+            url = _image_public_url(doc_id, image_id)
+            if not path.is_file():
+                message = f"Image file missing on disk: {image_id}"
+                _record_mcp(
+                    tool="get_image",
+                    ok=False,
+                    request_chars=request_chars,
+                    response_chars=len(message),
+                    error=message,
+                )
+                return [TextContent(type="text", text=message)]
+
+            if size > MAX_MCP_IMAGE_BYTES:
+                hint = url or f"/images/{doc_id}/{image_id}"
+                message = (
+                    f"Image exceeds MCP inline limit ({size} bytes). "
+                    f"Fetch via authenticated HTTP: {hint}"
+                )
+                _record_mcp(
+                    tool="get_image",
+                    ok=True,
+                    request_chars=request_chars,
+                    response_chars=len(message),
+                )
+                return [TextContent(type="text", text=message)]
+
+            image = Image(path=path)
+            content = image.to_image_content()
+            _record_mcp(
+                tool="get_image",
+                ok=True,
+                request_chars=request_chars,
+                response_chars=size,
+            )
+            return [content]
+        except Exception as exc:  # noqa: BLE001
+            message = f"Error executing get_image: {exc}"
+            _record_mcp(
+                tool="get_image",
+                ok=False,
+                request_chars=request_chars,
+                response_chars=len(message),
+                error=str(exc),
+            )
+            return [TextContent(type="text", text=message)]
+
+    @mcp.tool()
     def ingest_text(filename: str, content: str) -> str:
         """Ingest a plain-text or markdown document via MCP without multipart upload."""
 
@@ -180,12 +286,24 @@ def register_mcp_tools(
                 context_blocks: list[str] = []
                 for res in results:
                     payload: dict[str, Any] = res.payload or {}
-                    source_name = payload.get("source", "unknown")
+                    source_name = payload.get("parent_document") or payload.get(
+                        "source", "unknown"
+                    )
                     doc_id = payload.get("doc_id", "")
-                    text = payload.get("text", "")
-                    header = f"Source: {source_name}"
+                    source_type = payload.get("source_type", "pdf_chunk")
+                    page_number = payload.get("page_number")
+                    image_id = payload.get("image_id")
+                    text = payload.get("content_summary") or payload.get("text", "")
+                    header = f"Source: {source_name} (source_type={source_type})"
                     if doc_id:
-                        header += f" (doc_id={doc_id})"
+                        header += f" doc_id={doc_id}"
+                    if page_number is not None:
+                        header += f" page_number={page_number}"
+                    if image_id:
+                        url = _image_public_url(str(doc_id), str(image_id))
+                        header += f" image_id={image_id}"
+                        if url:
+                            header += f" url={url}"
                     context_blocks.append(f"{header}\nContent: {text}\n")
                 return (
                     "\n---\n".join(context_blocks)
