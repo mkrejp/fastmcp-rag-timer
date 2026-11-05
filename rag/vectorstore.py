@@ -54,7 +54,7 @@ def expected_marker_payload() -> dict[str, Any]:
         "image_vision_model": CLIP_VISION_MODEL,
         "image_text_model": CLIP_TEXT_MODEL,
         "image_embedding_enabled": image_embedding_enabled(),
-        # Legacy fields kept for older tooling/tests.
+        # Duplicate provider/model/dim keys for marker readers that use those names.
         "provider": ingest,
         "model": provider_text_model(ingest),
         "dim": TEXT_EMBEDDING_DIM,
@@ -86,7 +86,7 @@ def _write_backend_marker(path: Path, payload: dict[str, Any]) -> None:
 def _collection_vector_layout(
     client: QdrantClient, collection_name: str
 ) -> tuple[bool, dict[str, int] | None]:
-    """Return whether the collection uses legacy single-vector layout and named sizes."""
+    """Return whether the collection uses a single unnamed vector, plus named-vector sizes."""
     if not client.collection_exists(collection_name):
         return False, None
     collection = client.get_collection(collection_name)
@@ -116,7 +116,7 @@ def _backend_mismatch(marker: dict[str, Any] | None) -> bool:
     """Return whether the on-disk marker differs from the active schema."""
     expected = expected_marker_payload()
     if marker is None:
-        # Layout checks handle legacy single-vector stores; missing marker alone
+        # Layout checks handle unnamed single-vector stores; a missing marker
         # does not force a recreate when named vectors already match.
         return False
     try:
@@ -190,7 +190,7 @@ def open_qdrant(
 ) -> QdrantClient:
     """Open or create the local collection with named ``text_vector`` + ``image_vector``.
 
-    Legacy single-vector collections are recreated. Re-ingest documents after recreate.
+    Collections with a single unnamed vector are recreated. Re-ingest after recreate.
     """
     marker_path = backend_marker_path(qdrant_dir)
     marker = _read_backend_marker(marker_path)

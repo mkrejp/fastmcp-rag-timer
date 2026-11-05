@@ -36,7 +36,7 @@ FASTEMBED_ONNX_FILE = "onnx/model.onnx"
 FASTEMBED_ONNX_DATA = "onnx/model.onnx_data"
 FASTEMBED_SIZE_GB = 2.27
 
-# Backward-compatible aliases for the historical Novita BGE-M3 constants.
+# Aliases for the Novita BGE-M3 constants (same values as NOVITA_*).
 EMBEDDING_MODEL = NOVITA_EMBEDDING_MODEL
 EMBEDDING_URL = NOVITA_EMBEDDING_URL
 EMBEDDING_DIM = NOVITA_EMBEDDING_DIM
@@ -63,7 +63,7 @@ def _parse_provider_env(name: str) -> EmbeddingProvider | None:
 def resolve_embedding_provider() -> EmbeddingProvider:
     """Return the default embedding backend from ``EMBEDDING_PROVIDER``.
 
-    Unset or empty values keep the Novita HTTP API so production is unchanged.
+    Unset or empty values default to the Novita HTTP API.
     """
     parsed = _parse_provider_env("EMBEDDING_PROVIDER")
     return parsed if parsed is not None else DEFAULT_EMBEDDING_PROVIDER
@@ -460,10 +460,10 @@ def get_query_embedding(text: str) -> list[float]:
 def get_embeddings(
     texts: Sequence[str], *, api_key: str | None = None
 ) -> list[list[float]]:
-    """Embed ``texts`` with the ingest provider (backward-compatible alias)."""
+    """Embed ``texts`` with the ingest provider (alias for ``get_ingest_embeddings``)."""
     return get_ingest_embeddings(texts, api_key=api_key)
 
 
 def get_embedding(text: str, *, api_key: str | None = None) -> list[float]:
-    """Embed ``text`` with the ingest provider (backward-compatible alias)."""
+    """Embed ``text`` with the ingest provider (alias for ``get_ingest_embedding``)."""
     return get_ingest_embedding(text, api_key=api_key)
