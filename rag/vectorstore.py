@@ -8,7 +8,6 @@ from typing import Sequence
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import ScoredPoint
 from qdrant_client.models import Distance, VectorParams
-
 from rag.config import COLLECTION_NAME
 from rag.embeddings import EMBEDDING_DIM
 

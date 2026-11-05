@@ -7,7 +7,6 @@ from typing import Any, Callable
 
 from mcp.server.fastmcp import FastMCP
 from qdrant_client import QdrantClient
-
 from rag.accounting import accounting_source, get_global_store
 from rag.config import COLLECTION_NAME
 from rag.embeddings import get_embedding

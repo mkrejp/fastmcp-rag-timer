@@ -6,7 +6,6 @@ from pathlib import Path
 
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, PointStruct, VectorParams
-
 from rag.embeddings import EMBEDDING_DIM
 from rag.vectorstore import open_qdrant, search_similar
 

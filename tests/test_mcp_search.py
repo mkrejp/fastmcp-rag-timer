@@ -8,7 +8,6 @@ from typing import Any, Callable, Iterator
 
 import pytest
 from fastapi.testclient import TestClient
-
 from tests.conftest import AUTH_HEADERS, patched_embeddings
 
 MCP_HEADERS = {
