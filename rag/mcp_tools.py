@@ -22,6 +22,7 @@ from rag.storage import ImageMeta, RagStorage
 from rag.vectorstore import (
     IMAGE_VECTOR_NAME,
     TEXT_VECTOR_NAME,
+    knowledge_locality_filter,
     list_locality_links,
     locality_link_stats,
     search_similar,
@@ -136,16 +137,29 @@ def register_mcp_tools(
     """Register curated MCP tools against the given storage and vector index."""
 
     @mcp.tool()
-    def list_documents() -> str:
-        """List documents stored in the persistent RAG catalog."""
+    def list_documents(since: str = "") -> str:
+        """List documents stored in the persistent RAG catalog.
+
+        Optional ``since`` is an ISO-8601 timestamp compared to
+        ``uploaded_at`` (inclusive). Empty ``since`` returns the full catalog.
+        """
 
         def _body() -> str:
-            docs = storage.list_documents()
-            if not docs:
+            cutoff = since.strip() or None
+            try:
+                docs = storage.list_documents(since=cutoff)
+            except ValueError as exc:
+                return f"Error list_documents: {exc}"
+            if not cutoff and not docs:
                 return "No documents stored."
             return json.dumps(docs, ensure_ascii=False, indent=2)
 
-        return _run_mcp_tool("list_documents", request_chars=0, source=None, fn=_body)
+        return _run_mcp_tool(
+            "list_documents",
+            request_chars=len(since),
+            source=None,
+            fn=_body,
+        )
 
     @mcp.tool()
     def get_document_text(doc_id: str) -> str:
@@ -293,8 +307,18 @@ def register_mcp_tools(
         )
 
     @mcp.tool()
-    def search_domain_knowledge(query: str, limit: int = 3) -> str:
-        """Query local RAG vector storage for contextual facts."""
+    def search_domain_knowledge(
+        query: str,
+        limit: int = 3,
+        obec_id: str = "",
+        cast_obce: str = "",
+    ) -> str:
+        """Query local RAG vector storage for contextual facts.
+
+        Optional ``obec_id`` / ``cast_obce`` filter hits whose denormalized
+        ``localities`` / ``cast_obce`` payload arrays contain those values.
+        Empty strings omit the filter (backward compatible).
+        """
 
         def _body() -> str:
             try:
@@ -310,6 +334,10 @@ def register_mcp_tools(
                     limit=limit,
                     collection_name=collection_name,
                     vector_name=TEXT_VECTOR_NAME,
+                    query_filter=knowledge_locality_filter(
+                        obec_id=obec_id.strip() or None,
+                        cast_obce=cast_obce.strip() or None,
+                    ),
                 )
                 logger.info("MCP search returned %s hits", len(results))
                 context_blocks: list[str] = []
@@ -344,7 +372,7 @@ def register_mcp_tools(
 
         return _run_mcp_tool(
             "search_domain_knowledge",
-            request_chars=len(query),
+            request_chars=len(query) + len(obec_id) + len(cast_obce),
             source="search_mcp",
             fn=_body,
         )
@@ -431,7 +459,9 @@ def register_mcp_tools(
         locality_level (obec|cast_obce), cast_obce / cast_obce_kod / cast_obce_name.
         Point ids are stable UUIDs from (doc_id, chunk_index, obec_id, char_start)
         plus cast_obce_kod when the mention is a municipal part.
-        Does not call embedding APIs. Does not modify chunk payloads.
+        Also denormalizes obec_id / cast_obce onto matching knowledge points
+        via set_payload (no re-embedding, no deletes).
+        Does not call embedding APIs.
         """
 
         def _body() -> str:

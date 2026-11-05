@@ -46,13 +46,13 @@ from rag.vectorstore import open_qdrant
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 MCP_TOOL_DOCS = {
-    "list_documents": "List documents stored in the persistent RAG catalog.",
+    "list_documents": "List RAG catalog documents (optional since= timestamp).",
     "get_document_text": "Return processed full text for a document id.",
     "get_document_chunks": "Return processed chunks JSON for a document id.",
     "get_document_images": "List extracted PDF images and metadata for a document.",
     "get_image": "Fetch one extracted image (inline or URL when large).",
     "ingest_text": "Ingest plain-text or markdown via MCP.",
-    "search_domain_knowledge": "Query local RAG vector storage for contextual facts.",
+    "search_domain_knowledge": "Query RAG facts; optional obec_id/cast_obce filter.",
     "search_images": "Search PDF images by CLIP visual similarity (optional hybrid).",
     "link_locality": "Upsert document-municipality links into locality_links (no embeddings).",
     "list_links": "List locality_links with optional filters and pagination.",

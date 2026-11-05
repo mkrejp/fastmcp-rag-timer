@@ -5,7 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from rag.storage import RagStorage
+import pytest
+
+from rag.storage import RagStorage, parse_iso_timestamp
 
 if TYPE_CHECKING:
     pass
@@ -65,3 +67,43 @@ def test_find_by_sha256(rag_storage: RagStorage) -> None:
     assert found is not None
     assert found.doc_id == doc_id
     assert rag_storage.find_by_sha256("missing") is None
+
+
+def test_list_documents_since_filters_uploaded_at(rag_storage: RagStorage) -> None:
+    """``since`` should keep catalog rows with uploaded_at >= the cutoff."""
+    older = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    newer = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+    rag_storage.save_original(older, "old.txt", b"old")
+    rag_storage.write_processed(
+        doc_id=older,
+        filename="old.txt",
+        mime="text/plain",
+        sha256="old",
+        fulltext="old",
+        chunks=[{"index": 0, "text": "old", "page": 0}],
+        uploaded_at="2026-01-01T00:00:00+00:00",
+    )
+    rag_storage.save_original(newer, "new.txt", b"new")
+    rag_storage.write_processed(
+        doc_id=newer,
+        filename="new.txt",
+        mime="text/plain",
+        sha256="new",
+        fulltext="new",
+        chunks=[{"index": 0, "text": "new", "page": 0}],
+        uploaded_at="2026-06-01T12:00:00Z",
+    )
+    assert len(rag_storage.list_documents()) == 2
+    since_june = rag_storage.list_documents(since="2026-06-01T00:00:00Z")
+    assert [row["doc_id"] for row in since_june] == [newer]
+    inclusive = rag_storage.list_documents(since="2026-06-01T12:00:00+00:00")
+    assert [row["doc_id"] for row in inclusive] == [newer]
+    none_match = rag_storage.list_documents(since="2026-12-01T00:00:00Z")
+    assert none_match == []
+    assert rag_storage.list_documents(since="") == rag_storage.list_documents()
+    with pytest.raises(ValueError, match="invalid ISO timestamp"):
+        rag_storage.list_documents(since="not-a-date")
+    parsed = parse_iso_timestamp("2026-06-01T12:00:00Z")
+    assert parsed.tzinfo is not None
+    naive = parse_iso_timestamp("2026-06-01T12:00:00")
+    assert naive.tzinfo is not None

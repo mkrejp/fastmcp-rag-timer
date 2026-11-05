@@ -63,6 +63,9 @@ def test_payload_builders_include_source_type() -> None:
     )
     assert chunk["source_type"] == "pdf_chunk"
     assert chunk["content_summary"] == "hello"
+    assert chunk["chunk_sha256"]
+    assert chunk["localities"] == []
+    assert chunk["cast_obce"] == []
     image = build_image_payload(
         doc_id="d",
         parent_document="f.pdf",
@@ -74,6 +77,9 @@ def test_payload_builders_include_source_type() -> None:
     )
     assert image["source_type"] == "pdf_image"
     assert "text" not in image or image["text"] == "OCR text"
+    assert image["chunk_sha256"]
+    assert image["localities"] == []
+    assert image["cast_obce"] == []
 
 
 def test_path_traversal_rejected(rag_storage: RagStorage) -> None:
