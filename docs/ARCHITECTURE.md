@@ -33,7 +33,7 @@ flowchart LR
   this -->|"read/write files and vector index"| disk
 ```
 
-**Assumption:** An HTTPS edge (Railway or similar reverse proxy) sits in front of port 8080 in production. Nothing in the repo terminates TLS. README says to mount a Railway volume at `/data`; there is no Railway config file in the repo.
+**Assumption:** An HTTPS edge (Railway or similar reverse proxy) sits in front of port 8080 in production. Nothing in the repository terminates TLS. README says to mount a Railway volume at `/data`; there is no Railway config file in the repository.
 
 ## Component and module overview
 
@@ -135,7 +135,7 @@ From `rag/mcp_tools.py`, registered in `create_app()` and served at **`/mcp`** (
 Tool behavior:
 
 - `list_documents`: JSON of `storage.list_documents()`, or `"No documents stored."`
-- `get_document_text` / `get_document_chunks`: disk reads of processed artifacts; missing id returns a not-found string
+- `get_document_text` / `get_document_chunks`: disk reads of processed artifacts; missing ID returns a not-found string
 - `ingest_text`: if the filename is not a supported suffix, appends `.txt`; calls `ingest_bytes`; returns JSON or `"Error ingesting text: ..."`
 - `search_domain_knowledge`: embed query → `search_similar` (`qdrant.query_points`) → format `Source: {source} (doc_id=...)` + `Content:`; empty → `"No relevant facts found."`; exceptions → `"Error executing RAG search: ..."`
 
@@ -163,11 +163,16 @@ Supported types (`rag/processing.py`): `.pdf`; `.txt`, `.md`, `.markdown`, `.tex
 
 Chunking: page segments are concatenated until over `DEFAULT_CHUNK_SIZE` (1000 characters); oversize segments are sliced at 1000 chars. No overlap, no token counting. Each chunk stores the page index of the segment currently being accumulated. Empty extractable text yields zero chunks and no upsert (HTTP still `status: Success`).
 
-`POST /upload-media` assigns a new `doc_id`, saves the original, and returns path + id. It does not call `ingest_bytes`.
+`POST /upload-media` assigns a new `doc_id`, saves the original, and returns path + ID. It does not call `ingest_bytes`.
 
 ### Embeddings
 
-See [Embedding connectivity](./CONNECTIVITY.md#embedding-connectivity). Collection size `1024` matches `EMBEDDING_DIM` / `baai/bge-m3`. Missing credentials raise `ValueError` naming `BGE_M3_NOVITA_API_KEY`. HTTP `_ingest_upload` maps any `ValueError` to **400** (filename/type checks and missing credentials). Other embedding failures (`HTTPError`, JSON errors, unexpected dimension) become HTTP **500** `"Ingest failed: ..."`. MCP search and ingest tools catch exceptions and return error strings.
+See [Embedding connectivity](./CONNECTIVITY.md#embedding-connectivity).
+Collection size `1024` matches `EMBEDDING_DIM` / `baai/bge-m3`.
+Missing credentials raise `ValueError` naming `BGE_M3_NOVITA_API_KEY`.
+HTTP `_ingest_upload` maps any `ValueError` to **400** (filename/type checks and missing credentials).
+Other embedding failures (`HTTPError`, JSON errors, unexpected dimension) become HTTP **500** `"Ingest failed: ..."`.
+MCP search and ingest tools catch exceptions and return error strings.
 
 ### Vector store
 
@@ -294,7 +299,7 @@ Not configurable without code changes:
 | FastAPI title | `Lightweight RAG Engine` |
 | MCP mount | `/mcp` |
 
-There is no `.env` file, `.env.example`, or secret manager integration in the repo.
+There is no `.env` file, `.env.example`, or secret manager integration in the repository.
 
 **Assumption:** If deployed on Railway, `BGE_M3_NOVITA_API_KEY` is a service variable, a volume is mounted at `/data`, and public HTTPS is mapped to 8080. Railway often injects `PORT`; this app ignores it and always listens on 8080.
 
@@ -330,7 +335,7 @@ pip install pytest pytest-mock 'mcp[cli]<2' fastapi uvicorn pypdf qdrant-client 
 pytest -q
 ```
 
-There is no GitHub Actions (or other) CI workflow in the repo.
+There is no GitHub Actions (or other) CI workflow in the repository.
 
 **Assumption:** Production is this Docker image on Railway with a volume at `/data` and HTTP routed to 8080.
 
