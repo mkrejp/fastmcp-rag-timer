@@ -180,6 +180,8 @@ Streamable HTTP MCP is mounted at **`/mcp`** (`stateless_http=True`, `streamable
 - `ingest_text`
 - `search_domain_knowledge` (text `text_vector` only; includes image metadata on OCR hits)
 - `search_images` (CLIP `image_vector`; optional `hybrid=true` merges with text OCR hits via RRF)
+- `link_locality` (upsert document-municipality links into payload-only `locality_links`; no embeddings)
+- `list_links` (filter `doc_id` / `obec_id` / `status` / `ambiguous`, paginate with `limit` / `offset`)
 
 No MCP resources or prompts. `/mcp` requires bearer auth (see below). There is no stdio MCP entrypoint.
 

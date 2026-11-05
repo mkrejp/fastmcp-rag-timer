@@ -8,6 +8,7 @@ import secrets
 DEFAULT_RAG_DATA_ROOT = "/data/rag"
 DEFAULT_ACCNT_DATA_ROOT = "/data/accnt"
 COLLECTION_NAME = "client_domain_knowledge"
+LOCALITY_LINKS_COLLECTION = "locality_links"
 HOST = "0.0.0.0"
 PORT = int(os.getenv("PORT", "8080"))
 

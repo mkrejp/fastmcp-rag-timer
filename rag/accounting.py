@@ -18,6 +18,8 @@ MCP_TOOLS = (
     "get_document_chunks",
     "ingest_text",
     "search_domain_knowledge",
+    "link_locality",
+    "list_links",
 )
 HTTP_ROUTES = (
     "upload",
