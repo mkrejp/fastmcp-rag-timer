@@ -23,8 +23,10 @@ from rag.vectorstore import (
     IMAGE_VECTOR_NAME,
     TEXT_VECTOR_NAME,
     list_locality_links,
+    locality_link_stats,
     search_similar,
     upsert_locality_links,
+    verify_locality_link,
 )
 
 logger = get_logger("rag.mcp")
@@ -425,8 +427,10 @@ def register_mcp_tools(
         char_start, char_end, source_type (pdf_chunk|pdf_image|text_chunk), and
         method (exact|lemma|fuzzy|llm|manual). Optional fields include lau_id,
         okres, kraj, parent_document, page_number, point_id, chunk_sha256,
-        ambiguous, candidates, confidence, confidence_level, notes, geom.
-        Point ids are stable UUIDs from (doc_id, chunk_index, obec_id, char_start).
+        ambiguous, candidates, confidence, confidence_level, notes, geom,
+        locality_level (obec|cast_obce), cast_obce / cast_obce_kod / cast_obce_name.
+        Point ids are stable UUIDs from (doc_id, chunk_index, obec_id, char_start)
+        plus cast_obce_kod when the mention is a municipal part.
         Does not call embedding APIs. Does not modify chunk payloads.
         """
 
@@ -451,14 +455,17 @@ def register_mcp_tools(
         obec_id: str = "",
         status: str = "",
         ambiguous: bool | None = None,
+        locality_level: str = "",
+        cast_obce: str = "",
         limit: int = 50,
         offset: int = 0,
     ) -> str:
         """List locality_links with optional filters and integer pagination.
 
-        Filter by doc_id, obec_id, status (unverified|verified|rejected), and
-        ambiguous. ``limit`` defaults to 50 (max 200); ``offset`` skips that
-        many matching points. Does not call embedding APIs.
+        Filter by doc_id, obec_id, status (unverified|verified|rejected),
+        ambiguous, locality_level (obec|cast_obce), and cast_obce (kod).
+        ``limit`` defaults to 50 (max 200); ``offset`` skips that many
+        matching points. Does not call embedding APIs.
         """
 
         def _body() -> str:
@@ -469,6 +476,8 @@ def register_mcp_tools(
                     obec_id=obec_id.strip() or None,
                     status=status.strip() or None,
                     ambiguous=ambiguous,
+                    locality_level=locality_level.strip() or None,
+                    cast_obce=cast_obce.strip() or None,
                     limit=limit,
                     offset=offset,
                 )
@@ -482,9 +491,68 @@ def register_mcp_tools(
                 len(doc_id)
                 + len(obec_id)
                 + len(status)
+                + len(locality_level)
+                + len(cast_obce)
                 + len(str(limit))
                 + len(str(offset))
             ),
+            source=None,
+            fn=_body,
+        )
+
+    @mcp.tool()
+    def verify_link(
+        link_id: str,
+        status: str,
+        verified_by: str = "",
+        notes: str = "",
+    ) -> str:
+        """Set verification_status on an existing locality_links point.
+
+        ``status`` is unverified, verified, or rejected. Optional verified_by
+        and notes are stored on the payload. verified is true only for verified;
+        verified_at is set on verified/rejected and cleared on unverified.
+        Does not call embedding APIs. Does not sync Trails.
+        """
+
+        def _body() -> str:
+            try:
+                result = verify_locality_link(
+                    qdrant,
+                    link_id=link_id,
+                    status=status,
+                    verified_by=verified_by if verified_by.strip() else None,
+                    notes=notes if notes.strip() else None,
+                )
+                return json.dumps(result, ensure_ascii=False)
+            except LocalityLinkPayloadError as exc:
+                return f"Error verify_link: {exc}"
+
+        return _run_mcp_tool(
+            "verify_link",
+            request_chars=len(link_id) + len(status) + len(verified_by) + len(notes),
+            source=None,
+            fn=_body,
+        )
+
+    @mcp.tool()
+    def link_stats() -> str:
+        """Aggregate locality_links counts by status, method, obec, and ambiguous.
+
+        Also reports locality_level totals, distinct docs covered (excluding
+        rejected), and top obce. Does not call embedding APIs.
+        """
+
+        def _body() -> str:
+            try:
+                result = locality_link_stats(qdrant)
+                return json.dumps(result, ensure_ascii=False)
+            except LocalityLinkPayloadError as exc:
+                return f"Error link_stats: {exc}"
+
+        return _run_mcp_tool(
+            "link_stats",
+            request_chars=0,
             source=None,
             fn=_body,
         )

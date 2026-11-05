@@ -14,10 +14,16 @@ LOCALITY_VERIFICATION_STATUSES = frozenset(
     {"unverified", "verified", "rejected"}
 )
 LOCALITY_CONFIDENCE_LEVELS = frozenset({"high", "medium", "low"})
+LOCALITY_LEVELS = frozenset({"obec", "cast_obce"})
+LOCALITY_LEVEL_DEFAULT = "obec"
 
 
 class LocalityLinkPayloadError(ValueError):
     """Raised when a locality-link payload is missing or invalid."""
+
+
+class LocalityLinkNotFoundError(LocalityLinkPayloadError):
+    """Raised when a locality_links point id does not exist."""
 
 
 def _utc_now_iso() -> str:
@@ -31,9 +37,20 @@ def stable_locality_link_id(
     chunk_index: int,
     obec_id: str,
     char_start: int,
+    cast_obce_kod: str | None = None,
 ) -> str:
-    """Build a stable UUID for ``UNIQUE(doc_id, chunk_index, obec_id, char_start)``."""
-    key = f"locality_link:{doc_id}:{chunk_index}:{obec_id}:{char_start}"
+    """Build a stable UUID matching migration 005 uniqueness.
+
+    Obec-level ids stay ``(doc_id, chunk_index, obec_id, char_start)`` so
+    existing points keep their ids. Část obce ids also include ``cast_obce_kod``.
+    """
+    if cast_obce_kod:
+        key = (
+            f"locality_link:{doc_id}:{chunk_index}:{obec_id}:"
+            f"{cast_obce_kod}:{char_start}"
+        )
+    else:
+        key = f"locality_link:{doc_id}:{chunk_index}:{obec_id}:{char_start}"
     return str(uuid.uuid5(uuid.NAMESPACE_URL, key))
 
 
@@ -111,6 +128,102 @@ def _optional_bool(raw: Mapping[str, Any], key: str, default: bool) -> bool:
     raise LocalityLinkPayloadError(f"{key} must be a boolean")
 
 
+def _parse_locality_level_and_cast(
+    raw: Mapping[str, Any],
+) -> tuple[str, str | None, str | None]:
+    """Return ``(locality_level, cast_obce_kod, cast_obce_name)`` from ``raw``.
+
+    Accepts migration-005 columns and a ``cast_obce`` alias (kod string or
+    ``{kod, name}`` / ``{cast_obce_kod, cast_obce_name}``).
+    """
+    kod_from_alias: str | None = None
+    name_from_alias: str | None = None
+    cast_field = raw.get("cast_obce")
+    if isinstance(cast_field, str) and cast_field.strip():
+        kod_from_alias = cast_field.strip()
+    elif isinstance(cast_field, Mapping):
+        kod_from_alias = (
+            str(
+                cast_field.get("kod")
+                or cast_field.get("cast_obce_kod")
+                or ""
+            ).strip()
+            or None
+        )
+        name_from_alias = (
+            str(
+                cast_field.get("name")
+                or cast_field.get("cast_obce_name")
+                or ""
+            ).strip()
+            or None
+        )
+    elif cast_field not in (None, ""):
+        raise LocalityLinkPayloadError(
+            "cast_obce must be a kod string or object with kod/name"
+        )
+
+    kod = _optional_text(raw, "cast_obce_kod").strip() or kod_from_alias
+    name = _optional_text(raw, "cast_obce_name").strip() or name_from_alias
+    level_raw = _optional_text(raw, "locality_level").strip()
+    if level_raw:
+        level = level_raw
+    elif kod:
+        level = "cast_obce"
+    else:
+        level = LOCALITY_LEVEL_DEFAULT
+    if level not in LOCALITY_LEVELS:
+        allowed = ", ".join(sorted(LOCALITY_LEVELS))
+        raise LocalityLinkPayloadError(
+            f"locality_level must be one of: {allowed}"
+        )
+    if level == "obec":
+        if kod:
+            raise LocalityLinkPayloadError(
+                "cast_obce_kod must be empty when locality_level is obec"
+            )
+        return LOCALITY_LEVEL_DEFAULT, None, None
+    if not kod:
+        raise LocalityLinkPayloadError(
+            "cast_obce_kod is required when locality_level is cast_obce"
+        )
+    return "cast_obce", kod, name or None
+
+
+def apply_locality_link_verification(
+    payload: Mapping[str, Any],
+    *,
+    status: str,
+    verified_by: str | None = None,
+    notes: str | None = None,
+    now: str | None = None,
+) -> dict[str, Any]:
+    """Return a copy of ``payload`` with verification fields updated.
+
+    ``verified`` is true only for ``verified``. ``verified_at`` is set on
+    verified/rejected and cleared on unverified. ``verified_by`` and ``notes``
+    are written only when the caller passes them (including empty to clear).
+    """
+    status_norm = str(status).strip()
+    if status_norm not in LOCALITY_VERIFICATION_STATUSES:
+        allowed = ", ".join(sorted(LOCALITY_VERIFICATION_STATUSES))
+        raise LocalityLinkPayloadError(f"status must be one of: {allowed}")
+    timestamp = now or _utc_now_iso()
+    updated = dict(payload)
+    updated["verification_status"] = status_norm
+    updated["verified"] = status_norm == "verified"
+    if status_norm == "unverified":
+        updated["verified_at"] = None
+    else:
+        updated["verified_at"] = timestamp
+    if verified_by is not None:
+        updated["verified_by"] = str(verified_by).strip() or None
+    if notes is not None:
+        updated["notes"] = str(notes).strip() or None
+    updated["updated_at"] = timestamp
+    return updated
+
+
 def build_locality_link_payload(
     raw: Mapping[str, Any],
     *,
@@ -120,8 +233,9 @@ def build_locality_link_payload(
     """Build ``(link_id, payload)`` for a ``locality_links`` Qdrant point.
 
     Point id is a stable UUID derived from
-    ``(doc_id, chunk_index, obec_id, char_start)``. ``created_at`` is kept
-    when ``existing`` already has one; ``updated_at`` is always ``now``.
+    ``(doc_id, chunk_index, obec_id, char_start)`` plus ``cast_obce_kod``
+    when ``locality_level`` is ``cast_obce``. ``created_at`` is kept when
+    ``existing`` already has one; ``updated_at`` is always ``now``.
     """
     timestamp = now or _utc_now_iso()
     obec_id = _require_text(raw, "obec_id")
@@ -180,11 +294,15 @@ def build_locality_link_payload(
     if geom is not None and not isinstance(geom, (dict, list)):
         raise LocalityLinkPayloadError("geom must be an object when provided")
 
+    locality_level, cast_obce_kod, cast_obce_name = _parse_locality_level_and_cast(
+        raw
+    )
     link_id = stable_locality_link_id(
         doc_id=doc_id,
         chunk_index=chunk_index,
         obec_id=obec_id,
         char_start=char_start,
+        cast_obce_kod=cast_obce_kod,
     )
     created_at = timestamp
     if existing:
@@ -203,6 +321,10 @@ def build_locality_link_payload(
         "okres": _optional_text(raw, "okres"),
         "kraj": _optional_text(raw, "kraj"),
         "lau_id": _optional_text(raw, "lau_id") or None,
+        "locality_level": locality_level,
+        "cast_obce": cast_obce_kod,
+        "cast_obce_kod": cast_obce_kod,
+        "cast_obce_name": cast_obce_name,
         "source_dataset": (
             _optional_text(
                 raw, "source_dataset", LOCALITY_SOURCE_DATASET_DEFAULT
