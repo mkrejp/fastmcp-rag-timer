@@ -5,7 +5,7 @@ from __future__ import annotations
 import io
 
 import pymupdf as fitz
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 
 
 def build_image_rich_pdf(*, ocr_phrase: str = "UNIQUEOCRPHRASE12345") -> bytes:
@@ -14,16 +14,23 @@ def build_image_rich_pdf(*, ocr_phrase: str = "UNIQUEOCRPHRASE12345") -> bytes:
     page_text = doc.new_page()
     page_text.insert_text((72, 72), "Body text without the hidden phrase.")
 
-    phrase_img = Image.new("RGB", (900, 260), "white")
+    phrase_img = Image.new("RGB", (1200, 220), "white")
     draw = ImageDraw.Draw(phrase_img)
-    draw.text((24, 110), ocr_phrase, fill="black")
+    try:
+        font = ImageFont.truetype(
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            44,
+        )
+    except OSError:
+        font = ImageFont.load_default()
+    draw.text((24, 80), ocr_phrase, fill="black", font=font)
     for x in range(0, 900, 40):
         draw.line([(x, 0), (x, 260)], fill=(230, 230, 230), width=1)
     phrase_buf = io.BytesIO()
     phrase_img.save(phrase_buf, format="PNG")
     page_image = doc.new_page()
     page_image.insert_image(
-        fitz.Rect(72, 72, 972, 332),
+        fitz.Rect(72, 72, 1272, 292),
         stream=phrase_buf.getvalue(),
     )
 
@@ -50,7 +57,7 @@ def build_image_rich_pdf(*, ocr_phrase: str = "UNIQUEOCRPHRASE12345") -> bytes:
 
     duplicate_page = doc.new_page()
     duplicate_page.insert_image(
-        fitz.Rect(72, 72, 972, 332),
+        fitz.Rect(72, 72, 1272, 292),
         stream=phrase_buf.getvalue(),
     )
 

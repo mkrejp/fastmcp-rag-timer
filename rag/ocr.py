@@ -74,6 +74,7 @@ def ocr_image_file(path: Path) -> tuple[str, float | None]:
             data = pytesseract.image_to_data(
                 prepared,
                 lang=langs,
+                config="--psm 6",
                 output_type=pytesseract.Output.DICT,
             )
     except Exception as exc:  # noqa: BLE001 - OCR failures should not abort ingest
