@@ -10,7 +10,9 @@ from typing import Any, Callable
 from qdrant_client import QdrantClient
 from qdrant_client.models import PointStruct
 
+from rag.config import FIGURE_INDEX_VERSION, figure_index_enabled
 from rag.embeddings import get_ingest_embeddings
+from rag.figure_index import index_pdf_figures, reindex_figures_for_doc
 from rag.image_embed import embed_image_paths, image_embedding_enabled
 from rag.logging_setup import get_logger
 from rag.ocr import build_content_summary, ocr_image_file
@@ -49,11 +51,12 @@ def _process_pdf_images(
     storage: RagStorage,
     doc_id: str,
     data: bytes,
+    skip_page_xrefs: set[tuple[int, int]] | None = None,
 ) -> list[ImageMeta]:
     """Extract, store, and OCR embedded PDF images."""
     images_meta: list[ImageMeta] = []
     try:
-        extracted = extract_pdf_images(data)
+        extracted = extract_pdf_images(data, skip_page_xrefs=skip_page_xrefs)
     except Exception as exc:  # noqa: BLE001 - PDF images are optional enrichment
         logger.warning("PDF image extraction failed doc_id=%s: %s", doc_id, exc)
         return images_meta
@@ -118,6 +121,7 @@ def ingest_bytes(
     embed_fn: EmbedFn | None = None,
     skip_duplicate: bool = True,
     source_url: str | None = None,
+    reprocess_figures: bool = False,
 ) -> dict[str, Any]:
     """Persist, process, and index a document from raw bytes."""
     if not filename:
@@ -141,6 +145,30 @@ def ingest_bytes(
             }
             if source_url:
                 reused["source_url"] = source_url
+            needs_figures = (
+                reprocess_figures
+                or existing.figure_index_version < FIGURE_INDEX_VERSION
+            )
+            if (
+                needs_figures
+                and _is_pdf_filename(existing.filename)
+                and figure_index_enabled()
+            ):
+                try:
+                    result = reindex_figures_for_doc(
+                        storage=storage,
+                        qdrant=qdrant,
+                        collection_name=collection_name,
+                        doc_id=existing.doc_id,
+                        force=reprocess_figures,
+                    )
+                    reused["figures_reindexed"] = result.get("figures_reindexed", 0)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "Figure reindex on duplicate failed doc_id=%s: %s",
+                        existing.doc_id,
+                        exc,
+                    )
             logger.info(
                 "Ingest reused existing doc_id=%s filename=%s chunks=%s",
                 existing.doc_id,
@@ -160,9 +188,31 @@ def ingest_bytes(
     storage.save_original(doc_id, filename, data)
     fulltext, chunks = process_document(filename, data)
     mime = guess_mime(filename)
+    skip_page_xrefs: set[tuple[int, int]] = set()
+    figures_indexed = 0
     images: list[ImageMeta] = []
+    if _is_pdf_filename(filename) and figure_index_enabled():
+        try:
+            figures_indexed, skip_page_xrefs = index_pdf_figures(
+                storage=storage,
+                qdrant=qdrant,
+                collection_name=collection_name,
+                doc_id=doc_id,
+                parent_document=filename,
+                doc_sha256=digest,
+                pdf_bytes=data,
+                chunks=chunks,
+                preserve_existing=False,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Figure indexing failed doc_id=%s: %s", doc_id, exc)
     if _is_pdf_filename(filename):
-        images = _process_pdf_images(storage=storage, doc_id=doc_id, data=data)
+        images = _process_pdf_images(
+            storage=storage,
+            doc_id=doc_id,
+            data=data,
+            skip_page_xrefs=skip_page_xrefs,
+        )
 
     meta = storage.write_processed(
         doc_id=doc_id,
@@ -174,6 +224,11 @@ def ingest_bytes(
         images=images,
         status="ready",
     )
+    if figures_indexed:
+        meta.figure_index_version = FIGURE_INDEX_VERSION
+        meta.figures_count = figures_indexed
+        meta.figures_status = "done"
+        storage.write_meta(meta)
 
     texts = [str(chunk["text"]) for chunk in chunks]
     image_summaries: list[tuple[ImageMeta, str]] = []
@@ -272,6 +327,8 @@ def ingest_bytes(
         "chunks_indexed": meta.chunk_count,
         "images_indexed": indexed_images,
         "images_extracted": len(images),
+        "figures_indexed": figures_indexed,
+        "figure_index_version": meta.figure_index_version,
         "sha256": meta.sha256,
         "reused": False,
     }

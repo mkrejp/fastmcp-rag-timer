@@ -10,6 +10,7 @@ def _sha256(data: bytes) -> str:
     """Return hex SHA-256 of ``data``."""
     return hashlib.sha256(data).hexdigest()
 
+
 MIN_IMAGE_WIDTH = 64
 MIN_IMAGE_HEIGHT = 64
 MIN_IMAGE_BYTES = 4 * 1024
@@ -46,12 +47,22 @@ def _mime_for_extension(ext: str) -> str:
     }.get(lowered, "application/octet-stream")
 
 
-def extract_pdf_images(pdf_bytes: bytes) -> list[ExtractedPdfImage]:
-    """Return embedded images from ``pdf_bytes``, skipping tiny duplicates."""
+def extract_pdf_images(
+    pdf_bytes: bytes,
+    *,
+    skip_page_xrefs: set[tuple[int, int]] | None = None,
+) -> list[ExtractedPdfImage]:
+    """Return embedded images from ``pdf_bytes``, skipping tiny duplicates.
+
+    When ``skip_page_xrefs`` is set, placements ``(page_index, xref)`` indexed
+    as ``pdf_figure`` are omitted from ``pdf_image`` extraction.
+    """
     try:
         import pymupdf as fitz
     except ImportError as exc:  # pragma: no cover - dependency guard
-        raise RuntimeError("PyMuPDF (pymupdf) is required for PDF image extraction") from exc
+        raise RuntimeError(
+            "PyMuPDF (pymupdf) is required for PDF image extraction"
+        ) from exc
 
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     seen_sha: set[str] = set()
@@ -61,6 +72,8 @@ def extract_pdf_images(pdf_bytes: bytes) -> list[ExtractedPdfImage]:
             page = doc.load_page(page_index)
             for img in page.get_images(full=True):
                 xref = int(img[0])
+                if skip_page_xrefs and (page_index, xref) in skip_page_xrefs:
+                    continue
                 try:
                     base = doc.extract_image(xref)
                 except Exception:

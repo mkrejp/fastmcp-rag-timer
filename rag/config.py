@@ -244,3 +244,104 @@ def resolve_mcp_token() -> str | None:
         if value:
             return value
     return None
+
+
+FIGURE_INDEX_VERSION = 1
+
+
+def _float_env(name: str, default: float) -> float:
+    """Parse a float environment variable with a default."""
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def _bool_env_default_true(name: str) -> bool:
+    """Return whether an env flag is enabled (default true)."""
+    raw = os.getenv(name, "true").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def figure_index_enabled() -> bool:
+    """Return whether the ``pdf_figure`` pipeline runs during PDF ingest."""
+    return _bool_env_default_true("FIGURE_INDEX_ENABLED")
+
+
+def resolve_figure_min_area_ratio() -> float:
+    """Minimum on-page area ratio to index as ``pdf_figure`` (default 0.25)."""
+    return _float_env("FIGURE_MIN_AREA_RATIO", 0.25)
+
+
+def resolve_figure_render_dpi() -> int:
+    """DPI for figure clip renders stored on disk and CLIP (default 200)."""
+    return _positive_int_env("FIGURE_RENDER_DPI", 200)
+
+
+def resolve_figure_ocr_dpi() -> int:
+    """DPI for OCR renders (default 300)."""
+    return _positive_int_env("FIGURE_OCR_DPI", 300)
+
+
+def resolve_figure_ocr_accept_confidence() -> float:
+    """Mean OCR confidence required for ``ocr_ok`` (default 70)."""
+    return _float_env("FIGURE_OCR_ACCEPT_CONFIDENCE", 70.0)
+
+
+def resolve_figure_caption_max_gap() -> float:
+    """Max vertical gap caption↔bbox as fraction of page height (default 0.12)."""
+    return _float_env("FIGURE_CAPTION_MAX_GAP", 0.12)
+
+
+def resolve_figure_context_max_chars() -> int:
+    """Maximum surrounding text chars per figure candidate (default 4000)."""
+    return _positive_int_env("FIGURE_CONTEXT_MAX_CHARS", 4000)
+
+
+def resolve_figure_summary_top_k() -> int:
+    """Extractive summary sentence count excluding caption (default 3)."""
+    return _positive_int_env("FIGURE_SUMMARY_TOP_K", 3)
+
+
+def resolve_figure_summary_max_chars() -> int:
+    """Maximum summary length in characters (default 600)."""
+    return _positive_int_env("FIGURE_SUMMARY_MAX_CHARS", 600)
+
+
+def resolve_figure_summary_llm() -> str:
+    """LLM backend for figure summaries: ``off`` or ``novita`` (default off)."""
+    raw = os.getenv("FIGURE_SUMMARY_LLM", "off").strip().lower()
+    return raw if raw in ("off", "novita") else "off"
+
+
+def resolve_figure_summary_llm_model() -> str:
+    """Optional cheap Novita model id for figure LLM summaries."""
+    return os.getenv("FIGURE_SUMMARY_LLM_MODEL", "").strip()
+
+
+def resolve_figure_llm_max_input_tokens() -> int:
+    """Token budget for one figure LLM summary call (default 1500)."""
+    return _positive_int_env("FIGURE_LLM_MAX_INPUT_TOKENS", 1500)
+
+
+def resolve_figure_llm_max_calls_per_doc() -> int:
+    """Maximum LLM calls per document during figure ingest (default 50)."""
+    return _positive_int_env("FIGURE_LLM_MAX_CALLS_PER_DOC", 50)
+
+
+def resolve_figure_auto_check_min_confidence() -> float:
+    """Minimum aggregate confidence for ``auto_checked`` (default 0.7)."""
+    return _float_env("FIGURE_AUTO_CHECK_MIN_CONFIDENCE", 0.7)
+
+
+def resolve_figure_batch_size() -> int:
+    """Batch size for CLIP / text embed / Qdrant upsert (default 16)."""
+    return _positive_int_env("FIGURE_BATCH_SIZE", 16)
+
+
+def resolve_figure_max_per_doc() -> int:
+    """Safety cap on figures indexed per document (default 1500)."""
+    return _positive_int_env("FIGURE_MAX_PER_DOC", 1500)

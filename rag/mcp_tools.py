@@ -13,10 +13,14 @@ from qdrant_client import QdrantClient
 from rag.accounting import accounting_source, get_global_store
 from rag.config import COLLECTION_NAME, resolve_public_base_url
 from rag.embeddings import get_query_embedding
+from rag.figure_index import image_record_stats as aggregate_image_record_stats
+from rag.figure_index import list_image_records as scroll_image_records
+from rag.figure_index import reindex_figures_for_doc
+from rag.figure_index import verify_image_record as apply_verify_image_record
 from rag.image_embed import embed_image_query, image_embedding_enabled
 from rag.ingest import ingest_bytes
 from rag.logging_setup import get_logger
-from rag.payloads import LocalityLinkPayloadError
+from rag.payloads import ImageRecordPayloadError, LocalityLinkPayloadError
 from rag.processing import is_supported_filename
 from rag.storage import ImageMeta, RagStorage
 from rag.trails_sync import (
@@ -45,9 +49,7 @@ def _safe_trails_forward(
 ) -> dict[str, Any]:
     """Forward to Trails; never raise into an MCP tool body."""
     try:
-        return forward_locality_links(
-            qdrant, link_ids, outbox_path=outbox_path
-        )
+        return forward_locality_links(qdrant, link_ids, outbox_path=outbox_path)
     except Exception as exc:  # noqa: BLE001
         logger.warning("Trails forward wrapper failed: %s", exc)
         return {"enabled": True, "ok": False, "error": str(exc)[:300]}
@@ -333,12 +335,16 @@ def register_mcp_tools(
         limit: int = 3,
         obec_id: str = "",
         cast_obce: str = "",
+        include_figures: bool = True,
+        only_verified: bool = False,
+        min_status: str = "",
     ) -> str:
         """Query local RAG vector storage for contextual facts.
 
         Optional ``obec_id`` / ``cast_obce`` filter hits whose denormalized
         ``localities`` / ``cast_obce`` payload arrays contain those values.
-        Empty strings omit the filter (backward compatible).
+        ``only_verified`` / ``min_status`` apply to ``pdf_figure`` hits;
+        ``rejected`` figures are always omitted. Empty strings omit filters.
         """
 
         def _body() -> str:
@@ -349,24 +355,44 @@ def register_mcp_tools(
                     limit,
                 )
                 query_vector = get_query_embedding(query)
+                locality_filter = knowledge_locality_filter(
+                    obec_id=obec_id.strip() or None,
+                    cast_obce=cast_obce.strip() or None,
+                )
+                fetch_limit = (
+                    limit * 4 if (only_verified or min_status.strip()) else limit
+                )
                 results = search_similar(
                     qdrant,
                     query_vector=query_vector,
-                    limit=limit,
+                    limit=fetch_limit,
                     collection_name=collection_name,
                     vector_name=TEXT_VECTOR_NAME,
-                    query_filter=knowledge_locality_filter(
-                        obec_id=obec_id.strip() or None,
-                        cast_obce=cast_obce.strip() or None,
-                    ),
+                    query_filter=locality_filter,
                 )
                 logger.info("MCP search returned %s hits", len(results))
                 context_blocks: list[str] = []
                 for res in results:
                     payload: dict[str, Any] = res.payload or {}
+                    st = payload.get("source_type", "pdf_chunk")
+                    if st == "pdf_figure":
+                        if not include_figures:
+                            continue
+                        vstat = str(payload.get("verification_status") or "unverified")
+                        if vstat == "rejected":
+                            continue
+                        if only_verified and vstat != "verified":
+                            continue
+                        if min_status.strip() == "auto_checked" and vstat not in (
+                            "auto_checked",
+                            "verified",
+                        ):
+                            continue
                     source_name = payload.get("parent_document") or payload.get(
                         "source", "unknown"
                     )
+                    if len(context_blocks) >= limit:
+                        break
                     doc_id = payload.get("doc_id", "")
                     source_type = payload.get("source_type", "pdf_chunk")
                     page_number = payload.get("page_number")
@@ -382,6 +408,13 @@ def register_mcp_tools(
                         header += f" image_id={image_id}"
                         if url:
                             header += f" url={url}"
+                    if st == "pdf_figure":
+                        header += (
+                            f" verification_status={payload.get('verification_status')}"
+                            f" confidence={payload.get('confidence')}"
+                        )
+                        if payload.get("caption"):
+                            header += f" caption={payload.get('caption')}"
                     context_blocks.append(f"{header}\nContent: {text}\n")
                 return (
                     "\n---\n".join(context_blocks)
@@ -399,8 +432,14 @@ def register_mcp_tools(
         )
 
     @mcp.tool()
-    def search_images(query: str, limit: int = 5, hybrid: bool = False) -> str:
-        """Search PDF images by visual similarity (local CLIP) with optional text hybrid."""
+    def search_images(
+        query: str,
+        limit: int = 5,
+        hybrid: bool = False,
+        only_verified: bool = False,
+        min_status: str = "",
+    ) -> str:
+        """Search PDF images and figures by CLIP with optional text hybrid."""
 
         def _body() -> str:
             if not image_embedding_enabled():
@@ -413,7 +452,7 @@ def register_mcp_tools(
                 visual_hits = search_similar(
                     qdrant,
                     query_vector=query_vector,
-                    limit=limit,
+                    limit=limit * 4,
                     collection_name=collection_name,
                     vector_name=IMAGE_VECTOR_NAME,
                 )
@@ -422,32 +461,51 @@ def register_mcp_tools(
                     text_hits = search_similar(
                         qdrant,
                         query_vector=text_vector,
-                        limit=limit,
+                        limit=limit * 4,
                         collection_name=collection_name,
                         vector_name=TEXT_VECTOR_NAME,
                     )
                     filter_image = [
                         hit
                         for hit in text_hits
-                        if (hit.payload or {}).get("source_type") == "pdf_image"
+                        if (hit.payload or {}).get("source_type")
+                        in ("pdf_image", "pdf_figure")
                     ]
                     results = _reciprocal_rank_fusion(
-                        [visual_hits, filter_image], limit=limit
+                        [visual_hits, filter_image], limit=limit * 4
                     )
                 else:
                     results = visual_hits
                 blocks: list[str] = []
                 for res in results:
                     payload: dict[str, Any] = res.payload or {}
-                    if payload.get("source_type") != "pdf_image":
+                    st = payload.get("source_type")
+                    if st not in ("pdf_image", "pdf_figure"):
                         continue
+                    if st == "pdf_figure":
+                        vstat = str(payload.get("verification_status") or "unverified")
+                        if vstat == "rejected":
+                            continue
+                        if only_verified and vstat != "verified":
+                            continue
+                        if min_status.strip() == "auto_checked" and vstat not in (
+                            "auto_checked",
+                            "verified",
+                        ):
+                            continue
+                    if len(blocks) >= limit:
+                        break
                     doc_id = str(payload.get("doc_id", ""))
                     image_id = str(payload.get("image_id", ""))
                     page_number = payload.get("page_number")
                     parent = payload.get("parent_document") or payload.get("source")
-                    url = _image_public_url(doc_id, image_id) if doc_id and image_id else None
+                    url = (
+                        _image_public_url(doc_id, image_id)
+                        if doc_id and image_id
+                        else None
+                    )
                     summary = payload.get("content_summary") or payload.get("text", "")
-                    header = f"Source: {parent} (pdf_image)"
+                    header = f"Source: {parent} ({st})"
                     if doc_id:
                         header += f" doc_id={doc_id}"
                     if page_number is not None:
@@ -456,6 +514,13 @@ def register_mcp_tools(
                         header += f" image_id={image_id}"
                     if url:
                         header += f" url={url}"
+                    if st == "pdf_figure":
+                        header += (
+                            f" verification_status={payload.get('verification_status')}"
+                            f" confidence={payload.get('confidence')}"
+                        )
+                        if payload.get("caption"):
+                            header += f" caption={payload.get('caption')}"
                     blocks.append(f"{header}\nContent: {summary}\n")
                 return "\n---\n".join(blocks) if blocks else "No relevant images found."
             except Exception as exc:  # noqa: BLE001
@@ -620,6 +685,153 @@ def register_mcp_tools(
             "link_stats",
             request_chars=0,
             source=None,
+            fn=_body,
+        )
+
+    @mcp.tool()
+    def verify_image_record(
+        point_id: str = "",
+        doc_id: str = "",
+        figure_id: str = "",
+        status: str = "verified",
+        verified_by: str = "",
+        notes: str = "",
+        caption: str = "",
+        summary: str = "",
+    ) -> str:
+        """Set verification on a ``pdf_figure`` point and re-embed text if needed."""
+
+        def _body() -> str:
+            try:
+                result = apply_verify_image_record(
+                    qdrant,
+                    collection_name=collection_name,
+                    point_id=point_id.strip() or None,
+                    doc_id=doc_id.strip() or None,
+                    figure_id=figure_id.strip() or None,
+                    status=status,
+                    verified_by=verified_by.strip() or None,
+                    notes=notes.strip() or None,
+                    caption=caption.strip() or None,
+                    summary=summary.strip() or None,
+                )
+                return json.dumps(result, ensure_ascii=False)
+            except ImageRecordPayloadError as exc:
+                return f"Error verify_image_record: {exc}"
+
+        return _run_mcp_tool(
+            "verify_image_record",
+            request_chars=len(point_id) + len(doc_id) + len(figure_id),
+            source="ingest_mcp",
+            fn=_body,
+        )
+
+    @mcp.tool()
+    def list_image_records(
+        doc_id: str = "",
+        status: str = "",
+        limit: int = 50,
+    ) -> str:
+        """List ``pdf_figure`` records with optional doc_id and status filters."""
+
+        def _body() -> str:
+            try:
+                result = scroll_image_records(
+                    qdrant,
+                    collection_name=collection_name,
+                    doc_id=doc_id.strip() or None,
+                    status=status.strip() or None,
+                    limit=limit,
+                )
+                return json.dumps(result, ensure_ascii=False)
+            except ImageRecordPayloadError as exc:
+                return f"Error list_image_records: {exc}"
+
+        return _run_mcp_tool(
+            "list_image_records",
+            request_chars=len(doc_id) + len(status),
+            source=None,
+            fn=_body,
+        )
+
+    @mcp.tool()
+    def image_record_stats(doc_id: str) -> str:
+        """Aggregate ``pdf_figure`` verification counts for one document."""
+
+        def _body() -> str:
+            try:
+                result = aggregate_image_record_stats(
+                    qdrant,
+                    collection_name=collection_name,
+                    doc_id=doc_id.strip(),
+                )
+                return json.dumps(result, ensure_ascii=False)
+            except ImageRecordPayloadError as exc:
+                return f"Error image_record_stats: {exc}"
+
+        return _run_mcp_tool(
+            "image_record_stats",
+            request_chars=len(doc_id),
+            source=None,
+            fn=_body,
+        )
+
+    @mcp.tool()
+    def reindex_figures(
+        doc_id: str = "",
+        all: bool = False,
+        dry_run: bool = True,
+        force: bool = False,
+    ) -> str:
+        """Re-run ``pdf_figure`` indexing from stored PDFs (no chunk re-embed)."""
+
+        def _body() -> str:
+            try:
+                if all:
+                    docs = storage.list_documents()
+                    totals = 0
+                    for entry in docs:
+                        did = str(entry.get("doc_id") or "")
+                        if not did:
+                            continue
+                        meta = storage.read_meta(did)
+                        if meta is None or not meta.filename.lower().endswith(".pdf"):
+                            continue
+                        result = reindex_figures_for_doc(
+                            storage=storage,
+                            qdrant=qdrant,
+                            collection_name=collection_name,
+                            doc_id=did,
+                            dry_run=bool(dry_run),
+                            force=force,
+                        )
+                        totals += int(result.get("figures_reindexed") or 0)
+                    return json.dumps(
+                        {
+                            "status": "ok",
+                            "figures_reindexed": totals,
+                            "dry_run": dry_run,
+                        },
+                        ensure_ascii=False,
+                    )
+                if not doc_id.strip():
+                    return "Error reindex_figures: doc_id required unless all=true"
+                result = reindex_figures_for_doc(
+                    storage=storage,
+                    qdrant=qdrant,
+                    collection_name=collection_name,
+                    doc_id=doc_id.strip(),
+                    dry_run=bool(dry_run),
+                    force=force,
+                )
+                return json.dumps(result, ensure_ascii=False)
+            except ImageRecordPayloadError as exc:
+                return f"Error reindex_figures: {exc}"
+
+        return _run_mcp_tool(
+            "reindex_figures",
+            request_chars=len(doc_id),
+            source="ingest_mcp",
             fn=_body,
         )
 
