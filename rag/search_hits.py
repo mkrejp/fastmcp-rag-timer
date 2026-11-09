@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from rag.geo_refined import attach_preferred_geo, preferred_geo
 from rag.page_ids import page_image_id_from_payload_page
 from rag.storage import RagStorage
 
@@ -31,6 +32,28 @@ def page_image_id_for_hit(
     return page_image_id_from_payload_page(doc_id, page_zb)
 
 
+def geo_fallback_payload(
+    payload: dict[str, Any],
+    document_fallback: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Merge document-level geo under point payload (payload wins)."""
+    merged = dict(document_fallback or {})
+    merged.update(payload)
+    return merged
+
+
+def geo_header_suffix(
+    payload: dict[str, Any],
+    *,
+    document_fallback: dict[str, Any] | None = None,
+) -> str:
+    """Return ``lat=... lon=... geo_source=...`` when coordinates exist."""
+    geo = preferred_geo(payload, fallback=document_fallback)
+    if geo["lat"] is None or geo["lon"] is None:
+        return ""
+    return f" lat={geo['lat']} lon={geo['lon']} geo_source={geo['geo_source']}"
+
+
 def build_knowledge_hit(
     storage: RagStorage,
     payload: dict[str, Any],
@@ -38,6 +61,7 @@ def build_knowledge_hit(
     score: float | None,
     text: str,
     image_url_fn: Callable[[str, str], str | None],
+    document_fallback: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build one structured hit for ``search_domain_knowledge`` JSON output."""
     doc_id = str(payload.get("doc_id") or "")
@@ -72,7 +96,9 @@ def build_knowledge_hit(
         hit["confidence"] = payload.get("confidence")
         if payload.get("caption"):
             hit["caption"] = payload.get("caption")
-    return hit
+    return attach_preferred_geo(
+        hit, fallback=geo_fallback_payload(payload, document_fallback)
+    )
 
 
 def build_image_search_hit(
@@ -82,6 +108,7 @@ def build_image_search_hit(
     score: float | None,
     text: str,
     image_url_fn: Callable[[str, str], str | None],
+    document_fallback: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build one structured hit for ``search_images`` JSON output."""
     doc_id = str(payload.get("doc_id") or "")
@@ -111,4 +138,6 @@ def build_image_search_hit(
         hit["confidence"] = payload.get("confidence")
         if payload.get("caption"):
             hit["caption"] = payload.get("caption")
-    return hit
+    return attach_preferred_geo(
+        hit, fallback=geo_fallback_payload(payload, document_fallback)
+    )

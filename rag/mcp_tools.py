@@ -18,6 +18,17 @@ from rag.figure_index import list_figure_payloads_for_doc
 from rag.figure_index import list_image_records as scroll_image_records
 from rag.figure_index import reindex_figures_for_doc
 from rag.figure_index import verify_image_record as apply_verify_image_record
+from rag.geo_index import document_geo_fallback
+from rag.geo_index import list_geo_refinements as list_geo_refinement_records
+from rag.geo_index import refine_geo as apply_refine_geo
+from rag.geo_index import refine_geo_batch as apply_refine_geo_batch
+from rag.geo_refined import (
+    GeoRefinedNotFoundError,
+    GeoRefinedPayloadError,
+    attach_preferred_geo,
+    matches_geo_filter,
+    validate_precision,
+)
 from rag.image_embed import embed_image_query, image_embedding_enabled
 from rag.image_delivery import (
     MISSING_IMAGE_FILE_MESSAGE,
@@ -33,6 +44,7 @@ from rag.pdf_pages import get_page_highlights as compute_page_highlights
 from rag.search_hits import (
     build_image_search_hit,
     build_knowledge_hit,
+    geo_header_suffix,
     page_image_id_for_hit,
 )
 from rag.processing import is_supported_filename
@@ -162,20 +174,24 @@ def _page_image_public_url(doc_id: str, page_one_based: int) -> str | None:
 def _image_meta_with_url(
     doc_id: str,
     image: ImageMeta,
+    *,
+    fallback: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Serialize ``image`` and attach a public HTTP URL when available."""
     payload = image.to_dict()
     payload["url"] = _image_public_url(doc_id, image.image_id)
-    return payload
+    return attach_preferred_geo(payload, fallback=fallback)
 
 
 def _figure_item_with_url(
     doc_id: str,
     payload: dict[str, Any],
+    *,
+    fallback: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Serialize a ``pdf_figure`` payload in the ``get_document_images`` shape."""
     image_id = str(payload.get("image_id") or "")
-    return {
+    item = {
         "image_id": image_id,
         "sha256": str(payload.get("image_sha256") or ""),
         "file_path": str(payload.get("file_path") or ""),
@@ -188,7 +204,11 @@ def _figure_item_with_url(
         "caption": payload.get("caption"),
         "summary": payload.get("summary"),
         "figure_id": payload.get("figure_id"),
+        "lat": payload.get("lat"),
+        "lon": payload.get("lon"),
+        "geo_refined": payload.get("geo_refined"),
     }
+    return attach_preferred_geo(item, fallback=fallback or payload)
 
 
 def register_mcp_tools(
@@ -250,7 +270,14 @@ def register_mcp_tools(
             chunks = storage.read_chunks(doc_id)
             if chunks is None:
                 return f"Document chunks not found: {doc_id}"
-            return json.dumps(chunks, ensure_ascii=False, indent=2)
+            fallback = document_geo_fallback(storage, doc_id)
+            items = [
+                attach_preferred_geo(chunk, fallback=fallback)
+                if isinstance(chunk, dict)
+                else chunk
+                for chunk in chunks
+            ]
+            return json.dumps(items, ensure_ascii=False, indent=2)
 
         return _run_mcp_tool(
             "get_document_chunks",
@@ -272,7 +299,11 @@ def register_mcp_tools(
             meta = storage.read_meta(doc_id)
             if meta is None:
                 return f"Document not found: {doc_id}"
-            items = [_image_meta_with_url(doc_id, img) for img in meta.images]
+            fallback = meta.to_dict()
+            items = [
+                _image_meta_with_url(doc_id, img, fallback=fallback)
+                for img in meta.images
+            ]
             if include_figures:
                 try:
                     figures = list_figure_payloads_for_doc(
@@ -286,7 +317,9 @@ def register_mcp_tools(
                     image_id = str(payload.get("image_id") or "")
                     if not image_id:
                         continue
-                    items.append(_figure_item_with_url(doc_id, payload))
+                    items.append(
+                        _figure_item_with_url(doc_id, payload, fallback=fallback)
+                    )
             return json.dumps(items, ensure_ascii=False, indent=2)
 
         return _run_mcp_tool(
@@ -525,6 +558,7 @@ def register_mcp_tools(
                 want_json = format.strip().lower() == "json"
                 context_blocks: list[str] = []
                 json_hits: list[dict[str, Any]] = []
+                doc_geo_cache: dict[str, dict[str, Any] | None] = {}
                 for res in results:
                     payload: dict[str, Any] = res.payload or {}
                     st = payload.get("source_type", "pdf_chunk")
@@ -558,6 +592,12 @@ def register_mcp_tools(
                         payload,
                         allowed_source_types=frozenset({"pdf_chunk", "pdf_figure"}),
                     )
+                    hit_doc_id = str(doc_id or "")
+                    if hit_doc_id not in doc_geo_cache:
+                        doc_geo_cache[hit_doc_id] = document_geo_fallback(
+                            storage, hit_doc_id
+                        )
+                    document_fallback = doc_geo_cache.get(hit_doc_id)
                     if want_json:
                         json_hits.append(
                             build_knowledge_hit(
@@ -566,6 +606,7 @@ def register_mcp_tools(
                                 score=getattr(res, "score", None),
                                 text=str(text),
                                 image_url_fn=_image_public_url,
+                                document_fallback=document_fallback,
                             )
                         )
                         continue
@@ -591,6 +632,9 @@ def register_mcp_tools(
                         )
                         if payload.get("caption"):
                             header += f" caption={payload.get('caption')}"
+                    header += geo_header_suffix(
+                        payload, document_fallback=document_fallback
+                    )
                     context_blocks.append(f"{header}\nContent: {text}\n")
                 if want_json:
                     return json.dumps(json_hits, ensure_ascii=False, indent=2)
@@ -616,9 +660,15 @@ def register_mcp_tools(
         hybrid: bool = False,
         only_verified: bool = False,
         min_status: str = "",
+        precision: str = "",
+        needs_refinement: bool | None = None,
         format: str = "text",
     ) -> str:
-        """Search PDF images and figures by CLIP with optional text hybrid."""
+        """Search PDF images and figures by CLIP with optional text hybrid.
+
+        Optional ``precision`` (municipality|cast_obce|street|building) and
+        ``needs_refinement`` filter hits that have ``geo_refined`` metadata.
+        """
 
         def _body() -> str:
             if not image_embedding_enabled():
@@ -627,6 +677,7 @@ def register_mcp_tools(
                     "PDFs to index image_vector fields before using search_images."
                 )
             try:
+                validate_precision(precision.strip() or None)
                 query_vector = embed_image_query(query)
                 visual_hits = search_similar(
                     qdrant,
@@ -655,14 +706,23 @@ def register_mcp_tools(
                     )
                 else:
                     results = visual_hits
+                precision_n = validate_precision(precision.strip() or None)
                 want_json = format.strip().lower() == "json"
                 blocks: list[str] = []
                 json_hits: list[dict[str, Any]] = []
+                doc_geo_cache: dict[str, dict[str, Any] | None] = {}
                 for res in results:
                     payload: dict[str, Any] = res.payload or {}
                     st = payload.get("source_type")
                     if st not in ("pdf_image", "pdf_figure"):
                         continue
+                    if precision_n or needs_refinement is not None:
+                        if not matches_geo_filter(
+                            payload,
+                            precision=precision_n,
+                            needs_refinement=needs_refinement,
+                        ):
+                            continue
                     if st == "pdf_figure":
                         vstat = str(payload.get("verification_status") or "unverified")
                         if vstat == "rejected":
@@ -693,6 +753,12 @@ def register_mcp_tools(
                         payload,
                         allowed_source_types=frozenset({"pdf_image", "pdf_figure"}),
                     )
+                    hit_doc_id = str(doc_id or "")
+                    if hit_doc_id not in doc_geo_cache:
+                        doc_geo_cache[hit_doc_id] = document_geo_fallback(
+                            storage, hit_doc_id
+                        )
+                    document_fallback = doc_geo_cache.get(hit_doc_id)
                     if want_json:
                         json_hits.append(
                             build_image_search_hit(
@@ -701,6 +767,7 @@ def register_mcp_tools(
                                 score=getattr(res, "score", None),
                                 text=str(summary),
                                 image_url_fn=_image_public_url,
+                                document_fallback=document_fallback,
                             )
                         )
                         continue
@@ -726,6 +793,9 @@ def register_mcp_tools(
                         )
                         if payload.get("caption"):
                             header += f" caption={payload.get('caption')}"
+                    header += geo_header_suffix(
+                        payload, document_fallback=document_fallback
+                    )
                     blocks.append(f"{header}\nContent: {summary}\n")
                 if want_json:
                     return json.dumps(json_hits, ensure_ascii=False, indent=2)
@@ -735,7 +805,7 @@ def register_mcp_tools(
 
         return _run_mcp_tool(
             "search_images",
-            request_chars=len(query),
+            request_chars=len(query) + len(precision),
             source="search_mcp",
             fn=_body,
         )
@@ -937,9 +1007,15 @@ def register_mcp_tools(
     def list_image_records(
         doc_id: str = "",
         status: str = "",
+        precision: str = "",
+        needs_refinement: bool | None = None,
         limit: int = 50,
     ) -> str:
-        """List ``pdf_figure`` records with optional doc_id and status filters."""
+        """List ``pdf_figure`` records with optional doc_id and status filters.
+
+        Optional ``precision`` and ``needs_refinement`` filter on ``geo_refined``.
+        Coordinates prefer ``geo_refined`` when present (``geo_source``).
+        """
 
         def _body() -> str:
             try:
@@ -948,6 +1024,8 @@ def register_mcp_tools(
                     collection_name=collection_name,
                     doc_id=doc_id.strip() or None,
                     status=status.strip() or None,
+                    precision=precision.strip() or None,
+                    needs_refinement=needs_refinement,
                     limit=limit,
                 )
                 return json.dumps(result, ensure_ascii=False)
@@ -956,7 +1034,132 @@ def register_mcp_tools(
 
         return _run_mcp_tool(
             "list_image_records",
-            request_chars=len(doc_id) + len(status),
+            request_chars=len(doc_id) + len(status) + len(precision),
+            source=None,
+            fn=_body,
+        )
+
+    @mcp.tool()
+    def refine_geo(
+        doc_id: str,
+        geo_refined: dict[str, Any],
+        chunk_index: int | None = None,
+        image_id: str = "",
+        dry_run: bool = True,
+    ) -> str:
+        """Store a refined GPS location beside original coordinates.
+
+        Never overwrites original ``lat`` / ``lon``. ``dry_run=true`` (default)
+        returns old vs new without writing. Writes are idempotent and append
+        previous ``geo_refined`` values to ``geo_refined_history``.
+        Target an image record with ``image_id``, a chunk with ``chunk_index``,
+        or omit both to update document metadata and image records for ``doc_id``.
+        Same bearer auth as other MCP write tools (e.g. ``link_locality``).
+        """
+
+        def _body() -> str:
+            try:
+                result = apply_refine_geo(
+                    storage=storage,
+                    qdrant=qdrant,
+                    collection_name=collection_name,
+                    doc_id=doc_id,
+                    geo_refined=geo_refined,
+                    chunk_index=chunk_index,
+                    image_id=image_id.strip() or None,
+                    dry_run=bool(dry_run),
+                )
+                return json.dumps(result, ensure_ascii=False)
+            except GeoRefinedNotFoundError as exc:
+                return f"Error refine_geo: {exc}"
+            except GeoRefinedPayloadError as exc:
+                return f"Error refine_geo: {exc}"
+
+        return _run_mcp_tool(
+            "refine_geo",
+            request_chars=len(doc_id)
+            + len(image_id)
+            + len(json.dumps(geo_refined, ensure_ascii=False, default=str)),
+            source=None,
+            fn=_body,
+        )
+
+    @mcp.tool()
+    def refine_geo_batch(
+        items: list[dict[str, Any]],
+        dry_run: bool = True,
+    ) -> str:
+        """Batch ``refine_geo`` for post-deploy backfill of existing records.
+
+        Each item is ``{doc_id, chunk_index?, image_id?, geo_refined}``.
+        ``dry_run=true`` (default) reports ``would_change`` without writing.
+        Per-item ``ok`` / ``would_change`` / ``changed`` / ``error``; one bad
+        item does not abort the rest. Max ``200`` items per call (page larger
+        backfills). Same history, idempotency, and auth as ``refine_geo``.
+        """
+
+        def _body() -> str:
+            try:
+                result = apply_refine_geo_batch(
+                    storage=storage,
+                    qdrant=qdrant,
+                    collection_name=collection_name,
+                    items=items,
+                    dry_run=bool(dry_run),
+                )
+                return json.dumps(result, ensure_ascii=False)
+            except GeoRefinedPayloadError as exc:
+                return f"Error refine_geo_batch: {exc}"
+
+        return _run_mcp_tool(
+            "refine_geo_batch",
+            request_chars=len(json.dumps(items, ensure_ascii=False, default=str)),
+            source=None,
+            fn=_body,
+        )
+
+    @mcp.tool()
+    def list_geo_refinements(
+        filter: dict[str, Any] | None = None,
+        precision: str = "",
+        status: str = "",
+        confidence_level: str = "",
+        needs_refinement: bool | None = None,
+        verified: bool | None = None,
+        doc_id: str = "",
+        limit: int = 50,
+        offset: int = 0,
+    ) -> str:
+        """List stored ``geo_refined`` records with filters and pagination.
+
+        ``filter`` may include precision, status, confidence_level,
+        needs_refinement, verified, doc_id, limit, and offset. Individual
+        arguments are used when the filter omits them. Does not call embeddings.
+        """
+
+        def _body() -> str:
+            try:
+                result = list_geo_refinement_records(
+                    storage=storage,
+                    qdrant=qdrant,
+                    collection_name=collection_name,
+                    filters=filter,
+                    precision=precision.strip() or None,
+                    status=status.strip() or None,
+                    confidence_level=confidence_level.strip() or None,
+                    needs_refinement=needs_refinement,
+                    verified=verified,
+                    doc_id=doc_id.strip() or None,
+                    limit=limit,
+                    offset=offset,
+                )
+                return json.dumps(result, ensure_ascii=False)
+            except GeoRefinedPayloadError as exc:
+                return f"Error list_geo_refinements: {exc}"
+
+        return _run_mcp_tool(
+            "list_geo_refinements",
+            request_chars=len(doc_id) + len(precision) + len(status),
             source=None,
             fn=_body,
         )

@@ -181,14 +181,47 @@ Streamable HTTP MCP is mounted at **`/mcp`** (`stateless_http=True`, `streamable
 - `get_page_highlights` (`doc_id`, `page`, `query`) — JSON boxes `{page_width, page_height, highlights:[{x0,y0,x1,y1,text,method}]}` (normalized 0–1)
 - `ingest_text`
 - `search_domain_knowledge` (text `text_vector` only; optional `obec_id` / `cast_obce` payload filter; PDF hits add `page_image_id`; optional `format=json`)
-- `search_images` (CLIP `image_vector`; optional `hybrid=true`; PDF hits add `page_image_id`; optional `format=json`)
+- `search_images` (CLIP `image_vector`; optional `hybrid=true`; PDF hits add `page_image_id`; optional `format=json`; optional `precision` / `needs_refinement` filters on `geo_refined`)
 - `link_locality` (upsert document-municipality links into payload-only `locality_links`; forwards to Trails when configured; no embeddings)
 - `list_links` (filter `doc_id` / `obec_id` / `status` / `ambiguous` / `locality_level` / `cast_obce`, paginate with `limit` / `offset`)
 - `verify_link` (set `verification_status` / verifier / notes on an existing locality_links point; forwards to Trails when configured)
 - `link_stats` (counts by status, method, obec, ambiguous, locality_level)
 - `sync_links_to_trails` (idempotent backfill of `locality_links` to TrailsAssemblage; `dry_run` option)
+- `refine_geo` (`doc_id`, optional `chunk_index` / `image_id`, `geo_refined`, `dry_run=true`) — store refined GPS **beside** original `lat`/`lon` (never overwritten); writes append `geo_refined_history` and are idempotent
+- `refine_geo_batch` (`items: [{doc_id, chunk_index?, image_id?, geo_refined}]`, `dry_run=true`) — same guarantees, per-item `ok` / `would_change` / `changed` / `error`; max **200** items per call
+- `list_geo_refinements` (`filter` or individual `precision` / `status` / `confidence_level` / `needs_refinement` / `verified` / `doc_id`, paginated)
 
 No MCP resources or prompts. `/mcp` requires bearer auth (see below). There is no stdio MCP entrypoint.
+
+### Refined GPS (`geo_refined`)
+
+Original coordinates stay on the record (`lat`/`lon`, or a GeoJSON `geom` Point). An optional `geo_refined` object is stored on document metadata (`meta.json`), chunk JSON, and Qdrant image/chunk payloads via `set_payload` (no re-embed, no schema migration). Existing documents without the field keep working.
+
+```json
+{
+  "lat": 49.1951,
+  "lon": 16.6080,
+  "precision": "building",
+  "precision_m": 15,
+  "confidence": 0.86,
+  "confidence_level": "high",
+  "status": "zpresneno",
+  "sources": [{"type": "wikidata_p625", "url": "https://www.wikidata.org/wiki/Q123", "distance_m": 12.4}],
+  "method": "wikidata_p625",
+  "distance_m": 6120,
+  "needs_refinement": false,
+  "verified": false,
+  "refined_by": "gps-review",
+  "refined_at": "2026-11-09T18:00:00+00:00",
+  "note": "Deutsches Haus"
+}
+```
+
+`precision` is `municipality|cast_obce|street|building`. `status` is `overeno|zpresneno|priblizne|rozpor`. `confidence_level` is `high|medium|low`. Source `type` is `ruian_adresni_misto|wikidata_p625|commons_camera|nominatim|osm_building|manual`. `needs_refinement` defaults to true for medium/low or `rozpor`. `dry_run=true` (the default) returns old vs new without writing.
+
+Search hits, `list_image_records`, and `get_document_images` / `get_document_chunks` prefer `geo_refined` when present, else original, and expose both plus `geo_source: refined|original`. `list_image_records` and `search_images` accept optional `precision` and `needs_refinement` filters.
+
+Backfill after deploy: call `refine_geo_batch` in pages of ≤200 (try `dry_run=true` first). Same bearer auth as `link_locality`. Geo refinements are **not** forwarded to Trails.
 
 ### Frontend contract (`fastmcp-rag-timer-frontend`)
 
@@ -229,12 +262,17 @@ The frontend may proxy this as `GET /api/images/{page_image_id}` (URL-encode col
     "image_id": null,
     "url": null,
     "score": 0.82,
-    "content": "…"
+    "content": "…",
+    "lat": 49.1951,
+    "lon": 16.6080,
+    "geo_source": "refined",
+    "geo_original": {"lat": 49.2, "lon": 16.6},
+    "geo_refined": {"lat": 49.1951, "lon": 16.6080, "precision": "building"}
   }
 ]
 ```
 
-Default `format=text` leaves legacy `Source:` / `Content:` blocks unchanged and only appends `page_image_id` / `page_url` on PDF `pdf_chunk` / `pdf_figure` hits (`search_images`: `pdf_image` / `pdf_figure`).
+Default `format=text` leaves legacy `Source:` / `Content:` blocks unchanged and only appends `page_image_id` / `page_url` on PDF `pdf_chunk` / `pdf_figure` hits (`search_images`: `pdf_image` / `pdf_figure`). When coordinates exist, text headers also append `lat` / `lon` / `geo_source`.
 
 ## Documentation
 
@@ -262,6 +300,8 @@ rag/
   page_ids.py           # page:{doc_id}:{page} identifiers
   ocr.py                # local Tesseract OCR for extracted images
   payloads.py           # Qdrant payload builders
+  geo_refined.py        # geo_refined schema, prefer-refined helpers
+  geo_index.py          # refine_geo / refine_geo_batch / list_geo_refinements
   document_delete.py    # remove one document from disk + Qdrant
   geojson.py            # generic GeoJSON → RAG text
   remote.py             # fetch remote JSON (GitHub blob → raw, SSRF guards)

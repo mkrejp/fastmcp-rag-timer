@@ -9,7 +9,7 @@ import shutil
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 _IMAGE_ID_RE = re.compile(r"^[a-f0-9]{16}$")
 _DOC_ID_RE = re.compile(
@@ -69,6 +69,87 @@ def parse_iso_timestamp(value: str) -> datetime:
     return parsed
 
 
+_IMAGE_META_KNOWN = frozenset(
+    {
+        "image_id",
+        "sha256",
+        "file_path",
+        "page_number",
+        "width",
+        "height",
+        "mime",
+        "ocr_text",
+        "ocr_confidence",
+        "lat",
+        "lon",
+        "geo_refined",
+        "geo_refined_history",
+        "extra",
+    }
+)
+_DOCUMENT_META_KNOWN = frozenset(
+    {
+        "doc_id",
+        "filename",
+        "mime",
+        "sha256",
+        "uploaded_at",
+        "chunk_count",
+        "status",
+        "original_path",
+        "fulltext_path",
+        "chunks_path",
+        "images",
+        "figure_index_version",
+        "figures_count",
+        "figures_status",
+        "lat",
+        "lon",
+        "geo_refined",
+        "geo_refined_history",
+        "extra",
+    }
+)
+
+
+def _optional_float(value: object) -> float | None:
+    """Return ``value`` as float, or ``None`` when unset."""
+    if value is None or value == "":
+        return None
+    return float(value)
+
+
+def _optional_geo_object(value: object) -> dict[str, Any] | None:
+    """Return a mapping for ``geo_refined``, or ``None``."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, dict):
+        return dict(value)
+    return None
+
+
+def _geo_history(value: object) -> list[dict[str, Any]]:
+    """Return a list of previous ``geo_refined`` objects."""
+    if not value:
+        return []
+    if not isinstance(value, list):
+        return []
+    return [dict(item) for item in value if isinstance(item, dict)]
+
+
+def _unknown_extra(data: Mapping[str, Any], known: frozenset[str]) -> dict[str, Any]:
+    """Preserve unrecognized metadata keys (including original GPS aliases)."""
+    extra: dict[str, Any] = {}
+    nested = data.get("extra")
+    if isinstance(nested, dict):
+        extra.update(nested)
+    for key, value in data.items():
+        if key in known or key == "images":
+            continue
+        extra[key] = value
+    return extra
+
+
 @dataclass
 class ImageMeta:
     """Metadata for one extracted PDF image on disk."""
@@ -82,10 +163,26 @@ class ImageMeta:
     mime: str
     ocr_text: str | None = None
     ocr_confidence: float | None = None
+    lat: float | None = None
+    lon: float | None = None
+    geo_refined: dict[str, Any] | None = None
+    geo_refined_history: list[dict[str, Any]] = field(default_factory=list)
+    extra: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize image metadata to a plain dictionary."""
-        return asdict(self)
+        payload = asdict(self)
+        extra = payload.pop("extra", {}) or {}
+        out = {**extra, **payload}
+        if out.get("lat") is None:
+            out.pop("lat", None)
+        if out.get("lon") is None:
+            out.pop("lon", None)
+        if out.get("geo_refined") is None:
+            out.pop("geo_refined", None)
+        if not out.get("geo_refined_history"):
+            out.pop("geo_refined_history", None)
+        return out
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ImageMeta:
@@ -103,6 +200,11 @@ class ImageMeta:
                 str(data["ocr_text"]) if data.get("ocr_text") is not None else None
             ),
             ocr_confidence=float(ocr_conf) if ocr_conf is not None else None,
+            lat=_optional_float(data.get("lat")),
+            lon=_optional_float(data.get("lon")),
+            geo_refined=_optional_geo_object(data.get("geo_refined")),
+            geo_refined_history=_geo_history(data.get("geo_refined_history")),
+            extra=_unknown_extra(data, _IMAGE_META_KNOWN),
         )
 
 
@@ -124,12 +226,28 @@ class DocumentMeta:
     figure_index_version: int = 0
     figures_count: int = 0
     figures_status: str = "pending"
+    lat: float | None = None
+    lon: float | None = None
+    geo_refined: dict[str, Any] | None = None
+    geo_refined_history: list[dict[str, Any]] = field(default_factory=list)
+    extra: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize metadata to a plain dictionary."""
         payload = asdict(self)
-        payload["images"] = [img.to_dict() for img in self.images]
-        return payload
+        extra = payload.pop("extra", {}) or {}
+        payload.pop("images", None)
+        out = {**extra, **payload}
+        out["images"] = [img.to_dict() for img in self.images]
+        if out.get("lat") is None:
+            out.pop("lat", None)
+        if out.get("lon") is None:
+            out.pop("lon", None)
+        if out.get("geo_refined") is None:
+            out.pop("geo_refined", None)
+        if not out.get("geo_refined_history"):
+            out.pop("geo_refined_history", None)
+        return out
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> DocumentMeta:
@@ -153,6 +271,11 @@ class DocumentMeta:
             figure_index_version=int(data.get("figure_index_version") or 0),
             figures_count=int(data.get("figures_count") or 0),
             figures_status=str(data.get("figures_status") or "pending"),
+            lat=_optional_float(data.get("lat")),
+            lon=_optional_float(data.get("lon")),
+            geo_refined=_optional_geo_object(data.get("geo_refined")),
+            geo_refined_history=_geo_history(data.get("geo_refined_history")),
+            extra=_unknown_extra(data, _DOCUMENT_META_KNOWN),
         )
 
 
@@ -343,6 +466,16 @@ class RagStorage:
         if not isinstance(data, list):
             raise ValueError(f"Invalid chunks.json for doc_id={doc_id}")
         return data
+
+    def write_chunks(self, doc_id: str, chunks: list[dict[str, Any]]) -> None:
+        """Overwrite ``chunks.json`` for ``doc_id`` (does not change Qdrant)."""
+        dest_dir = self.processed_doc_dir(doc_id)
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        chunks_path = dest_dir / "chunks.json"
+        chunks_path.write_text(
+            json.dumps(chunks, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
 
     def find_by_sha256(self, sha256: str) -> DocumentMeta | None:
         """Return an existing document with the same content hash, if any."""
