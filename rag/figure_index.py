@@ -357,6 +357,26 @@ def verify_image_record(
     return {"status": "ok", "figure": payload}
 
 
+def list_figure_payloads_for_doc(
+    qdrant: QdrantClient,
+    *,
+    collection_name: str,
+    doc_id: str,
+) -> list[dict[str, Any]]:
+    """Return all ``pdf_figure`` payloads for ``doc_id`` (unbounded scroll)."""
+    existing = _load_existing_figure_payloads(
+        qdrant, collection_name=collection_name, doc_id=doc_id
+    )
+    records = list(existing.values())
+    records.sort(
+        key=lambda payload: (
+            int(payload.get("page_number") or 0),
+            str(payload.get("figure_id") or ""),
+        )
+    )
+    return records
+
+
 def list_image_records(
     qdrant: QdrantClient,
     *,
