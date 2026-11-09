@@ -9,14 +9,25 @@ from typing import Any, Mapping, Sequence
 
 LOCALITY_LINK_TYPE_DEFAULT = "mentions_locality"
 LOCALITY_SOURCE_DATASET_DEFAULT = "rag-timer"
-LOCALITY_SOURCE_TYPES = frozenset({"pdf_chunk", "pdf_image", "text_chunk"})
-LOCALITY_METHODS = frozenset({"exact", "lemma", "fuzzy", "llm", "manual"})
-LOCALITY_VERIFICATION_STATUSES = frozenset(
-    {"unverified", "verified", "rejected"}
+LOCALITY_SOURCE_TYPES = frozenset(
+    {"pdf_chunk", "pdf_image", "pdf_figure", "text_chunk"}
 )
+FIGURE_VERIFICATION_STATUSES = frozenset(
+    {"unverified", "auto_checked", "verified", "rejected"}
+)
+LOCALITY_METHODS = frozenset({"exact", "lemma", "fuzzy", "llm", "manual"})
+LOCALITY_VERIFICATION_STATUSES = frozenset({"unverified", "verified", "rejected"})
 LOCALITY_CONFIDENCE_LEVELS = frozenset({"high", "medium", "low"})
 LOCALITY_LEVELS = frozenset({"obec", "cast_obce"})
 LOCALITY_LEVEL_DEFAULT = "obec"
+
+
+class ImageRecordPayloadError(ValueError):
+    """Raised when a pdf_figure payload is missing or invalid."""
+
+
+class ImageRecordNotFoundError(ImageRecordPayloadError):
+    """Raised when a pdf_figure point id does not exist."""
 
 
 class LocalityLinkPayloadError(ValueError):
@@ -170,18 +181,12 @@ def _parse_locality_level_and_cast(
         kod_from_alias = cast_field.strip()
     elif isinstance(cast_field, Mapping):
         kod_from_alias = (
-            str(
-                cast_field.get("kod")
-                or cast_field.get("cast_obce_kod")
-                or ""
-            ).strip()
+            str(cast_field.get("kod") or cast_field.get("cast_obce_kod") or "").strip()
             or None
         )
         name_from_alias = (
             str(
-                cast_field.get("name")
-                or cast_field.get("cast_obce_name")
-                or ""
+                cast_field.get("name") or cast_field.get("cast_obce_name") or ""
             ).strip()
             or None
         )
@@ -201,9 +206,7 @@ def _parse_locality_level_and_cast(
         level = LOCALITY_LEVEL_DEFAULT
     if level not in LOCALITY_LEVELS:
         allowed = ", ".join(sorted(LOCALITY_LEVELS))
-        raise LocalityLinkPayloadError(
-            f"locality_level must be one of: {allowed}"
-        )
+        raise LocalityLinkPayloadError(f"locality_level must be one of: {allowed}")
     if level == "obec":
         if kod:
             raise LocalityLinkPayloadError(
@@ -276,22 +279,17 @@ def build_locality_link_payload(
     method = _require_text(raw, "method")
     if source_type not in LOCALITY_SOURCE_TYPES:
         allowed = ", ".join(sorted(LOCALITY_SOURCE_TYPES))
-        raise LocalityLinkPayloadError(
-            f"source_type must be one of: {allowed}"
-        )
+        raise LocalityLinkPayloadError(f"source_type must be one of: {allowed}")
     if method not in LOCALITY_METHODS:
         allowed = ", ".join(sorted(LOCALITY_METHODS))
         raise LocalityLinkPayloadError(f"method must be one of: {allowed}")
 
     verification_status = (
-        _optional_text(raw, "verification_status", "unverified").strip()
-        or "unverified"
+        _optional_text(raw, "verification_status", "unverified").strip() or "unverified"
     )
     if verification_status not in LOCALITY_VERIFICATION_STATUSES:
         allowed = ", ".join(sorted(LOCALITY_VERIFICATION_STATUSES))
-        raise LocalityLinkPayloadError(
-            f"verification_status must be one of: {allowed}"
-        )
+        raise LocalityLinkPayloadError(f"verification_status must be one of: {allowed}")
     verified_default = verification_status == "verified"
     verified = _optional_bool(raw, "verified", verified_default)
     if verification_status == "verified":
@@ -321,9 +319,7 @@ def build_locality_link_payload(
     if geom is not None and not isinstance(geom, (dict, list)):
         raise LocalityLinkPayloadError("geom must be an object when provided")
 
-    locality_level, cast_obce_kod, cast_obce_name = _parse_locality_level_and_cast(
-        raw
-    )
+    locality_level, cast_obce_kod, cast_obce_name = _parse_locality_level_and_cast(raw)
     link_id = stable_locality_link_id(
         doc_id=doc_id,
         chunk_index=chunk_index,
@@ -421,6 +417,183 @@ def build_chunk_payload(
     if source_url:
         payload["source_url"] = source_url
     return payload
+
+
+def stable_figure_point_id(doc_id: str, figure_id: str) -> str:
+    """Return a stable Qdrant point id for a ``pdf_figure`` record."""
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"{doc_id}:fig:{figure_id}"))
+
+
+def build_figure_content_summary(
+    *,
+    page_number: int,
+    caption: str | None,
+    summary: str,
+    ocr_text: str | None,
+    figure_label: str | None = None,
+) -> str:
+    """Compose the searchable text body for a figure record."""
+    page_label = page_number + 1
+    parts: list[str] = []
+    if caption:
+        prefix = figure_label or f"Obr. {page_label}"
+        parts.append(f"{prefix}, str. {page_label}: {caption}.")
+    if summary:
+        parts.append(summary)
+    if ocr_text:
+        parts.append(f"Text v obrázku: {ocr_text}")
+    return " ".join(part for part in parts if part).strip()
+
+
+def apply_image_record_verification(
+    payload: Mapping[str, Any],
+    *,
+    status: str,
+    verified_by: str | None = None,
+    notes: str | None = None,
+    caption: str | None = None,
+    summary: str | None = None,
+    now: str | None = None,
+) -> dict[str, Any]:
+    """Return a copy of ``payload`` with figure verification fields updated."""
+    status_norm = str(status).strip()
+    if status_norm not in FIGURE_VERIFICATION_STATUSES:
+        allowed = ", ".join(sorted(FIGURE_VERIFICATION_STATUSES))
+        raise ImageRecordPayloadError(f"status must be one of: {allowed}")
+    timestamp = now or _utc_now_iso()
+    updated = dict(payload)
+    updated["verification_status"] = status_norm
+    updated["verified"] = status_norm == "verified"
+    verification = dict(updated.get("verification") or {})
+    if verified_by is not None:
+        verification["verified_by"] = str(verified_by).strip() or None
+    if notes is not None:
+        verification["notes"] = str(notes).strip() or None
+    if status_norm in ("verified", "rejected"):
+        verification["verified_at"] = timestamp
+    elif status_norm == "unverified":
+        verification["verified_at"] = None
+    overrides = dict(verification.get("human_overrides") or {})
+    if caption is not None:
+        overrides["caption"] = caption or None
+    if summary is not None:
+        overrides["summary"] = summary or None
+    if overrides:
+        verification["human_overrides"] = overrides
+    updated["verification"] = verification
+    if caption is not None and caption:
+        updated["caption"] = caption
+    if summary is not None and summary:
+        updated["summary"] = summary
+        updated["summary_method"] = "manual"
+    updated["updated_at"] = timestamp
+    page_number = int(updated.get("page_number") or 0)
+    content = build_figure_content_summary(
+        page_number=page_number,
+        caption=str(updated.get("caption") or "") or None,
+        summary=str(updated.get("summary") or ""),
+        ocr_text=str(updated.get("ocr_text") or "") or None,
+        figure_label=str(updated.get("figure_label") or "") or None,
+    )
+    updated["content_summary"] = content
+    updated["text"] = content
+    updated["chunk_sha256"] = chunk_text_sha256(content)
+    return updated
+
+
+def build_figure_payload(
+    *,
+    doc_id: str,
+    parent_document: str,
+    doc_sha256: str,
+    figure_id: str,
+    page_number: int,
+    bbox: Sequence[float],
+    page_size: Sequence[float],
+    area_ratio: float,
+    placements: int,
+    tiled: bool,
+    image_id: str,
+    image_sha256: str,
+    file_path: str,
+    render: Mapping[str, Any],
+    figure_label: str | None,
+    figure_number: str | None,
+    caption: str | None,
+    caption_source: str,
+    ocr_text: str,
+    ocr_text_raw: str,
+    ocr_confidence: float | None,
+    ocr_word_count: int,
+    ocr_source: str,
+    related_text_refs: Sequence[Mapping[str, Any]],
+    summary: str,
+    summary_sentences: Sequence[Mapping[str, Any]],
+    summary_method: str,
+    summary_model: str | None,
+    verified: bool,
+    verification_status: str,
+    confidence: float,
+    verification: Mapping[str, Any],
+    figure_index_version: int,
+    localities: Sequence[str] | None = None,
+    cast_obce: Sequence[str] | None = None,
+    created_at: str | None = None,
+    updated_at: str | None = None,
+) -> dict[str, Any]:
+    """Build the payload for a ``pdf_figure`` point."""
+    timestamp = updated_at or _utc_now_iso()
+    content_summary = build_figure_content_summary(
+        page_number=page_number,
+        caption=caption,
+        summary=summary,
+        ocr_text=ocr_text or None,
+        figure_label=figure_label,
+    )
+    return {
+        "source_type": "pdf_figure",
+        "figure_id": figure_id,
+        "doc_id": doc_id,
+        "parent_document": parent_document,
+        "sha256": doc_sha256,
+        "page_number": page_number,
+        "bbox": [float(v) for v in bbox],
+        "page_size": [float(v) for v in page_size],
+        "area_ratio": float(area_ratio),
+        "placements": int(placements),
+        "tiled": bool(tiled),
+        "image_id": image_id,
+        "image_sha256": image_sha256,
+        "file_path": file_path,
+        "render": dict(render),
+        "figure_label": figure_label,
+        "figure_number": figure_number,
+        "caption": caption,
+        "caption_source": caption_source,
+        "ocr_text": ocr_text,
+        "ocr_text_raw": ocr_text_raw,
+        "ocr_confidence": ocr_confidence,
+        "ocr_word_count": int(ocr_word_count),
+        "ocr_source": ocr_source,
+        "related_text_refs": [dict(ref) for ref in related_text_refs],
+        "summary": summary,
+        "summary_sentences": [dict(item) for item in summary_sentences],
+        "summary_method": summary_method,
+        "summary_model": summary_model,
+        "content_summary": content_summary,
+        "text": content_summary,
+        "chunk_sha256": chunk_text_sha256(content_summary),
+        "verified": bool(verified),
+        "verification_status": verification_status,
+        "confidence": float(confidence),
+        "verification": dict(verification),
+        "localities": list(localities) if localities else [],
+        "cast_obce": list(cast_obce) if cast_obce else [],
+        "figure_index_version": int(figure_index_version),
+        "source": parent_document,
+        "created_at": created_at or timestamp,
+        "updated_at": timestamp,
+    }
 
 
 def build_image_payload(

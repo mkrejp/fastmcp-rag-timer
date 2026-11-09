@@ -198,18 +198,22 @@ def ensure_payload_indexes(
     """Create keyword indexes used by filters and admin tooling."""
     if not client.collection_exists(collection_name):
         return
-    for field_name in (
-        "source_type",
-        "doc_id",
-        "chunk_sha256",
-        "localities",
-        "cast_obce",
+    for field_name, schema in (
+        ("source_type", PayloadSchemaType.KEYWORD),
+        ("doc_id", PayloadSchemaType.KEYWORD),
+        ("chunk_sha256", PayloadSchemaType.KEYWORD),
+        ("localities", PayloadSchemaType.KEYWORD),
+        ("cast_obce", PayloadSchemaType.KEYWORD),
+        ("verification_status", PayloadSchemaType.KEYWORD),
+        ("figure_number", PayloadSchemaType.KEYWORD),
+        ("page_number", PayloadSchemaType.INTEGER),
+        ("verified", PayloadSchemaType.BOOL),
     ):
         try:
             client.create_payload_index(
                 collection_name=collection_name,
                 field_name=field_name,
-                field_schema=PayloadSchemaType.KEYWORD,
+                field_schema=schema,
             )
         except Exception as exc:  # noqa: BLE001 - index may already exist
             logger.debug(
@@ -402,13 +406,9 @@ def knowledge_locality_filter(
     """Build a payload filter for ``search_domain_knowledge`` locality args."""
     must: list[FieldCondition] = []
     if obec_id:
-        must.append(
-            FieldCondition(key="localities", match=MatchValue(value=obec_id))
-        )
+        must.append(FieldCondition(key="localities", match=MatchValue(value=obec_id)))
     if cast_obce:
-        must.append(
-            FieldCondition(key="cast_obce", match=MatchValue(value=cast_obce))
-        )
+        must.append(FieldCondition(key="cast_obce", match=MatchValue(value=cast_obce)))
     if not must:
         return None
     return Filter(must=must)
@@ -423,9 +423,7 @@ def _locality_point_vector(
     that already exists is written with a zero vector and is never queried by
     similarity. Existing collections are never deleted to change layout.
     """
-    _legacy, named_sizes = _collection_vector_layout(
-        client, LOCALITY_LINKS_COLLECTION
-    )
+    _legacy, named_sizes = _collection_vector_layout(client, LOCALITY_LINKS_COLLECTION)
     if not named_sizes:
         return {}
     if set(named_sizes.keys()) == {"default"} and named_sizes["default"] == 1:
@@ -449,19 +447,13 @@ def _locality_links_filter(
     """Build a Qdrant payload filter for ``list_locality_links``."""
     must: list[FieldCondition] = []
     if doc_id:
-        must.append(
-            FieldCondition(key="doc_id", match=MatchValue(value=doc_id))
-        )
+        must.append(FieldCondition(key="doc_id", match=MatchValue(value=doc_id)))
     if obec_id:
-        must.append(
-            FieldCondition(key="obec_id", match=MatchValue(value=obec_id))
-        )
+        must.append(FieldCondition(key="obec_id", match=MatchValue(value=obec_id)))
     if status:
         if status not in LOCALITY_VERIFICATION_STATUSES:
             allowed = ", ".join(sorted(LOCALITY_VERIFICATION_STATUSES))
-            raise LocalityLinkPayloadError(
-                f"status must be one of: {allowed}"
-            )
+            raise LocalityLinkPayloadError(f"status must be one of: {allowed}")
         must.append(
             FieldCondition(
                 key="verification_status",
@@ -478,9 +470,7 @@ def _locality_links_filter(
     if locality_level:
         if locality_level not in LOCALITY_LEVELS:
             allowed = ", ".join(sorted(LOCALITY_LEVELS))
-            raise LocalityLinkPayloadError(
-                f"locality_level must be one of: {allowed}"
-            )
+            raise LocalityLinkPayloadError(f"locality_level must be one of: {allowed}")
         must.append(
             FieldCondition(
                 key="locality_level",
@@ -521,9 +511,7 @@ def upsert_locality_links(
         with_payload=True,
         with_vectors=False,
     )
-    existing_by_id = {
-        str(point.id): (point.payload or {}) for point in existing_points
-    }
+    existing_by_id = {str(point.id): (point.payload or {}) for point in existing_points}
     points: list[PointStruct] = []
     ids: list[str] = []
     built_payloads: list[dict[str, Any]] = []
@@ -605,7 +593,7 @@ def list_locality_links(
         gathered.extend(batch)
         if next_offset is None:
             break
-    page = gathered[offset_n:offset_n + limit_n]
+    page = gathered[offset_n : offset_n + limit_n]
     links: list[dict[str, Any]] = []
     for point in page:
         payload = dict(point.payload or {})

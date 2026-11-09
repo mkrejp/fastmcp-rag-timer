@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from PIL import Image
 
@@ -19,7 +19,10 @@ def test_ocr_filters_low_confidence_words(tmp_path: Path) -> None:
         "text": ["acceptable", "bad", "confidence"],
         "conf": ["90", "10", "85"],
     }
-    with patch("pytesseract.image_to_data", return_value=fake_data):
+    mock_tesseract = MagicMock()
+    mock_tesseract.image_to_data.return_value = fake_data
+    mock_tesseract.Output = MagicMock(DICT="dict")
+    with patch("rag.ocr.pytesseract", mock_tesseract):
         with patch("rag.ocr.tesseract_is_available", return_value=True):
             with patch("rag.ocr.resolve_ocr_enabled", return_value=True):
                 text, conf = ocr_image_file(img_path)
@@ -36,7 +39,10 @@ def test_ocr_short_text_not_indexed(tmp_path: Path) -> None:
         "text": ["tiny"],
         "conf": ["99"],
     }
-    with patch("pytesseract.image_to_data", return_value=fake_data):
+    mock_tesseract = MagicMock()
+    mock_tesseract.image_to_data.return_value = fake_data
+    mock_tesseract.Output = MagicMock(DICT="dict")
+    with patch("rag.ocr.pytesseract", mock_tesseract):
         with patch("rag.ocr.tesseract_is_available", return_value=True):
             with patch("rag.ocr.resolve_ocr_enabled", return_value=True):
                 text, _ = ocr_image_file(img_path)

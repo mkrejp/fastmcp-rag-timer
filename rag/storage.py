@@ -94,6 +94,9 @@ class DocumentMeta:
     fulltext_path: str
     chunks_path: str
     images: list[ImageMeta] = field(default_factory=list)
+    figure_index_version: int = 0
+    figures_count: int = 0
+    figures_status: str = "pending"
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize metadata to a plain dictionary."""
@@ -120,6 +123,9 @@ class DocumentMeta:
             fulltext_path=str(data["fulltext_path"]),
             chunks_path=str(data["chunks_path"]),
             images=images,
+            figure_index_version=int(data.get("figure_index_version") or 0),
+            figures_count=int(data.get("figures_count") or 0),
+            figures_status=str(data.get("figures_status") or "pending"),
         )
 
 
@@ -236,6 +242,7 @@ class RagStorage:
             fulltext_path=str(fulltext_path),
             chunks_path=str(chunks_path),
             images=list(images or []),
+            figures_status="pending",
         )
         meta_path.write_text(
             json.dumps(meta.to_dict(), ensure_ascii=False, indent=2),
@@ -243,6 +250,15 @@ class RagStorage:
         )
         self.upsert_index_entry(meta)
         return meta
+
+    def write_meta(self, meta: DocumentMeta) -> None:
+        """Persist updated ``meta.json`` and refresh the catalog entry."""
+        meta_path = self.processed_doc_dir(meta.doc_id) / "meta.json"
+        meta_path.write_text(
+            json.dumps(meta.to_dict(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        self.upsert_index_entry(meta)
 
     def read_meta(self, doc_id: str) -> DocumentMeta | None:
         """Load document metadata, or ``None`` if missing."""
@@ -319,6 +335,9 @@ class RagStorage:
                 "uploaded_at": meta.uploaded_at,
                 "chunk_count": meta.chunk_count,
                 "status": meta.status,
+                "figure_index_version": meta.figure_index_version,
+                "figures_count": meta.figures_count,
+                "figures_status": meta.figures_status,
             }
         )
         entries.sort(key=lambda e: str(e.get("uploaded_at", "")), reverse=True)
