@@ -16,6 +16,8 @@ MCP_TOOLS = (
     "list_documents",
     "get_document_text",
     "get_document_chunks",
+    "get_page_highlights",
+    "get_page_image",
     "ingest_text",
     "search_domain_knowledge",
     "link_locality",

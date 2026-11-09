@@ -345,3 +345,23 @@ def resolve_figure_batch_size() -> int:
 def resolve_figure_max_per_doc() -> int:
     """Safety cap on figures indexed per document (default 1500)."""
     return _positive_int_env("FIGURE_MAX_PER_DOC", 1500)
+
+
+def resolve_page_render_dpi() -> int:
+    """DPI for full-page JPEG renders (default 150)."""
+    return _positive_int_env("PAGE_RENDER_DPI", 150)
+
+
+def resolve_page_render_quality() -> int:
+    """JPEG quality for page renders (default 85)."""
+    raw = os.getenv("PAGE_RENDER_QUALITY", "85").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        return 85
+    return max(40, min(95, value))
+
+
+def resolve_page_render_max_pixels() -> int:
+    """Cap longest edge of rendered page images in pixels (default 2400)."""
+    return _positive_int_env("PAGE_RENDER_MAX_PIXELS", 2400)

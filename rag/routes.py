@@ -33,6 +33,8 @@ from rag.chunked_upload import (
     UploadExpiredError,
     UploadNotFoundError,
 )
+from rag.image_delivery import resolve_image_delivery
+from rag.page_ids import parse_page_image_id
 from rag.storage import RagStorage
 
 MAX_IMAGE_HTTP_BYTES = 50 * 1024 * 1024
@@ -459,29 +461,29 @@ def get_image_http(doc_id: str, image_id: str, request: Request) -> FileResponse
     storage = _storage(request)
     try:
         storage.validate_doc_id(doc_id)
-        storage.validate_image_id(image_id)
+        storage.validate_image_route_id(image_id)
+        parsed = parse_page_image_id(image_id)
+        if parsed is not None:
+            pid, _page = parsed
+            if pid != doc_id:
+                raise ValueError("doc_id mismatch")
+        path, mime = resolve_image_delivery(
+            storage,
+            doc_id=doc_id,
+            image_id=image_id,
+        )
+    except FileNotFoundError as exc:
+        _record_http(route="images_get", ok=False, error=str(exc))
+        raise HTTPException(status_code=404, detail="Image not found") from exc
     except ValueError as exc:
         _record_http(route="images_get", ok=False, error=str(exc))
         raise HTTPException(status_code=404, detail="Image not found") from exc
-
-    image_meta = storage.find_image(doc_id, image_id)
-    if image_meta is None:
-        _record_http(route="images_get", ok=False, error="not found")
-        raise HTTPException(status_code=404, detail="Image not found")
-    try:
-        path = storage.image_file_path(doc_id, image_meta)
-    except ValueError as exc:
-        _record_http(route="images_get", ok=False, error=str(exc))
-        raise HTTPException(status_code=404, detail="Image not found") from exc
-    if not path.is_file():
-        _record_http(route="images_get", ok=False, error="missing file")
-        raise HTTPException(status_code=404, detail="Image not found")
     if path.stat().st_size > MAX_IMAGE_HTTP_BYTES:
         _record_http(route="images_get", ok=False, error="too large")
         raise HTTPException(status_code=413, detail="Image file too large")
 
     _record_http(route="images_get", ok=True)
-    return FileResponse(path, media_type=image_meta.mime)
+    return FileResponse(path, media_type=mime)
 
 
 @router.get("/documents/{doc_id}/text")
