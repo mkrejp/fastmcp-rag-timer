@@ -15,6 +15,11 @@ from rag.embeddings import get_ingest_embeddings
 from rag.figure_summary import FigureLlmBudget
 from rag.image_embed import embed_image_paths, image_embedding_enabled
 from rag.logging_setup import get_logger
+from rag.geo_refined import (
+    attach_preferred_geo,
+    matches_geo_filter,
+    validate_precision,
+)
 from rag.payloads import (
     ImageRecordNotFoundError,
     ImageRecordPayloadError,
@@ -32,6 +37,8 @@ def _figure_filter(
     *,
     doc_id: str | None = None,
     verification_status: str | None = None,
+    precision: str | None = None,
+    needs_refinement: bool | None = None,
 ) -> Filter | None:
     """Build a Qdrant filter for pdf_figure records."""
     must: list[FieldCondition] = [
@@ -44,6 +51,20 @@ def _figure_filter(
             FieldCondition(
                 key="verification_status",
                 match=MatchValue(value=verification_status),
+            )
+        )
+    if precision:
+        must.append(
+            FieldCondition(
+                key="geo_refined.precision",
+                match=MatchValue(value=precision),
+            )
+        )
+    if needs_refinement is not None:
+        must.append(
+            FieldCondition(
+                key="geo_refined.needs_refinement",
+                match=MatchValue(value=bool(needs_refinement)),
             )
         )
     return Filter(must=must)
@@ -80,6 +101,24 @@ def _load_existing_figure_payloads(
     return result
 
 
+def _merge_preserved_geo(
+    new_payload: dict[str, Any],
+    existing: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Keep original coordinates and ``geo_refined`` across figure reindex."""
+    if not existing:
+        return new_payload
+    merged = dict(new_payload)
+    for key in ("lat", "lon", "latitude", "longitude", "geom"):
+        if key in existing and key not in merged:
+            merged[key] = existing[key]
+    if existing.get("geo_refined") is not None:
+        merged["geo_refined"] = existing.get("geo_refined")
+    if existing.get("geo_refined_history"):
+        merged["geo_refined_history"] = existing.get("geo_refined_history")
+    return merged
+
+
 def _merge_preserved_verification(
     new_payload: dict[str, Any],
     existing: Mapping[str, Any] | None,
@@ -87,10 +126,10 @@ def _merge_preserved_verification(
     """Keep human verified/rejected state and overrides from ``existing``."""
     if not existing:
         return new_payload
+    merged = _merge_preserved_geo(new_payload, existing)
     status = str(existing.get("verification_status") or "")
     if status not in ("verified", "rejected"):
-        return new_payload
-    merged = dict(new_payload)
+        return merged
     merged["verification_status"] = status
     merged["verified"] = status == "verified"
     verification = dict(existing.get("verification") or {})
@@ -383,18 +422,44 @@ def list_image_records(
     collection_name: str,
     doc_id: str | None = None,
     status: str | None = None,
+    precision: str | None = None,
+    needs_refinement: bool | None = None,
     limit: int = 50,
 ) -> dict[str, Any]:
     """List pdf_figure payloads with optional filters."""
-    scroll_filter = _figure_filter(doc_id=doc_id, verification_status=status or None)
+    precision_n = None
+    if precision:
+        try:
+            precision_n = validate_precision(precision)
+        except Exception as exc:  # noqa: BLE001
+            raise ImageRecordPayloadError(str(exc)) from exc
+    scroll_filter = _figure_filter(
+        doc_id=doc_id,
+        verification_status=status or None,
+    )
+    fetch_limit = min(max(limit, 1), 200)
+    if precision_n is not None or needs_refinement is not None:
+        fetch_limit = 200
     batch, _ = qdrant.scroll(
         collection_name=collection_name,
         scroll_filter=scroll_filter,
-        limit=min(max(limit, 1), 200),
+        limit=fetch_limit,
         with_payload=True,
         with_vectors=False,
     )
-    records = [dict(point.payload or {}) for point in batch]
+    records = []
+    geo_filter = precision_n is not None or needs_refinement is not None
+    for point in batch:
+        payload = dict(point.payload or {})
+        if geo_filter and not matches_geo_filter(
+            payload,
+            precision=precision_n,
+            needs_refinement=needs_refinement,
+        ):
+            continue
+        records.append(attach_preferred_geo(payload))
+        if len(records) >= min(max(limit, 1), 200):
+            break
     return {"records": records, "returned": len(records), "limit": limit}
 
 

@@ -45,6 +45,9 @@ def test_mcp_accepts_railway_host_with_token(client):
         "verify_link",
         "link_stats",
         "sync_links_to_trails",
+        "refine_geo",
+        "refine_geo_batch",
+        "list_geo_refinements",
     ):
         assert name in r.text
 

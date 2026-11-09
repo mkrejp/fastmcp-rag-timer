@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -49,6 +50,50 @@ def test_write_and_read_processed_artifacts(rag_storage: RagStorage) -> None:
     catalog = rag_storage.list_documents()
     assert len(catalog) == 1
     assert catalog[0]["doc_id"] == doc_id
+
+
+def test_meta_preserves_original_lat_lon_and_extra(rag_storage: RagStorage) -> None:
+    """Original GPS fields on meta.json must survive a geo_refined write round-trip."""
+    doc_id = "33333333-3333-3333-3333-333333333333"
+    rag_storage.save_original(doc_id, "akon.txt", b"akon")
+    rag_storage.write_processed(
+        doc_id=doc_id,
+        filename="akon.txt",
+        mime="text/plain",
+        sha256="gps",
+        fulltext="akon",
+        chunks=[{"index": 0, "text": "akon", "page": 0, "lat": 50.0, "lon": 14.4}],
+    )
+    meta = rag_storage.read_meta(doc_id)
+    assert meta is not None
+    meta.lat = 50.0755
+    meta.lon = 14.4378
+    meta.extra["akon_id"] = "AK110_057"
+    meta.geo_refined = {
+        "lat": 50.366,
+        "lon": 12.938,
+        "precision": "building",
+        "precision_m": 25,
+        "confidence": 0.8,
+        "confidence_level": "high",
+        "status": "zpresneno",
+        "needs_refinement": False,
+        "verified": False,
+        "method": "wikidata_p625",
+    }
+    rag_storage.write_meta(meta)
+    loaded = rag_storage.read_meta(doc_id)
+    assert loaded is not None
+    assert loaded.lat == pytest.approx(50.0755)
+    assert loaded.lon == pytest.approx(14.4378)
+    assert loaded.extra.get("akon_id") == "AK110_057"
+    assert loaded.geo_refined is not None
+    assert loaded.geo_refined["lat"] == pytest.approx(50.366)
+    raw = json.loads(
+        (rag_storage.processed_doc_dir(doc_id) / "meta.json").read_text(encoding="utf-8")
+    )
+    assert raw["lat"] == pytest.approx(50.0755)
+    assert raw["akon_id"] == "AK110_057"
 
 
 def test_find_by_sha256(rag_storage: RagStorage) -> None:

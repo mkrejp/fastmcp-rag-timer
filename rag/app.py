@@ -62,6 +62,13 @@ MCP_TOOL_DOCS = {
     "verify_link": "Set verification_status on an existing locality_links point.",
     "link_stats": "Aggregate locality_links counts by status, obec, method, ambiguous.",
     "sync_links_to_trails": "Backfill locality_links to TrailsAssemblage (optional dry_run).",
+    "verify_image_record": "Set verification on a pdf_figure point.",
+    "list_image_records": "List pdf_figure records; optional precision/needs_refinement.",
+    "image_record_stats": "Aggregate pdf_figure verification counts for one document.",
+    "reindex_figures": "Re-run pdf_figure indexing from stored PDFs.",
+    "refine_geo": "Store refined GPS beside original lat/lon (dry_run default).",
+    "refine_geo_batch": "Batch refine_geo for backfill (max 200; dry_run default).",
+    "list_geo_refinements": "List geo_refined records with filters and pagination.",
 }
 
 

@@ -67,6 +67,8 @@ rag/
   embeddings.py         # Novita HTTP ingest and/or local FastEmbed BGE-M3
   image_embed.py        # local CLIP for image_vector
   ingest.py             # persist + embed + upsert pipeline
+  geo_refined.py        # geo_refined Pydantic schema and prefer-refined helpers
+  geo_index.py          # refine_geo / refine_geo_batch persistence
   document_delete.py    # remove one document from disk + Qdrant
   vectorstore.py        # local Qdrant open/create named vectors
   accounting.py         # /data/accnt rollups
@@ -194,6 +196,9 @@ From `rag/mcp_tools.py`, registered in `create_app()` and served at **`/mcp`** (
 | Tool | `search_domain_knowledge(query: str, limit: int = 3, obec_id: str = "", cast_obce: str = "") -> str` | Yes |
 | Tool | `search_images(query: str, limit: int = 5, hybrid: bool = False) -> str` | Yes |
 | Tool | `sync_links_to_trails(dry_run: bool = False) -> str` | Yes |
+| Tool | `refine_geo(doc_id, geo_refined, chunk_index?, image_id?, dry_run=true) -> str` | Yes |
+| Tool | `refine_geo_batch(items, dry_run=true) -> str` | Yes |
+| Tool | `list_geo_refinements(filter?, …) -> str` | Yes |
 | Resource | — | None |
 | Prompt | — | None |
 
@@ -208,6 +213,9 @@ Tool behavior:
 - `search_images`: requires `IMAGE_EMBEDDING_ENABLED=true`; CLIP text tower → `image_vector`; `hybrid=true` RRF-merges CLIP hits with `pdf_image` text hits
 - `link_locality` / `verify_link`: when `TRAILS_API_URL` and `TRAILS_API_TOKEN` are set, forward to TrailsAssemblage `POST /locality-links` and `PATCH /locality-links/{id}/verify`. Failures retry with backoff then land in `{RAG_DATA_ROOT}/trails_outbox.json`; MCP tools still succeed. Unset env leaves tools unchanged.
 - `sync_links_to_trails`: idempotent backfill of all `locality_links` points; `dry_run` counts without HTTP.
+- `refine_geo`: validates a `geo_refined` object (Pydantic) and `set_payload`s it onto document metadata and/or Qdrant image/chunk points. Never writes original `lat`/`lon`. `dry_run=true` (default) returns old vs new. Repeat writes of the same object are idempotent; a changed object is appended to `geo_refined_history`. Same `/mcp` bearer as `link_locality`. Not forwarded to Trails.
+- `refine_geo_batch`: pages of ≤200 `{doc_id, chunk_index?, image_id?, geo_refined}` items; per-item `ok` / `would_change` / `changed` / `error`. One invalid item does not abort the rest. Whole-call error if empty or oversize.
+- `list_geo_refinements`: scroll Qdrant + document catalog for stored `geo_refined`; filter precision/status/confidence_level/needs_refinement/verified/doc_id; `limit`/`offset` pagination.
 
 No stdio MCP entrypoint (`mcp.run()` is not called). Tests post JSON-RPC `initialize` / `tools/list` to `/mcp/`.
 
@@ -256,15 +264,15 @@ See [Embedding connectivity](./CONNECTIVITY.md#embedding-connectivity) and [Embe
 - `QdrantClient(path=str(storage.qdrant_dir))` — embedded on-disk, not a remote Qdrant URL.
 - Default directory: `{RAG_DATA_ROOT}/qdrant` → `/data/rag/qdrant` in the image.
 - Collection name (hardcoded): `client_domain_knowledge`.
-- Named vectors: `text_vector` (1024, cosine) and `image_vector` (512, cosine). Payload indexes on `source_type`, `doc_id`, `chunk_sha256`, `localities`, and `cast_obce`. New ingests store empty `localities` / `cast_obce` arrays and `chunk_sha256` (hash of chunk text). Existing points are backfilled with `set_payload` only (no re-embed, no delete). `link_locality` denormalizes `obec_id` / `cast_obce` onto matching knowledge points.
+- Named vectors: `text_vector` (1024, cosine) and `image_vector` (512, cosine). Payload indexes on `source_type`, `doc_id`, `chunk_sha256`, `localities`, `cast_obce`, `image_id`, and nested `geo_refined.{precision,status,confidence_level,needs_refinement,verified}`. New ingests store empty `localities` / `cast_obce` arrays and `chunk_sha256` (hash of chunk text). Existing points are backfilled with `set_payload` only (no re-embed, no delete). `link_locality` denormalizes `obec_id` / `cast_obce` onto matching knowledge points. Optional `geo_refined` is written the same way (no collection recreate, no migration).
 - Created in `open_qdrant()` if missing. Unnamed single-vector collections, or a marker/`embedding_backend.json` whose schema/dimensions do not match, are **deleted and recreated** (vectors in it are lost; files on disk are not). Switching ingest provider (`novita` ↔ `fastembed`) at 1024-dim BGE-M3 does **not** recreate. Toggling `IMAGE_EMBEDDING_ENABLED` does not recreate.
 - In-memory mode (`:memory:`) is not used.
 
 ### Retrieval
 
-- `search_domain_knowledge`: FastEmbed query → cosine search on `text_vector` with `limit` (default 3). Optional `obec_id` / `cast_obce` filters on payload arrays. Hits may be PDF chunks or OCR image points. Citations use `parent_document`/`source`, `source_type`, `doc_id`, optional `page_number` / `image_id` / URL.
-- `search_images`: CLIP query → `image_vector` (default limit 5); optional hybrid RRF with OCR text hits. Disabled unless `IMAGE_EMBEDDING_ENABLED=true`.
-- Optional locality payload filters on search; no rerank, no REST search.
+- `search_domain_knowledge`: FastEmbed query → cosine search on `text_vector` with `limit` (default 3). Optional `obec_id` / `cast_obce` filters on payload arrays. Hits may be PDF chunks or OCR image points. Citations use `parent_document`/`source`, `source_type`, `doc_id`, optional `page_number` / `image_id` / URL. When coordinates exist, JSON hits include preferred `lat`/`lon`, `geo_source` (`refined` if `geo_refined` is present else `original`), `geo_original`, and `geo_refined`.
+- `search_images`: CLIP query → `image_vector` (default limit 5); optional hybrid RRF with OCR text hits. Optional `precision` / `needs_refinement` filters on `geo_refined`. Disabled unless `IMAGE_EMBEDDING_ENABLED=true`.
+- Optional locality payload filters on search; no rerank, no REST search. Geo write tools are MCP-only (same as `link_locality`).
 
 ### Timer / scheduling
 

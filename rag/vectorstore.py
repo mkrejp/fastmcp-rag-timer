@@ -208,6 +208,12 @@ def ensure_payload_indexes(
         ("figure_number", PayloadSchemaType.KEYWORD),
         ("page_number", PayloadSchemaType.INTEGER),
         ("verified", PayloadSchemaType.BOOL),
+        ("image_id", PayloadSchemaType.KEYWORD),
+        ("geo_refined.precision", PayloadSchemaType.KEYWORD),
+        ("geo_refined.status", PayloadSchemaType.KEYWORD),
+        ("geo_refined.confidence_level", PayloadSchemaType.KEYWORD),
+        ("geo_refined.needs_refinement", PayloadSchemaType.BOOL),
+        ("geo_refined.verified", PayloadSchemaType.BOOL),
     ):
         try:
             client.create_payload_index(

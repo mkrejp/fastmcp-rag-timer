@@ -20,11 +20,15 @@ MCP_TOOLS = (
     "get_page_image",
     "ingest_text",
     "search_domain_knowledge",
+    "search_images",
     "link_locality",
     "list_links",
     "verify_link",
     "link_stats",
     "sync_links_to_trails",
+    "refine_geo",
+    "refine_geo_batch",
+    "list_geo_refinements",
 )
 HTTP_ROUTES = (
     "upload",
