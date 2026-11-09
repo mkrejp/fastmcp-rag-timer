@@ -176,10 +176,12 @@ Streamable HTTP MCP is mounted at **`/mcp`** (`stateless_http=True`, `streamable
 - `get_document_text`
 - `get_document_chunks`
 - `get_document_images`
-- `get_image` (inline image up to 5 MiB, otherwise a URL hint)
+- `get_image` (inline image up to 5 MiB, otherwise a URL hint; accepts extracted `image_id` or full-page id `page:{doc_id}:{page}`)
+- `get_page_image` (`doc_id`, 1-based `page`) — lazy JPEG render from stored PDF (`PAGE_RENDER_DPI`, `PAGE_RENDER_QUALITY`)
+- `get_page_highlights` (`doc_id`, `page`, `query`) — JSON boxes `{page_width, page_height, highlights:[{x0,y0,x1,y1,text,method}]}` (normalized 0–1)
 - `ingest_text`
-- `search_domain_knowledge` (text `text_vector` only; optional `obec_id` / `cast_obce` payload filter; includes image metadata on OCR hits)
-- `search_images` (CLIP `image_vector`; optional `hybrid=true` merges with text OCR hits via RRF)
+- `search_domain_knowledge` (text `text_vector` only; optional `obec_id` / `cast_obce` payload filter; PDF hits add `page_image_id`; optional `format=json`)
+- `search_images` (CLIP `image_vector`; optional `hybrid=true`; PDF hits add `page_image_id`; optional `format=json`)
 - `link_locality` (upsert document-municipality links into payload-only `locality_links`; forwards to Trails when configured; no embeddings)
 - `list_links` (filter `doc_id` / `obec_id` / `status` / `ambiguous` / `locality_level` / `cast_obce`, paginate with `limit` / `offset`)
 - `verify_link` (set `verification_status` / verifier / notes on an existing locality_links point; forwards to Trails when configured)
@@ -187,6 +189,52 @@ Streamable HTTP MCP is mounted at **`/mcp`** (`stateless_http=True`, `streamable
 - `sync_links_to_trails` (idempotent backfill of `locality_links` to TrailsAssemblage; `dry_run` option)
 
 No MCP resources or prompts. `/mcp` requires bearer auth (see below). There is no stdio MCP entrypoint.
+
+### Frontend contract (`fastmcp-rag-timer-frontend`)
+
+Search hits can show the PDF page with query highlights without re-ingest. Qdrant payloads still use **0-based** `page_number`; page image ids use **1-based** human page numbers.
+
+| Field | Meaning |
+| --- | --- |
+| `page_image_id` | `page:{doc_id}:{page}` where `{page}` is 1-based (e.g. payload `page_number=0` → `page:…:1`) |
+| `page_url` | Text citations only: absolute URL when `PUBLIC_BASE_URL` is set |
+
+**Page image HTTP (same Bearer as upload):**
+
+```http
+GET /images/{doc_id}/page:{doc_id}:1
+Authorization: Bearer $RAG_API_TOKEN
+```
+
+The frontend may proxy this as `GET /api/images/{page_image_id}` (URL-encode colons).
+
+**Highlights (MCP):**
+
+```json
+// tools/call get_page_highlights
+{"doc_id": "…", "page": 1, "query": "Praha", "max_hits": 20}
+```
+
+**Structured search (optional):**
+
+```json
+// search_domain_knowledge format=json
+[
+  {
+    "doc_id": "…",
+    "parent_document": "report.pdf",
+    "source_type": "pdf_chunk",
+    "page_number": 0,
+    "page_image_id": "page:…:1",
+    "image_id": null,
+    "url": null,
+    "score": 0.82,
+    "content": "…"
+  }
+]
+```
+
+Default `format=text` leaves legacy `Source:` / `Content:` blocks unchanged and only appends `page_image_id` / `page_url` on PDF `pdf_chunk` / `pdf_figure` hits (`search_images`: `pdf_image` / `pdf_figure`).
 
 ## Documentation
 
@@ -210,6 +258,8 @@ rag/
   storage.py            # /data/rag originals + processed + index
   processing.py         # PDF/text/GeoJSON extract + chunk
   pdf_images.py         # PyMuPDF embedded image extraction
+  pdf_pages.py          # lazy full-page JPEG render + highlight boxes
+  page_ids.py           # page:{doc_id}:{page} identifiers
   ocr.py                # local Tesseract OCR for extracted images
   payloads.py           # Qdrant payload builders
   document_delete.py    # remove one document from disk + Qdrant

@@ -18,9 +18,17 @@ from rag.figure_index import list_image_records as scroll_image_records
 from rag.figure_index import reindex_figures_for_doc
 from rag.figure_index import verify_image_record as apply_verify_image_record
 from rag.image_embed import embed_image_query, image_embedding_enabled
+from rag.image_delivery import locate_global_image, resolve_image_delivery
 from rag.ingest import ingest_bytes
 from rag.logging_setup import get_logger
+from rag.page_ids import format_page_image_id
 from rag.payloads import ImageRecordPayloadError, LocalityLinkPayloadError
+from rag.pdf_pages import get_page_highlights as compute_page_highlights
+from rag.search_hits import (
+    build_image_search_hit,
+    build_knowledge_hit,
+    page_image_id_for_hit,
+)
 from rag.processing import is_supported_filename
 from rag.storage import ImageMeta, RagStorage
 from rag.trails_sync import (
@@ -140,6 +148,11 @@ def _image_public_url(doc_id: str, image_id: str) -> str | None:
     return f"{base}/images/{doc_id}/{image_id}"
 
 
+def _page_image_public_url(doc_id: str, page_one_based: int) -> str | None:
+    """Build a public URL for a full-page render id."""
+    return _image_public_url(doc_id, format_page_image_id(doc_id, page_one_based))
+
+
 def _image_meta_with_url(
     doc_id: str,
     image: ImageMeta,
@@ -241,7 +254,7 @@ def register_mcp_tools(
         """Return image bytes (≤5MB) or a URL when the file is larger."""
         request_chars = len(image_id)
         try:
-            located = storage.find_image_global(image_id)
+            located = locate_global_image(storage, image_id)
             if located is None:
                 message = f"Image not found: {image_id}"
                 _record_mcp(
@@ -253,8 +266,7 @@ def register_mcp_tools(
                 )
                 return [TextContent(type="text", text=message)]
 
-            doc_id, image_meta = located
-            path = storage.image_file_path(doc_id, image_meta)
+            doc_id, path, _mime = located
             size = path.stat().st_size if path.is_file() else 0
             url = _image_public_url(doc_id, image_id)
             if not path.is_file():
@@ -303,6 +315,78 @@ def register_mcp_tools(
             return [TextContent(type="text", text=message)]
 
     @mcp.tool()
+    def get_page_image(doc_id: str, page: int) -> list[TextContent | ImageContent]:
+        """Return a full-page JPEG render (≤5MB inline, else authenticated URL)."""
+        request_chars = len(doc_id) + len(str(page))
+        image_id = format_page_image_id(doc_id, page)
+        try:
+            path, _mime = resolve_image_delivery(
+                storage,
+                doc_id=doc_id,
+                image_id=image_id,
+            )
+            size = path.stat().st_size
+            url = _page_image_public_url(doc_id, page)
+            if size > MAX_MCP_IMAGE_BYTES:
+                hint = url or f"/images/{doc_id}/{image_id}"
+                message = (
+                    f"Image exceeds MCP inline limit ({size} bytes). "
+                    f"Fetch via authenticated HTTP: {hint}"
+                )
+                _record_mcp(
+                    tool="get_page_image",
+                    ok=True,
+                    request_chars=request_chars,
+                    response_chars=len(message),
+                )
+                return [TextContent(type="text", text=message)]
+            image = Image(path=path)
+            content = image.to_image_content()
+            _record_mcp(
+                tool="get_page_image",
+                ok=True,
+                request_chars=request_chars,
+                response_chars=size,
+            )
+            return [content]
+        except Exception as exc:  # noqa: BLE001
+            message = f"Error executing get_page_image: {exc}"
+            _record_mcp(
+                tool="get_page_image",
+                ok=False,
+                request_chars=request_chars,
+                response_chars=len(message),
+                error=str(exc),
+            )
+            return [TextContent(type="text", text=message)]
+
+    @mcp.tool()
+    def get_page_highlights(
+        doc_id: str,
+        page: int,
+        query: str,
+        max_hits: int = 20,
+    ) -> str:
+        """Return JSON highlight boxes for ``query`` on one PDF page."""
+
+        def _body() -> str:
+            result = compute_page_highlights(
+                storage,
+                doc_id,
+                page,
+                query,
+                max_hits=max_hits,
+            )
+            return json.dumps(result, ensure_ascii=False)
+
+        return _run_mcp_tool(
+            "get_page_highlights",
+            request_chars=len(doc_id) + len(query) + len(str(page)),
+            source=None,
+            fn=_body,
+        )
+
+    @mcp.tool()
     def ingest_text(filename: str, content: str) -> str:
         """Ingest a plain-text or markdown document via MCP without multipart upload."""
 
@@ -338,6 +422,7 @@ def register_mcp_tools(
         include_figures: bool = True,
         only_verified: bool = False,
         min_status: str = "",
+        format: str = "text",
     ) -> str:
         """Query local RAG vector storage for contextual facts.
 
@@ -345,6 +430,8 @@ def register_mcp_tools(
         ``localities`` / ``cast_obce`` payload arrays contain those values.
         ``only_verified`` / ``min_status`` apply to ``pdf_figure`` hits;
         ``rejected`` figures are always omitted. Empty strings omit filters.
+        ``format=text`` (default) returns legacy Source/Content blocks;
+        ``format=json`` returns structured hits including ``page_image_id``.
         """
 
         def _body() -> str:
@@ -371,7 +458,9 @@ def register_mcp_tools(
                     query_filter=locality_filter,
                 )
                 logger.info("MCP search returned %s hits", len(results))
+                want_json = format.strip().lower() == "json"
                 context_blocks: list[str] = []
+                json_hits: list[dict[str, Any]] = []
                 for res in results:
                     payload: dict[str, Any] = res.payload or {}
                     st = payload.get("source_type", "pdf_chunk")
@@ -391,18 +480,41 @@ def register_mcp_tools(
                     source_name = payload.get("parent_document") or payload.get(
                         "source", "unknown"
                     )
-                    if len(context_blocks) >= limit:
+                    if len(context_blocks) >= limit and not want_json:
+                        break
+                    if len(json_hits) >= limit and want_json:
                         break
                     doc_id = payload.get("doc_id", "")
                     source_type = payload.get("source_type", "pdf_chunk")
                     page_number = payload.get("page_number")
                     image_id = payload.get("image_id")
                     text = payload.get("content_summary") or payload.get("text", "")
+                    page_image_id = page_image_id_for_hit(
+                        storage,
+                        payload,
+                        allowed_source_types=frozenset({"pdf_chunk", "pdf_figure"}),
+                    )
+                    if want_json:
+                        json_hits.append(
+                            build_knowledge_hit(
+                                storage,
+                                payload,
+                                score=getattr(res, "score", None),
+                                text=str(text),
+                                image_url_fn=_image_public_url,
+                            )
+                        )
+                        continue
                     header = f"Source: {source_name} (source_type={source_type})"
                     if doc_id:
                         header += f" doc_id={doc_id}"
                     if page_number is not None:
                         header += f" page_number={page_number}"
+                    if page_image_id:
+                        header += f" page_image_id={page_image_id}"
+                        page_url = _image_public_url(str(doc_id), page_image_id)
+                        if page_url:
+                            header += f" page_url={page_url}"
                     if image_id:
                         url = _image_public_url(str(doc_id), str(image_id))
                         header += f" image_id={image_id}"
@@ -416,6 +528,8 @@ def register_mcp_tools(
                         if payload.get("caption"):
                             header += f" caption={payload.get('caption')}"
                     context_blocks.append(f"{header}\nContent: {text}\n")
+                if want_json:
+                    return json.dumps(json_hits, ensure_ascii=False, indent=2)
                 return (
                     "\n---\n".join(context_blocks)
                     if context_blocks
@@ -438,6 +552,7 @@ def register_mcp_tools(
         hybrid: bool = False,
         only_verified: bool = False,
         min_status: str = "",
+        format: str = "text",
     ) -> str:
         """Search PDF images and figures by CLIP with optional text hybrid."""
 
@@ -476,7 +591,9 @@ def register_mcp_tools(
                     )
                 else:
                     results = visual_hits
+                want_json = format.strip().lower() == "json"
                 blocks: list[str] = []
+                json_hits: list[dict[str, Any]] = []
                 for res in results:
                     payload: dict[str, Any] = res.payload or {}
                     st = payload.get("source_type")
@@ -493,7 +610,9 @@ def register_mcp_tools(
                             "verified",
                         ):
                             continue
-                    if len(blocks) >= limit:
+                    if len(blocks) >= limit and not want_json:
+                        break
+                    if len(json_hits) >= limit and want_json:
                         break
                     doc_id = str(payload.get("doc_id", ""))
                     image_id = str(payload.get("image_id", ""))
@@ -505,11 +624,33 @@ def register_mcp_tools(
                         else None
                     )
                     summary = payload.get("content_summary") or payload.get("text", "")
+                    page_image_id = page_image_id_for_hit(
+                        storage,
+                        payload,
+                        allowed_source_types=frozenset({"pdf_image", "pdf_figure"}),
+                    )
+                    if want_json:
+                        json_hits.append(
+                            build_image_search_hit(
+                                storage,
+                                payload,
+                                score=getattr(res, "score", None),
+                                text=str(summary),
+                                image_url_fn=_image_public_url,
+                            )
+                        )
+                        continue
                     header = f"Source: {parent} ({st})"
                     if doc_id:
                         header += f" doc_id={doc_id}"
                     if page_number is not None:
                         header += f" page_number={page_number}"
+                    if page_image_id:
+                        header += f" page_image_id={page_image_id}"
+                        if doc_id:
+                            page_url = _image_public_url(doc_id, page_image_id)
+                            if page_url:
+                                header += f" page_url={page_url}"
                     if image_id:
                         header += f" image_id={image_id}"
                     if url:
@@ -522,6 +663,8 @@ def register_mcp_tools(
                         if payload.get("caption"):
                             header += f" caption={payload.get('caption')}"
                     blocks.append(f"{header}\nContent: {summary}\n")
+                if want_json:
+                    return json.dumps(json_hits, ensure_ascii=False, indent=2)
                 return "\n---\n".join(blocks) if blocks else "No relevant images found."
             except Exception as exc:  # noqa: BLE001
                 return f"Error executing search_images: {exc}"

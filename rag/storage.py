@@ -165,6 +165,20 @@ class RagStorage:
         """Return the extracted images directory for ``doc_id``."""
         return self.processed_doc_dir(doc_id) / "images"
 
+    def pages_dir(self, doc_id: str) -> Path:
+        """Return the lazily rendered full-page images directory for ``doc_id``."""
+        return self.processed_doc_dir(doc_id) / "pages"
+
+    def page_jpeg_path(self, doc_id: str, page_one_based: int) -> Path:
+        """Return the cached JPEG path for a 1-based page number."""
+        self.validate_doc_id(doc_id)
+        self.validate_page_number(page_one_based)
+        dest_dir = self.pages_dir(doc_id)
+        dest = (dest_dir / f"{page_one_based}.jpg").resolve()
+        if not str(dest).startswith(str(dest_dir.resolve())):
+            raise ValueError("Invalid page destination")
+        return dest
+
     @staticmethod
     def validate_doc_id(doc_id: str) -> str:
         """Reject path traversal in document identifiers."""
@@ -178,6 +192,24 @@ class RagStorage:
         if not _IMAGE_ID_RE.fullmatch(image_id):
             raise ValueError("Invalid image_id")
         return image_id
+
+    @staticmethod
+    def validate_page_number(page_one_based: int) -> int:
+        """Validate a 1-based PDF page number."""
+        if page_one_based < 1 or page_one_based > 9999:
+            raise ValueError("Invalid page number")
+        return page_one_based
+
+    @staticmethod
+    def validate_image_route_id(image_id: str) -> str:
+        """Accept extracted image ids or ``page:{doc_id}:{page}`` ids."""
+        from rag.page_ids import parse_page_image_id
+
+        if _IMAGE_ID_RE.fullmatch(image_id):
+            return image_id
+        if parse_page_image_id(image_id) is not None:
+            return image_id
+        raise ValueError("Invalid image_id")
 
     def relative_to_root(self, path: Path) -> str:
         """Return ``path`` relative to the RAG data root using forward slashes."""
@@ -406,6 +438,11 @@ class RagStorage:
             if found is not None:
                 return doc_id, found
         return None
+
+    def document_is_pdf(self, doc_id: str) -> bool:
+        """Return whether ``doc_id`` refers to an indexed PDF."""
+        meta = self.read_meta(doc_id)
+        return meta is not None and meta.filename.lower().endswith(".pdf")
 
     def image_file_path(self, doc_id: str, image_meta: ImageMeta) -> Path:
         """Resolve the on-disk path for ``image_meta`` with traversal checks."""
