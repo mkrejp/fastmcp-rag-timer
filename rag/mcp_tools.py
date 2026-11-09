@@ -14,11 +14,17 @@ from rag.accounting import accounting_source, get_global_store
 from rag.config import COLLECTION_NAME, resolve_public_base_url
 from rag.embeddings import get_query_embedding
 from rag.figure_index import image_record_stats as aggregate_image_record_stats
+from rag.figure_index import list_figure_payloads_for_doc
 from rag.figure_index import list_image_records as scroll_image_records
 from rag.figure_index import reindex_figures_for_doc
 from rag.figure_index import verify_image_record as apply_verify_image_record
 from rag.image_embed import embed_image_query, image_embedding_enabled
-from rag.image_delivery import locate_global_image, resolve_image_delivery
+from rag.image_delivery import (
+    MISSING_IMAGE_FILE_MESSAGE,
+    UNKNOWN_IMAGE_ID_MESSAGE,
+    locate_global_image,
+    resolve_image_delivery,
+)
 from rag.ingest import ingest_bytes
 from rag.logging_setup import get_logger
 from rag.page_ids import format_page_image_id
@@ -163,6 +169,28 @@ def _image_meta_with_url(
     return payload
 
 
+def _figure_item_with_url(
+    doc_id: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Serialize a ``pdf_figure`` payload in the ``get_document_images`` shape."""
+    image_id = str(payload.get("image_id") or "")
+    return {
+        "image_id": image_id,
+        "sha256": str(payload.get("image_sha256") or ""),
+        "file_path": str(payload.get("file_path") or ""),
+        "page_number": payload.get("page_number"),
+        "mime": "image/png",
+        "ocr_text": payload.get("ocr_text") or None,
+        "ocr_confidence": payload.get("ocr_confidence"),
+        "url": _image_public_url(doc_id, image_id) if image_id else None,
+        "source_type": "pdf_figure",
+        "caption": payload.get("caption"),
+        "summary": payload.get("summary"),
+        "figure_id": payload.get("figure_id"),
+    }
+
+
 def register_mcp_tools(
     mcp: FastMCP,
     *,
@@ -232,31 +260,54 @@ def register_mcp_tools(
         )
 
     @mcp.tool()
-    def get_document_images(doc_id: str) -> str:
-        """Return extracted PDF image metadata (including optional public URLs)."""
+    def get_document_images(doc_id: str, include_figures: bool = False) -> str:
+        """Return extracted PDF image metadata (including optional public URLs).
+
+        When ``include_figures`` is true, also include this document's
+        ``pdf_figure`` images (id, page, caption/summary, URL). Default false
+        keeps the previous extracted-image-only list.
+        """
 
         def _body() -> str:
             meta = storage.read_meta(doc_id)
             if meta is None:
                 return f"Document not found: {doc_id}"
             items = [_image_meta_with_url(doc_id, img) for img in meta.images]
+            if include_figures:
+                try:
+                    figures = list_figure_payloads_for_doc(
+                        qdrant,
+                        collection_name=collection_name,
+                        doc_id=doc_id,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    return f"Error listing figures: {exc}"
+                for payload in figures:
+                    image_id = str(payload.get("image_id") or "")
+                    if not image_id:
+                        continue
+                    items.append(_figure_item_with_url(doc_id, payload))
             return json.dumps(items, ensure_ascii=False, indent=2)
 
         return _run_mcp_tool(
             "get_document_images",
-            request_chars=len(doc_id),
+            request_chars=len(doc_id) + int(include_figures),
             source=None,
             fn=_body,
         )
 
     @mcp.tool()
     def get_image(image_id: str) -> list[TextContent | ImageContent]:
-        """Return image bytes (≤5MB) or a URL when the file is larger."""
+        """Return image bytes (≤5MB) or a URL when the file is larger.
+
+        Accepts extracted ``image_id``, ``pdf_figure`` clip ids stored on disk,
+        or full-page ids ``page:{doc_id}:{page}``.
+        """
         request_chars = len(image_id)
         try:
             located = locate_global_image(storage, image_id)
             if located is None:
-                message = f"Image not found: {image_id}"
+                message = f"{UNKNOWN_IMAGE_ID_MESSAGE}: {image_id}"
                 _record_mcp(
                     tool="get_image",
                     ok=False,
@@ -270,7 +321,7 @@ def register_mcp_tools(
             size = path.stat().st_size if path.is_file() else 0
             url = _image_public_url(doc_id, image_id)
             if not path.is_file():
-                message = f"Image file missing on disk: {image_id}"
+                message = f"{MISSING_IMAGE_FILE_MESSAGE}: {image_id}"
                 _record_mcp(
                     tool="get_image",
                     ok=False,
@@ -303,6 +354,19 @@ def register_mcp_tools(
                 response_chars=size,
             )
             return [content]
+        except FileNotFoundError as exc:
+            detail = str(exc) or UNKNOWN_IMAGE_ID_MESSAGE
+            message = (
+                f"{detail}: {image_id}" if image_id not in detail else detail
+            )
+            _record_mcp(
+                tool="get_image",
+                ok=False,
+                request_chars=request_chars,
+                response_chars=len(message),
+                error=message,
+            )
+            return [TextContent(type="text", text=message)]
         except Exception as exc:  # noqa: BLE001
             message = f"Error executing get_image: {exc}"
             _record_mcp(

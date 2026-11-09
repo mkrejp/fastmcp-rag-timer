@@ -474,7 +474,8 @@ def get_image_http(doc_id: str, image_id: str, request: Request) -> FileResponse
         )
     except FileNotFoundError as exc:
         _record_http(route="images_get", ok=False, error=str(exc))
-        raise HTTPException(status_code=404, detail="Image not found") from exc
+        detail = str(exc) or "Image not found"
+        raise HTTPException(status_code=404, detail=detail) from exc
     except ValueError as exc:
         _record_http(route="images_get", ok=False, error=str(exc))
         raise HTTPException(status_code=404, detail="Image not found") from exc

@@ -16,6 +16,33 @@ _DOC_ID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
     re.IGNORECASE,
 )
+_IMAGE_FILE_EXTENSIONS = frozenset(
+    {
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".webp",
+        ".bmp",
+        ".tif",
+        ".tiff",
+        ".jpx",
+        ".jb2",
+    }
+)
+# Prefer PNG first: pdf_figure clips are stored as ``{image_id}.png``.
+_IMAGE_FILE_LOOKUP_ORDER = (
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".webp",
+    ".bmp",
+    ".tif",
+    ".tiff",
+    ".jpx",
+    ".jb2",
+)
 
 
 def utc_now_iso() -> str:
@@ -398,18 +425,7 @@ class RagStorage:
         self.validate_image_id(image_id)
         ext = extension if extension.startswith(".") else f".{extension}"
         safe_ext = Path(ext).suffix.lower()
-        if safe_ext not in {
-            ".png",
-            ".jpg",
-            ".jpeg",
-            ".gif",
-            ".webp",
-            ".bmp",
-            ".tif",
-            ".tiff",
-            ".jpx",
-            ".jb2",
-        }:
+        if safe_ext not in _IMAGE_FILE_EXTENSIONS:
             safe_ext = ".png"
         dest_dir = self.images_dir(doc_id)
         dest_dir.mkdir(parents=True, exist_ok=True)
@@ -418,6 +434,27 @@ class RagStorage:
             raise ValueError("Invalid image destination")
         dest.write_bytes(data)
         return dest
+
+    def locate_image_file(self, doc_id: str, image_id: str) -> Path | None:
+        """Return an on-disk image for ``image_id`` under the document images dir.
+
+        Looks up ``processed/{doc_id}/images/{image_id}{ext}`` with the same
+        extensions ``save_image_bytes`` allows. This finds ``pdf_figure`` PNGs
+        that are stored on disk but never recorded in ``meta.images``.
+        """
+        self.validate_doc_id(doc_id)
+        self.validate_image_id(image_id)
+        dest_dir = self.images_dir(doc_id)
+        if not dest_dir.is_dir():
+            return None
+        dest_dir_resolved = dest_dir.resolve()
+        for ext in _IMAGE_FILE_LOOKUP_ORDER:
+            dest = (dest_dir / f"{image_id}{ext}").resolve()
+            if not str(dest).startswith(str(dest_dir_resolved)):
+                continue
+            if dest.is_file():
+                return dest
+        return None
 
     def find_image(self, doc_id: str, image_id: str) -> ImageMeta | None:
         """Return image metadata for ``doc_id`` + ``image_id``, if present."""
