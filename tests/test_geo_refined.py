@@ -142,6 +142,14 @@ def test_preferred_geo_prefers_refined_then_original() -> None:
     assert attached["geo_source"] == "original"
     assert attached["doc_id"] == "d"
 
+    payload_only_refined = preferred_geo(
+        {"geo_refined": parse_geo_refined(_sample_geo())},
+        fallback={"lat": 49.195220, "lon": 16.607960},
+    )
+    assert payload_only_refined["geo_source"] == "refined"
+    assert payload_only_refined["geo_original"]["lat"] == pytest.approx(49.195220)
+    assert payload_only_refined["geo_original"]["lon"] == pytest.approx(16.607960)
+
 
 def test_original_lat_lon_reads_geom_point_not_geo_refined() -> None:
     """GeoJSON Point geom should supply original coords; geo_refined should not."""
@@ -153,6 +161,27 @@ def test_original_lat_lon_reads_geom_point_not_geo_refined() -> None:
         {"geo_refined": parse_geo_refined(_sample_geo())}
     )
     assert refined_only is None
+
+
+def test_original_lat_lon_reads_souradnice_and_nested_gps() -> None:
+    """AKON Souradnice text and nested gps objects should yield original coords."""
+    labeled = original_lat_lon({"Souradnice": "49.195220, 16.607960"})
+    assert labeled == (pytest.approx(49.195220), pytest.approx(16.607960))
+    diacritics = original_lat_lon(
+        {"fulltext": "Souřadnice: 49.195220, 16.607960\nBrünn Deutsches Haus"}
+    )
+    assert diacritics == (pytest.approx(49.195220), pytest.approx(16.607960))
+    nested = original_lat_lon({"gps": {"lat": 48.208490, "lon": 16.372080}})
+    assert nested == (pytest.approx(48.208490), pytest.approx(16.372080))
+    extra = original_lat_lon({"extra": {"Koordinaten": "50.232710; 12.871170"}})
+    assert extra == (pytest.approx(50.232710), pytest.approx(12.871170))
+    refined_hides_original = original_lat_lon(
+        {
+            "geo_refined": parse_geo_refined(_sample_geo()),
+            "text": "no coordinates in this caption",
+        }
+    )
+    assert refined_hides_original is None
 
 
 def test_coerce_geo_batch_items_enforces_max_and_shape() -> None:

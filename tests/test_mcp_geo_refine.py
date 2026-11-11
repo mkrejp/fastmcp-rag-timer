@@ -155,10 +155,12 @@ def _seed_figure(
     rag_root: Path,
     fake_embed: Callable[[str], list[float]],
     *,
-    lat: float,
-    lon: float,
+    lat: float | None = None,
+    lon: float | None = None,
+    fulltext: str = "postcard",
+    extra: dict[str, Any] | None = None,
 ) -> None:
-    """Insert one pdf_figure point with original coordinates."""
+    """Insert one pdf_figure point, optionally with original coordinates."""
     storage = RagStorage(rag_root)
     storage.save_original(FIGURE_DOC_ID, "postcard.pdf", b"%PDF-1.4")
     storage.write_processed(
@@ -166,30 +168,36 @@ def _seed_figure(
         filename="postcard.pdf",
         mime="application/pdf",
         sha256="abc",
-        fulltext="postcard",
-        chunks=[{"index": 0, "text": "postcard", "page": 0}],
+        fulltext=fulltext,
+        chunks=[{"index": 0, "text": fulltext, "page": 0}],
         images=[],
     )
     meta = storage.read_meta(FIGURE_DOC_ID)
     assert meta is not None
-    meta.lat = lat
-    meta.lon = lon
+    if lat is not None:
+        meta.lat = lat
+    if lon is not None:
+        meta.lon = lon
+    if extra:
+        meta.extra.update(extra)
     storage.write_meta(meta)
     qdrant = client.app.state.qdrant
     figure_id = "f_geo_p1_0"
-    payload = {
+    payload: dict[str, Any] = {
         "source_type": "pdf_figure",
         "figure_id": figure_id,
         "doc_id": FIGURE_DOC_ID,
         "parent_document": "postcard.pdf",
         "image_id": FIGURE_IMAGE_ID,
-        "lat": lat,
-        "lon": lon,
         "page_number": 0,
         "caption": "Brno Deutsches Haus",
         "text": "Brno Deutsches Haus",
         "verification_status": "unverified",
     }
+    if lat is not None:
+        payload["lat"] = lat
+    if lon is not None:
+        payload["lon"] = lon
     qdrant.upsert(
         collection_name=COLLECTION_NAME,
         points=[
@@ -541,6 +549,59 @@ def test_list_image_records_prefers_refined_and_filters(
         )
     )
     assert street["returned"] == 0
+
+
+def test_list_geo_refinements_reads_souradnice_when_payload_has_no_lat_lon(
+    client: TestClient,
+    rag_root: Path,
+    fake_embed: Callable[[str], list[float]],
+) -> None:
+    """AKON-style figures store originals in Souradnice text, not payload lat/lon."""
+    _seed_figure(
+        client,
+        rag_root,
+        fake_embed,
+        fulltext="Brünn Deutsches Haus\nSouradnice: 49.195220, 16.607960",
+    )
+    _initialize(client)
+    _call_tool(
+        client,
+        "refine_geo",
+        {
+            "doc_id": FIGURE_DOC_ID,
+            "image_id": FIGURE_IMAGE_ID,
+            "geo_refined": _sample_geo(),
+            "dry_run": False,
+        },
+    )
+    listed = json.loads(
+        _tool_text(
+            _call_tool(
+                client,
+                "list_geo_refinements",
+                {"doc_id": FIGURE_DOC_ID},
+                call_id=3,
+            )
+        )
+    )
+    image_rows = [
+        row for row in listed["records"] if row.get("image_id") == FIGURE_IMAGE_ID
+    ]
+    assert image_rows
+    original = image_rows[0].get("geo_original")
+    assert original is not None
+    assert original["lat"] == pytest.approx(49.195220)
+    assert original["lon"] == pytest.approx(16.607960)
+    assert image_rows[0]["geo_source"] == "refined"
+    qdrant = client.app.state.qdrant
+    stored = qdrant.retrieve(
+        collection_name=COLLECTION_NAME,
+        ids=[stable_figure_point_id(FIGURE_DOC_ID, "f_geo_p1_0")],
+    )[0]
+    payload = stored.payload or {}
+    assert "lat" not in payload
+    assert "lon" not in payload
+    assert payload["geo_refined"]["lat"] == pytest.approx(49.1951)
 
 
 def test_refine_geo_batch_dry_run_write_and_per_item_errors(
