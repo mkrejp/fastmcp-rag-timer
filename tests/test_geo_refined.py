@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
 from rag.geo_index import MAX_GEO_BATCH_SIZE, coerce_geo_batch_items
 from rag.geo_refined import (
     GeoRefinedPayloadError,
@@ -56,9 +55,7 @@ def test_parse_geo_refined_accepts_valid_payload() -> None:
 
 def test_parse_geo_refined_derives_needs_refinement() -> None:
     """Medium/low confidence and rozpor default ``needs_refinement`` to true."""
-    medium = parse_geo_refined(
-        _sample_geo(confidence_level="medium", confidence=0.55)
-    )
+    medium = parse_geo_refined(_sample_geo(confidence_level="medium", confidence=0.55))
     assert medium["needs_refinement"] is True
     rozpor = parse_geo_refined(
         _sample_geo(status="rozpor", confidence_level="high", confidence=0.4)
@@ -95,7 +92,9 @@ def test_parse_geo_refined_rejects_unknown_enums_and_confidence() -> None:
 def test_apply_geo_refined_is_idempotent_and_keeps_history() -> None:
     """Repeating the same refinement must not grow history; a change must."""
     original = {"lat": 49.2, "lon": 16.6, "text": "Brno"}
-    first, changed = apply_geo_refined(original, _sample_geo(), now="2026-01-01T00:00:00+00:00")
+    first, changed = apply_geo_refined(
+        original, _sample_geo(), now="2026-01-01T00:00:00+00:00"
+    )
     assert changed is True
     assert first["lat"] == 49.2
     assert first["lon"] == 16.6
@@ -107,7 +106,9 @@ def test_apply_geo_refined_is_idempotent_and_keeps_history() -> None:
     )
     assert changed_again is False
     assert again["geo_refined_history"] == []
-    assert geo_fingerprint(again["geo_refined"]) == geo_fingerprint(first["geo_refined"])
+    assert geo_fingerprint(again["geo_refined"]) == geo_fingerprint(
+        first["geo_refined"]
+    )
 
     second, changed_second = apply_geo_refined(
         first,
@@ -142,6 +143,14 @@ def test_preferred_geo_prefers_refined_then_original() -> None:
     assert attached["geo_source"] == "original"
     assert attached["doc_id"] == "d"
 
+    payload_only_refined = preferred_geo(
+        {"geo_refined": parse_geo_refined(_sample_geo())},
+        fallback={"lat": 49.195220, "lon": 16.607960},
+    )
+    assert payload_only_refined["geo_source"] == "refined"
+    assert payload_only_refined["geo_original"]["lat"] == pytest.approx(49.195220)
+    assert payload_only_refined["geo_original"]["lon"] == pytest.approx(16.607960)
+
 
 def test_original_lat_lon_reads_geom_point_not_geo_refined() -> None:
     """GeoJSON Point geom should supply original coords; geo_refined should not."""
@@ -149,22 +158,41 @@ def test_original_lat_lon_reads_geom_point_not_geo_refined() -> None:
         {"geom": {"type": "Point", "coordinates": [14.4378, 50.0755]}}
     )
     assert geom == (pytest.approx(50.0755), pytest.approx(14.4378))
-    refined_only = original_lat_lon(
-        {"geo_refined": parse_geo_refined(_sample_geo())}
-    )
+    refined_only = original_lat_lon({"geo_refined": parse_geo_refined(_sample_geo())})
     assert refined_only is None
+
+
+def test_original_lat_lon_reads_souradnice_and_nested_gps() -> None:
+    """AKON Souradnice text and nested gps objects should yield original coords."""
+    labeled = original_lat_lon({"Souradnice": "49.195220, 16.607960"})
+    assert labeled == (pytest.approx(49.195220), pytest.approx(16.607960))
+    diacritics = original_lat_lon(
+        {"fulltext": "Souřadnice: 49.195220, 16.607960\nBrünn Deutsches Haus"}
+    )
+    assert diacritics == (pytest.approx(49.195220), pytest.approx(16.607960))
+    nested = original_lat_lon({"gps": {"lat": 48.208490, "lon": 16.372080}})
+    assert nested == (pytest.approx(48.208490), pytest.approx(16.372080))
+    extra = original_lat_lon({"extra": {"Koordinaten": "50.232710; 12.871170"}})
+    assert extra == (pytest.approx(50.232710), pytest.approx(12.871170))
+    refined_hides_original = original_lat_lon(
+        {
+            "geo_refined": parse_geo_refined(_sample_geo()),
+            "text": "no coordinates in this caption",
+        }
+    )
+    assert refined_hides_original is None
 
 
 def test_coerce_geo_batch_items_enforces_max_and_shape() -> None:
     """Batch helper should accept list/object/JSON and reject oversize batches."""
     one = coerce_geo_batch_items({"doc_id": "a", "geo_refined": _sample_geo()})
     assert len(one) == 1
-    encoded = coerce_geo_batch_items(
-        '[{"doc_id": "a", "geo_refined": {"lat": 1}}]'
-    )
+    encoded = coerce_geo_batch_items('[{"doc_id": "a", "geo_refined": {"lat": 1}}]')
     assert encoded[0]["doc_id"] == "a"
     with pytest.raises(GeoRefinedPayloadError, match="at least one"):
         coerce_geo_batch_items([])
-    too_many = [{"doc_id": str(i), "geo_refined": {}} for i in range(MAX_GEO_BATCH_SIZE + 1)]
+    too_many = [
+        {"doc_id": str(i), "geo_refined": {}} for i in range(MAX_GEO_BATCH_SIZE + 1)
+    ]
     with pytest.raises(GeoRefinedPayloadError, match="at most"):
         coerce_geo_batch_items(too_many)

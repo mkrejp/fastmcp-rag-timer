@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 import math
+import re
+import unicodedata
 from datetime import datetime, timezone
 from typing import Any, Literal, Mapping, Sequence
 
@@ -31,6 +33,29 @@ GEO_SOURCES = frozenset({"refined", "original"})
 ORIGINAL_COORD_KEYS = ("lat", "lon", "latitude", "longitude", "geom")
 NEEDS_REFINEMENT_LEVELS = frozenset({"medium", "low"})
 EARTH_RADIUS_M = 6_371_000.0
+_SKIP_ORIGINAL_KEYS = frozenset(
+    {"geo_refined", "geo_refined_history", "geo_original", "images"}
+)
+_COORD_LABEL_TOKENS = (
+    "souradnice",
+    "koordinaten",
+    "coordinates",
+    "gps",
+    "coord",
+)
+_TEXT_SCAN_KEYS = (
+    "text",
+    "content",
+    "content_summary",
+    "caption",
+    "ocr_text",
+    "fulltext",
+)
+_LABEL_RE = re.compile(
+    r"(?:souradnice|koordinaten|coordinates|\bgps\b)\s*[:#=\-]?\s*",
+    re.IGNORECASE,
+)
+_PAIR_RE = re.compile(r"(-?\d+(?:\.\d+)?)\s*[,;/\s]\s*(-?\d+(?:\.\d+)?)")
 
 GeoPrecision = Literal["municipality", "cast_obce", "street", "building"]
 GeoConfidenceLevel = Literal["high", "medium", "low"]
@@ -267,7 +292,12 @@ def _as_float(value: object) -> float | None:
     if value is None or value == "":
         return None
     try:
-        number = float(value)
+        if isinstance(value, (int, float)):
+            number = float(value)
+        elif isinstance(value, str):
+            number = float(value)
+        else:
+            return None
     except (TypeError, ValueError):
         return None
     if not math.isfinite(number):
@@ -275,37 +305,120 @@ def _as_float(value: object) -> float | None:
     return number
 
 
-def original_lat_lon(payload: Mapping[str, Any] | None) -> tuple[float, float] | None:
-    """Extract original coordinates without reading ``geo_refined``.
+def _fold_geo_text(value: str) -> str:
+    """Lowercase ASCII fold so ``Souřadnice`` matches ``souradnice``."""
+    nfkd = unicodedata.normalize("NFKD", value)
+    return "".join(ch for ch in nfkd if not unicodedata.combining(ch)).lower()
 
-    Prefers top-level ``lat``/``lon``, then ``latitude``/``longitude``, then a
-    GeoJSON ``geom`` Point (``coordinates`` are lon, lat).
-    """
-    if not payload:
+
+def _valid_lat_lon(lat: float | None, lon: float | None) -> tuple[float, float] | None:
+    """Return a WGS-84 pair, or ``None`` when missing/out of range."""
+    if lat is None or lon is None:
         return None
+    if -90 <= lat <= 90 and -180 <= lon <= 180:
+        return lat, lon
+    return None
+
+
+def _pair_from_numbers(
+    first: float | None, second: float | None
+) -> tuple[float, float] | None:
+    """Interpret two numbers as lat/lon, falling back to lon/lat."""
+    pair = _valid_lat_lon(first, second)
+    if pair is not None:
+        return pair
+    return _valid_lat_lon(second, first)
+
+
+def _is_coord_label(key: str) -> bool:
+    """Return whether ``key`` looks like an original-coordinate field name."""
+    folded = _fold_geo_text(key).replace("_", " ").replace("-", " ").strip()
+    compact = folded.replace(" ", "")
+    return compact in _COORD_LABEL_TOKENS or compact.startswith("souradnice")
+
+
+def _pair_from_text(text: str, *, require_label: bool) -> tuple[float, float] | None:
+    """Parse a decimal lat/lon pair, optionally requiring a Souradnice-style label."""
+    if not text:
+        return None
+    folded = _fold_geo_text(text)
+    if require_label:
+        match = _LABEL_RE.search(folded)
+        if not match:
+            return None
+        rest = folded[match.end() :]
+    else:
+        rest = folded.strip()
+    pair_match = _PAIR_RE.search(rest)
+    if not pair_match:
+        return None
+    return _pair_from_numbers(
+        _as_float(pair_match.group(1)),
+        _as_float(pair_match.group(2)),
+    )
+
+
+def _structured_lat_lon(payload: Mapping[str, Any]) -> tuple[float, float] | None:
+    """Read original coords from lat/lon aliases or a GeoJSON Point ``geom``."""
     lat = _as_float(payload.get("lat"))
     lon = _as_float(payload.get("lon"))
     if lat is None:
         lat = _as_float(payload.get("latitude"))
     if lon is None:
         lon = _as_float(payload.get("longitude"))
-    if lat is not None and lon is not None:
-        if -90 <= lat <= 90 and -180 <= lon <= 180:
-            return lat, lon
-        return None
+    found = _valid_lat_lon(lat, lon)
+    if found is not None:
+        return found
     geom = payload.get("geom")
     if isinstance(geom, Mapping) and str(geom.get("type") or "") == "Point":
         coords = geom.get("coordinates")
-        if isinstance(coords, Sequence) and len(coords) >= 2:
-            lon = _as_float(coords[0])
-            lat = _as_float(coords[1])
-            if (
-                lat is not None
-                and lon is not None
-                and -90 <= lat <= 90
-                and -180 <= lon <= 180
-            ):
-                return lat, lon
+        if isinstance(coords, Sequence) and not isinstance(coords, (str, bytes)):
+            if len(coords) >= 2:
+                return _valid_lat_lon(_as_float(coords[1]), _as_float(coords[0]))
+    return None
+
+
+def _original_from_value(key: str, value: object) -> tuple[float, float] | None:
+    """Extract original coords from one labeled field (never ``geo_refined``)."""
+    if key in _SKIP_ORIGINAL_KEYS or key == "geom":
+        return None
+    if isinstance(value, Mapping):
+        return _structured_lat_lon(value)
+    if isinstance(value, str):
+        return _pair_from_text(value, require_label=not _is_coord_label(key))
+    return None
+
+
+def original_lat_lon(payload: Mapping[str, Any] | None) -> tuple[float, float] | None:
+    """Extract original coordinates without reading ``geo_refined``.
+
+    Prefers top-level ``lat``/``lon``, then ``latitude``/``longitude``, then a
+    GeoJSON ``geom`` Point (``coordinates`` are lon, lat). Also reads nested
+    gps/souradnice objects and labeled text (``Souradnice``, ``Koordinaten``,
+    ``coordinates``, ``gps``) on metadata and document fulltext.
+    """
+    if not payload:
+        return None
+    found = _structured_lat_lon(payload)
+    if found is not None:
+        return found
+    for key, value in payload.items():
+        if key in _SKIP_ORIGINAL_KEYS or key == "geom":
+            continue
+        found = _original_from_value(str(key), value)
+        if found is not None:
+            return found
+        if isinstance(value, Mapping):
+            for nested_key, nested_value in value.items():
+                found = _original_from_value(str(nested_key), nested_value)
+                if found is not None:
+                    return found
+    for key in _TEXT_SCAN_KEYS:
+        value = payload.get(key)
+        if isinstance(value, str):
+            found = _pair_from_text(value, require_label=True)
+            if found is not None:
+                return found
     return None
 
 

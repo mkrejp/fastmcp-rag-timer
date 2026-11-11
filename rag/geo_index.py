@@ -11,12 +11,11 @@ from typing import Any, Mapping
 
 from qdrant_client import QdrantClient
 from qdrant_client.models import FieldCondition, Filter, MatchValue
-
 from rag.config import COLLECTION_NAME
 from rag.geo_refined import (
+    ORIGINAL_COORD_KEYS,
     GeoRefinedNotFoundError,
     GeoRefinedPayloadError,
-    ORIGINAL_COORD_KEYS,
     apply_geo_refined,
     coerce_filter_argument,
     coerce_geo_refined_argument,
@@ -148,8 +147,16 @@ def _target_view(
     image_id: str | None = None,
 ) -> dict[str, Any]:
     """Shape one dry-run / write target for MCP/REST responses."""
-    old = existing.get("geo_refined") if isinstance(existing.get("geo_refined"), Mapping) else None
-    new = updated.get("geo_refined") if isinstance(updated.get("geo_refined"), Mapping) else None
+    old = (
+        existing.get("geo_refined")
+        if isinstance(existing.get("geo_refined"), Mapping)
+        else None
+    )
+    new = (
+        updated.get("geo_refined")
+        if isinstance(updated.get("geo_refined"), Mapping)
+        else None
+    )
     geo = preferred_geo(updated)
     return {
         "doc_id": doc_id,
@@ -472,9 +479,7 @@ def refine_geo(
             if not dry_run and changed:
                 images = []
                 for img in meta.images:
-                    images.append(
-                        updated_image if img.image_id == image_id_n else img
-                    )
+                    images.append(updated_image if img.image_id == image_id_n else img)
                 meta.images = images
                 storage.write_meta(meta)
 
@@ -691,6 +696,33 @@ def refine_geo_batch(
     }
 
 
+def _document_fallback_for_payload(
+    payload: Mapping[str, Any],
+    fallback: Mapping[str, Any] | None,
+) -> Mapping[str, Any] | None:
+    """Merge matching image-meta originals onto a document geo fallback."""
+    if not fallback:
+        return fallback
+    image_id = str(payload.get("image_id") or "")
+    if not image_id:
+        return fallback
+    images = fallback.get("images")
+    if not isinstance(images, list):
+        return fallback
+    for image in images:
+        if not isinstance(image, Mapping):
+            continue
+        if str(image.get("image_id") or "") != image_id:
+            continue
+        merged = dict(fallback)
+        for key, value in image.items():
+            if key in {"geo_refined", "geo_refined_history", "images"}:
+                continue
+            merged[key] = value
+        return merged
+    return fallback
+
+
 def _list_record_from_payload(
     payload: Mapping[str, Any],
     *,
@@ -747,7 +779,11 @@ def list_geo_refinements(
         str(merged.get("confidence_level") or confidence_level or "") or None
     )
     needs_n = _as_optional_bool(
-        merged["needs_refinement"] if "needs_refinement" in merged else needs_refinement,
+        (
+            merged["needs_refinement"]
+            if "needs_refinement" in merged
+            else needs_refinement
+        ),
         field="needs_refinement",
     )
     verified_n = _as_optional_bool(
@@ -768,6 +804,7 @@ def list_geo_refinements(
 
     records: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str]] = set()
+    doc_fallback_cache: dict[str, Mapping[str, Any] | None] = {}
     scroll_filter = geo_refined_filter(doc_id=doc_n)
     if qdrant.collection_exists(collection_name):
         next_offset: Any = None
@@ -801,8 +838,19 @@ def list_geo_refinements(
                 if key in seen:
                     continue
                 seen.add(key)
+                point_doc = str(payload.get("doc_id") or "")
+                if point_doc and point_doc not in doc_fallback_cache:
+                    doc_fallback_cache[point_doc] = document_geo_fallback(
+                        storage, point_doc
+                    )
                 records.append(
-                    _list_record_from_payload(payload, point_id=str(point.id))
+                    _list_record_from_payload(
+                        payload,
+                        point_id=str(point.id),
+                        fallback=_document_fallback_for_payload(
+                            payload, doc_fallback_cache.get(point_doc)
+                        ),
+                    )
                 )
             if next_offset is None:
                 break
@@ -814,10 +862,16 @@ def list_geo_refinements(
             continue
         if doc_n and catalog_doc != doc_n:
             continue
-        meta = storage.read_meta(catalog_doc)
-        if meta is None:
-            continue
-        meta_payload = meta.to_dict()
+        if catalog_doc not in doc_fallback_cache:
+            doc_fallback_cache[catalog_doc] = document_geo_fallback(
+                storage, catalog_doc
+            )
+        meta_payload = dict(doc_fallback_cache[catalog_doc] or {})
+        if not meta_payload:
+            meta = storage.read_meta(catalog_doc)
+            if meta is None:
+                continue
+            meta_payload = meta.to_dict()
         meta_payload["doc_id"] = catalog_doc
         meta_payload["source_type"] = "document"
         if not matches_geo_filter(
@@ -856,10 +910,19 @@ def list_geo_refinements(
 
 
 def document_geo_fallback(storage: RagStorage, doc_id: str) -> dict[str, Any] | None:
-    """Return document-level geo metadata for search-hit fallback."""
+    """Return document-level geo metadata for search-hit and list fallback.
+
+    Includes disk meta (``lat``/``lon`` and extra keys such as ``Souradnice``)
+    plus fulltext so labeled original coordinates can be recovered when image
+    payloads omit structured lat/lon.
+    """
     if not doc_id:
         return None
+    payload: dict[str, Any] = {}
     meta = storage.read_meta(doc_id)
-    if meta is None:
-        return None
-    return meta.to_dict()
+    if meta is not None:
+        payload.update(meta.to_dict())
+    fulltext = storage.read_fulltext(doc_id)
+    if fulltext and "fulltext" not in payload:
+        payload["fulltext"] = fulltext
+    return payload or None
