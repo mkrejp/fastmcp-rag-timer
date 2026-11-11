@@ -367,10 +367,94 @@ footer {
 }
 
 .auth-card {
-  width: min(420px, 100%);
+  width: min(520px, 100%);
   background: var(--card);
   border: 1px solid var(--line);
   border-radius: 24px;
   padding: 2rem;
   box-shadow: var(--shadow);
+}
+
+.node-info {
+  margin-top: 1.5rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--line);
+  font-size: 0.9rem;
+}
+
+.node-info h2,
+.node-info h3 {
+  margin: 0 0 0.65rem;
+  font-size: 0.95rem;
+}
+
+.node-info h3 {
+  margin-top: 1.1rem;
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.node-info-dl {
+  margin: 0;
+}
+
+.node-info-row {
+  display: grid;
+  grid-template-columns: 8.5rem 1fr;
+  gap: 0.35rem 0.75rem;
+  margin: 0.35rem 0;
+}
+
+.node-info-row dt {
+  margin: 0;
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.node-info-row dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.node-info a {
+  color: var(--accent);
+}
+
+.node-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.node-list li {
+  margin: 0.45rem 0;
+}
+
+.this-node {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.role-badge {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 0.12rem 0.5rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.role-write {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.role-read {
+  background: rgb(90 140 120 / 35%);
+  color: var(--ink);
+}
+
+.role-stop {
+  background: var(--danger);
+  color: var(--accent-ink);
 }

@@ -53,7 +53,8 @@ rag/
   app.py                # FastAPI factory, FastMCP mount, UI, Google session, lifespan
   routes.py             # HTTP API
   admin_routes.py       # /api/admin (Google session)
-  google_oauth.py       # /auth/*
+  google_oauth.py       # /auth/* (login page includes Czech node-info block)
+  node_info.py          # RAG_NODES catalog, /node-info payload, optional write guard
   mcp_tools.py          # FastMCP tools
   chunked_upload.py     # uploads/{upload_id} staging
   asgi_shutdown.py      # complete MCP SSE responses on shutdown
@@ -151,6 +152,7 @@ From `rag/routes.py`, `rag/app.py`, `rag/google_oauth.py`, and `rag/admin_routes
 | Method | Path | Auth | Behavior |
 | --- | --- | --- | --- |
 | `GET` | `/health` | None | `status`, `rag_data_root`, `embeddings` (ingest/query providers), `image_embedding_enabled` |
+| `GET` | `/node-info` | None | This instance (name, public URL, optional Railway service/region/environment), catalog of nodes with Czech roles (`ZÁPIS` / `ČTENÍ` / `STOP`). No secrets |
 | `POST` | `/upload` | Bearer MCP/RAG or Google | PDF, TXT, Markdown, JSON, or GeoJSON → persist + index |
 | `POST` | `/upload/init` | same as `/upload` | Start chunked session; returns `upload_id`, `chunk_size`, `chunk_count`, `expires_at` |
 | `PUT` | `/upload/{upload_id}/chunks/{index}` | same | Store one raw chunk; idempotent for identical bytes; optional `X-Chunk-SHA256` |
@@ -435,7 +437,7 @@ Local run and pytest install lines: [README.md](../README.md#local-run).
 
 | Topic | What the code does |
 | --- | --- |
-| HTTP auth | `POST /ingest-json` requires Bearer `RAG_API_TOKEN` (503 if unset). `/upload`, chunked upload, `/upload-pdf`, `GET /images/...`, and `DELETE /documents/{doc_id}` require Bearer `MCP_API_TOKEN` or `RAG_API_TOKEN`, or a Google session (503 if no token and no session). Catalog, fulltext, `/upload-media`, `/health`, OpenAPI UI, and `/auth/status` have **no** inbound auth. |
+| HTTP auth | `POST /ingest-json` requires Bearer `RAG_API_TOKEN` (503 if unset). `/upload`, chunked upload, `/upload-pdf`, `GET /images/...`, and `DELETE /documents/{doc_id}` require Bearer `MCP_API_TOKEN` or `RAG_API_TOKEN`, or a Google session (503 if no token and no session). Catalog, fulltext, `/upload-media`, `/health`, `/node-info`, OpenAPI UI, and `/auth/status` have **no** inbound auth. Optional `RAG_ENFORCE_NODE_ROLE` returns **403** on HTTP/MCP writes when this node is ČTENÍ or STOP (off by default). |
 | MCP auth | Bearer on every `/mcp` request (`McpBearerAuth`). Host allow-list via FastMCP `TransportSecuritySettings` (`MCP_ALLOWED_HOSTS`). |
 | Console auth | `/ui/` and `/api/admin/*` require Google OAuth (`GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET`) and optional email/domain allow-lists. Cookie session via `SESSION_SECRET`. |
 | Secrets | Embedding key from `BGE_M3_NOVITA_API_KEY`, then `NOVITA_API_KEY`, `OPENAI_TOKEN`, `OPENAI_API_KEY`; sent as `Authorization: Bearer` to Novita. Inbound tokens compared with `hmac.compare_digest`. Not read from a file or vault. |
@@ -453,6 +455,7 @@ Anyone who can reach the listen port can list/read processed catalog text, store
 - Application logger `rag.*` with StreamHandler plus an in-memory ring buffer (`rag/logging_setup.py`, 500 entries) exposed at `GET /api/admin/logs` (Google session).
 - Uvicorn default access/error logs.
 - `GET /health` returns liveness, data root, and embedding provider status; it does not probe Qdrant or Novita.
+- `GET /node-info` returns the public node catalog and this instance's Railway identity fields; it does not include secrets.
 - MCP tool failures are returned as strings and recorded in accounting; they are also logged on the search path.
 - Accounting under `ACCNT_DATA_ROOT`: daily JSON rollups and JSONL events for embeddings, MCP tools, HTTP routes, and outbound fetches. No budgets or dollar conversion.
 - Embedding HTTP failures: `raise_for_status()` then JSON parse and dimension check; HTTP ingest → 400 or 500; MCP tools → error string.
@@ -465,7 +468,7 @@ Current gaps (not a history of old bugs):
 2. **No MCP resources or prompts.**
 3. **No REST search** — similarity search is MCP-only.
 4. **No generator LLM** — retrieval only; no answer synthesis.
-5. **Catalog, fulltext, `/upload-media`, `/health`, and OpenAPI have no inbound auth.** Multipart `POST /upload` has no size quota in code.
+5. **Catalog, fulltext, `/upload-media`, `/health`, `/node-info`, and OpenAPI have no inbound auth.** Multipart `POST /upload` has no size quota in code.
 6. **`/upload-media`** stores files but does not index them or add them to `index.json`.
 7. **No HTTP reindex** — delete a `doc_id` then re-upload to replace an obsolete file.
 8. **CI does not run pytest**; Super Linter and Docker image build only. No lockfile; most Docker deps unpinned.

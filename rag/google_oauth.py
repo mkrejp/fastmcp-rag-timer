@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import secrets
+from html import escape
 from typing import Any
 from urllib.parse import urlencode
 
@@ -23,6 +24,7 @@ from rag.config import (
     resolve_public_base_url,
 )
 from rag.logging_setup import get_logger
+from rag.node_info import render_login_node_info_html
 
 router = APIRouter(tags=["auth"])
 logger = get_logger("rag.auth.google")
@@ -95,6 +97,17 @@ def login_page(request: Request) -> HTMLResponse | RedirectResponse:
         "token": "Could not exchange the Google authorization code.",
         "userinfo": "Could not load your Google profile.",
     }.get(error, error)
+    error_html = f"<p class='error'>{escape(message)}</p>" if message else ""
+    if configured:
+        action_html = (
+            "<a class='google-btn' href='/auth/google'>Continue with Google</a>"
+        )
+    else:
+        action_html = (
+            "<p class='error'>Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET "
+            "to enable sign-in.</p>"
+        )
+    node_html = render_login_node_info_html(request)
     body = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -112,8 +125,9 @@ def login_page(request: Request) -> HTMLResponse | RedirectResponse:
     <p class="brand">fastmcp-rag-timer</p>
     <h1>RAG console</h1>
     <p class="lede">Sign in with Google to browse the data volume, indexed RAG content, MCP status, and logs.</p>
-    {"<p class='error'>" + message + "</p>" if message else ""}
-    {"<a class='google-btn' href='/auth/google'>Continue with Google</a>" if configured else "<p class='error'>Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET to enable sign-in.</p>"}
+    {error_html}
+    {action_html}
+    {node_html}
   </main>
 </body>
 </html>"""
