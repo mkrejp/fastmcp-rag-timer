@@ -431,14 +431,14 @@ def _locality_point_vector(
     """
     _legacy, named_sizes = _collection_vector_layout(client, LOCALITY_LINKS_COLLECTION)
     if not named_sizes:
-        return dict[str, Any]()
+        return {}
     if set(named_sizes.keys()) == {"default"} and named_sizes["default"] == 1:
         return [0.0]
     if len(named_sizes) == 1:
         name, size = next(iter(named_sizes.items()))
         if size == 1:
             return {name: [0.0]}
-    return dict[str, Any]()
+    return {}
 
 
 def _locality_links_filter(
