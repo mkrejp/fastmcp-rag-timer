@@ -12,12 +12,22 @@ from qdrant_client import QdrantClient
 
 from rag.accounting import accounting_source, get_global_store
 from rag.auth import require_api_token, require_embed_access
+from rag.chunked_upload import (
+    ChunkConflictError,
+    ChunkedUploadError,
+    ChunkedUploadStore,
+    UploadExpiredError,
+    UploadNotFoundError,
+)
 from rag.config import COLLECTION_NAME
 from rag.document_delete import DocumentNotFoundError, delete_document
 from rag.embeddings import embedding_provider_status, validate_embedding_configuration
+from rag.image_delivery import resolve_image_delivery
 from rag.image_embed import image_embedding_enabled
 from rag.ingest import ingest_bytes, meta_to_public
 from rag.logging_setup import get_logger
+from rag.node_info import node_info_payload
+from rag.page_ids import parse_page_image_id
 from rag.processing import is_supported_filename
 from rag.remote import (
     RemoteFetchError,
@@ -26,15 +36,6 @@ from rag.remote import (
     fetch_remote_bytes,
     filename_from_url,
 )
-from rag.chunked_upload import (
-    ChunkConflictError,
-    ChunkedUploadError,
-    ChunkedUploadStore,
-    UploadExpiredError,
-    UploadNotFoundError,
-)
-from rag.image_delivery import resolve_image_delivery
-from rag.page_ids import parse_page_image_id
 from rag.storage import RagStorage
 
 MAX_IMAGE_HTTP_BYTES = 50 * 1024 * 1024
@@ -163,6 +164,21 @@ def _ingest_upload(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001 - surface ingest failures to clients
         raise HTTPException(status_code=500, detail=f"Ingest failed: {exc}") from exc
+
+
+@router.get("/node-info")
+def node_info(request: Request) -> dict[str, Any]:
+    """Public catalog of RAG nodes, this instance, and Czech role labels.
+
+    Unauthenticated. Never includes secrets or non-allow-listed env values.
+    """
+    try:
+        body = node_info_payload(request)
+        _record_http(route="node_info", ok=True)
+        return body
+    except Exception as exc:  # noqa: BLE001 - still report accounting failures
+        _record_http(route="node_info", ok=False, error=str(exc))
+        raise
 
 
 @router.get("/health")

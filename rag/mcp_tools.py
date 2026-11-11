@@ -29,25 +29,26 @@ from rag.geo_refined import (
     matches_geo_filter,
     validate_precision,
 )
-from rag.image_embed import embed_image_query, image_embedding_enabled
 from rag.image_delivery import (
     MISSING_IMAGE_FILE_MESSAGE,
     UNKNOWN_IMAGE_ID_MESSAGE,
     locate_global_image,
     resolve_image_delivery,
 )
+from rag.image_embed import embed_image_query, image_embedding_enabled
 from rag.ingest import ingest_bytes
 from rag.logging_setup import get_logger
+from rag.node_info import mcp_write_blocked_message
 from rag.page_ids import format_page_image_id
 from rag.payloads import ImageRecordPayloadError, LocalityLinkPayloadError
 from rag.pdf_pages import get_page_highlights as compute_page_highlights
+from rag.processing import is_supported_filename
 from rag.search_hits import (
     build_image_search_hit,
     build_knowledge_hit,
     geo_header_suffix,
     page_image_id_for_hit,
 )
-from rag.processing import is_supported_filename
 from rag.storage import ImageMeta, RagStorage
 from rag.trails_sync import (
     forward_locality_links,
@@ -131,6 +132,16 @@ def _run_mcp_tool(
     fn: Callable[[], str],
 ) -> str:
     """Execute an MCP tool body with accounting and optional embedding source."""
+    blocked = mcp_write_blocked_message(tool)
+    if blocked is not None:
+        _record_mcp(
+            tool=tool,
+            ok=False,
+            request_chars=request_chars,
+            response_chars=len(blocked),
+            error=blocked,
+        )
+        return blocked
     try:
         if source is None:
             result = fn()
@@ -272,9 +283,11 @@ def register_mcp_tools(
                 return f"Document chunks not found: {doc_id}"
             fallback = document_geo_fallback(storage, doc_id)
             items = [
-                attach_preferred_geo(chunk, fallback=fallback)
-                if isinstance(chunk, dict)
-                else chunk
+                (
+                    attach_preferred_geo(chunk, fallback=fallback)
+                    if isinstance(chunk, dict)
+                    else chunk
+                )
                 for chunk in chunks
             ]
             return json.dumps(items, ensure_ascii=False, indent=2)
@@ -389,9 +402,7 @@ def register_mcp_tools(
             return [content]
         except FileNotFoundError as exc:
             detail = str(exc) or UNKNOWN_IMAGE_ID_MESSAGE
-            message = (
-                f"{detail}: {image_id}" if image_id not in detail else detail
-            )
+            message = f"{detail}: {image_id}" if image_id not in detail else detail
             _record_mcp(
                 tool="get_image",
                 ok=False,

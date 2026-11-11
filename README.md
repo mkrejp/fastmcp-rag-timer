@@ -56,12 +56,18 @@ On Railway, mount a volume at `/data`. The app creates `/data/rag` and `/data/ac
 | `OCR_LANGS` | `ces+eng` | Tesseract language pack string |
 | `OCR_MIN_CONFIDENCE` | `60` | Drop OCR words below this confidence (0–100) |
 | `OCR_MIN_CHARS` | `20` | Minimum cleaned OCR length to index a `pdf_image` text vector |
-| `PUBLIC_BASE_URL` | unset | Public origin for Google OAuth redirects and MCP image URLs (`/images/...`) |
+| `PUBLIC_BASE_URL` | unset | Public origin for Google OAuth redirects, MCP image URLs (`/images/...`), and the login-page node address |
+| `RAG_NODES` | two production nodes (see below) | Catalog of RAG nodes: JSON array of `{name,url,role}` or a list of `name\|url\|role` entries. Roles: `ZÁPIS`, `ČTENÍ`, `STOP` (also `write`/`read`/`primary`/`replica`). Extra JSON keys are ignored |
+| `RAG_NODE_ROLE` | inferred | Role of **this** process (`ZÁPIS+ČTENÍ`, `ČTENÍ`, `STOP`, …). Wins over the catalog match |
+| `RAG_NODE_NAME` | inferred | Optional catalog name for this process when URL / Railway service name would not match |
+| `RAG_ENFORCE_NODE_ROLE` | unset (off) | Set to `1`/`true`/`yes` to reject HTTP and MCP **writes** on a ČTENÍ or STOP node (403). Off by default |
 | `SESSION_SECRET` | ephemeral per process | Cookie session secret; regenerate on restart if unset |
 | `GOOGLE_CLIENT_ID` | unset | Google OAuth client id (required with secret to enable `/ui`) |
 | `GOOGLE_CLIENT_SECRET` | unset | Google OAuth client secret |
 | `GOOGLE_ALLOWED_EMAILS` | empty (allow all) | Comma-separated Google emails allowed into the console |
 | `GOOGLE_ALLOWED_DOMAINS` | empty (allow all) | Comma-separated email domains allowed into the console |
+
+**RAG nodes (login page + `/node-info`):** When `RAG_NODES` is unset, the catalog is `rag-timer-00001` (`https://rag-timer-00001-production.up.railway.app`, **ZÁPIS+ČTENÍ**) and `rag-timer-00002` (`https://rag-artnouveau.up.railway.app`, **ČTENÍ**). This process is matched by `RAG_NODE_NAME`, `RAILWAY_SERVICE_NAME` (including `fastmcp-rag-timer-00002` → `00002`), `PUBLIC_BASE_URL`, or the request host. Railway-provided `RAILWAY_SERVICE_NAME`, `RAILWAY_REPLICA_REGION`, and `RAILWAY_ENVIRONMENT_NAME` are shown when present. Other env values are never returned. Write blocking stays off until `RAG_ENFORCE_NODE_ROLE=1`.
 
 **Split ingest vs query:** Ingest may use Novita (`baai/bge-m3`, 1024-dim) while every search path uses **local** FastEmbed (`BAAI/bge-m3`, 1024-dim). Search never calls Novita. When `EMBEDDING_PROVIDER` is `novita` (the default), set `EMBEDDING_PROVIDER_QUERY=fastembed` or startup refuses to start. Novita HTTP vs local ONNX can differ slightly; re-check recall after switching ingest provider (optional `scripts/golden_recall_smoke.py`).
 
@@ -98,6 +104,7 @@ Embedding REST routes (multipart upload, chunked upload, PDF alias, images, dele
 - `DELETE /documents/{doc_id}` — remove originals, processed files (including `images/`), catalog row, and Qdrant points
 - `GET /images/{doc_id}/{image_id}` — extracted PDF image bytes (same auth as `POST /upload`; `413` if larger than 50 MiB)
 - `GET /health` — liveness (`status`, `rag_data_root`, ingest/query embedding providers, `image_embedding_enabled`)
+- `GET /node-info` — public JSON: this instance (name, public URL, Railway service/region when present), catalog of nodes with Czech roles (`ZÁPIS` / `ČTENÍ` / `STOP`). No secrets
 - `GET /` — redirect to `/ui/`
 - `GET /ui/` — Google-authenticated RAG console (static shell under `static/`)
 - `GET /auth/login`, `/auth/google`, `/auth/callback`, `/auth/logout`, `/auth/me`, `/auth/status` — Google OAuth
