@@ -315,7 +315,9 @@ def _valid_lat_lon(lat: float | None, lon: float | None) -> tuple[float, float] 
     return None
 
 
-def _pair_from_numbers(first: float | None, second: float | None) -> tuple[float, float] | None:
+def _pair_from_numbers(
+    first: float | None, second: float | None
+) -> tuple[float, float] | None:
     """Interpret two numbers as lat/lon, falling back to lon/lat."""
     pair = _valid_lat_lon(first, second)
     if pair is not None:

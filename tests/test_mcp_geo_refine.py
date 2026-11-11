@@ -9,7 +9,6 @@ from typing import Any, Callable, Iterator
 import pytest
 from fastapi.testclient import TestClient
 from qdrant_client.models import PointStruct
-
 from rag.config import COLLECTION_NAME
 from rag.geo_index import MAX_GEO_BATCH_SIZE
 from rag.ingest import stable_point_id
@@ -658,7 +657,10 @@ def test_refine_geo_batch_dry_run_write_and_per_item_errors(
                     "dry_run": False,
                     "items": [
                         {"doc_id": doc_a, "geo_refined": _sample_geo()},
-                        {"doc_id": doc_b, "geo_refined": _sample_geo(precision="street")},
+                        {
+                            "doc_id": doc_b,
+                            "geo_refined": _sample_geo(precision="street"),
+                        },
                     ],
                 },
                 call_id=3,

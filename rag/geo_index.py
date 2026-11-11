@@ -11,12 +11,11 @@ from typing import Any, Mapping
 
 from qdrant_client import QdrantClient
 from qdrant_client.models import FieldCondition, Filter, MatchValue
-
 from rag.config import COLLECTION_NAME
 from rag.geo_refined import (
+    ORIGINAL_COORD_KEYS,
     GeoRefinedNotFoundError,
     GeoRefinedPayloadError,
-    ORIGINAL_COORD_KEYS,
     apply_geo_refined,
     coerce_filter_argument,
     coerce_geo_refined_argument,
@@ -148,8 +147,16 @@ def _target_view(
     image_id: str | None = None,
 ) -> dict[str, Any]:
     """Shape one dry-run / write target for MCP/REST responses."""
-    old = existing.get("geo_refined") if isinstance(existing.get("geo_refined"), Mapping) else None
-    new = updated.get("geo_refined") if isinstance(updated.get("geo_refined"), Mapping) else None
+    old = (
+        existing.get("geo_refined")
+        if isinstance(existing.get("geo_refined"), Mapping)
+        else None
+    )
+    new = (
+        updated.get("geo_refined")
+        if isinstance(updated.get("geo_refined"), Mapping)
+        else None
+    )
     geo = preferred_geo(updated)
     return {
         "doc_id": doc_id,
@@ -472,9 +479,7 @@ def refine_geo(
             if not dry_run and changed:
                 images = []
                 for img in meta.images:
-                    images.append(
-                        updated_image if img.image_id == image_id_n else img
-                    )
+                    images.append(updated_image if img.image_id == image_id_n else img)
                 meta.images = images
                 storage.write_meta(meta)
 
@@ -774,7 +779,11 @@ def list_geo_refinements(
         str(merged.get("confidence_level") or confidence_level or "") or None
     )
     needs_n = _as_optional_bool(
-        merged["needs_refinement"] if "needs_refinement" in merged else needs_refinement,
+        (
+            merged["needs_refinement"]
+            if "needs_refinement" in merged
+            else needs_refinement
+        ),
         field="needs_refinement",
     )
     verified_n = _as_optional_bool(
