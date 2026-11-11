@@ -116,7 +116,11 @@ def _optional_float(value: object) -> float | None:
     """Return ``value`` as float, or ``None`` when unset."""
     if value is None or value == "":
         return None
-    return float(value)
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        return float(value)
+    raise TypeError(f"cannot convert {type(value).__name__} to float")
 
 
 def _optional_geo_object(value: object) -> dict[str, Any] | None:

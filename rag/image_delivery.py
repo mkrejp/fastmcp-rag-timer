@@ -62,10 +62,10 @@ def resolve_image_delivery(
             return fallback, mime_for_image_path(fallback)
         raise FileNotFoundError(MISSING_IMAGE_FILE_MESSAGE)
 
-    path = storage.locate_image_file(doc_id, image_id)
-    if path is None:
+    located = storage.locate_image_file(doc_id, image_id)
+    if located is None:
         raise FileNotFoundError(UNKNOWN_IMAGE_ID_MESSAGE)
-    return path, mime_for_image_path(path)
+    return located, mime_for_image_path(located)
 
 
 def locate_global_image(

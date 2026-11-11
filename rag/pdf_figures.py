@@ -153,8 +153,12 @@ def collect_raw_placements(
             "PyMuPDF (pymupdf) is required for figure extraction"
         ) from exc
 
-    apply_min = min_area_ratio is not None
-    min_ratio = float(min_area_ratio) if apply_min else resolve_figure_min_area_ratio()
+    if min_area_ratio is not None:
+        apply_min = True
+        min_ratio = float(min_area_ratio)
+    else:
+        apply_min = False
+        min_ratio = resolve_figure_min_area_ratio()
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     placements: list[RawPlacement] = []
     try:

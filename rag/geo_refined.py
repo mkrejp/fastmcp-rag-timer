@@ -292,7 +292,12 @@ def _as_float(value: object) -> float | None:
     if value is None or value == "":
         return None
     try:
-        number = float(value)
+        if isinstance(value, (int, float)):
+            number = float(value)
+        elif isinstance(value, str):
+            number = float(value)
+        else:
+            return None
     except (TypeError, ValueError):
         return None
     if not math.isfinite(number):
