@@ -270,6 +270,7 @@ def test_openapi_documents_metadata_patch_route(client: TestClient) -> None:
     assert ref.endswith("PatchDocumentMetadataResponse")
     schema_body = payload["components"]["schemas"]["PatchDocumentMetadataResponse"]
     assert "truncated" in schema_body.get("properties", {})
+    assert "deleted_fields" in schema_body.get("properties", {})
 
 
 def test_openapi_documents_patch_route(client: TestClient) -> None:

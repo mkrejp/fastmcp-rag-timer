@@ -11,6 +11,7 @@ from rag.verification_meta import (
     figure_payload_fields,
     normalize_overeni_souhrn,
     normalize_verification_metadata,
+    split_verification_deletes,
 )
 
 
@@ -114,6 +115,46 @@ def test_unknown_field_rejected() -> None:
     """Unknown top-level keys should fail."""
     with pytest.raises(DocumentMetadataError, match="unknown metadata"):
         normalize_verification_metadata({"doc_id": "nope"})
+
+
+def test_split_deletes_whitelist_and_rollback_rule() -> None:
+    """Null deletes whitelist keys; source_key/content_hash need verification:null."""
+    remaining, deleted = split_verification_deletes(
+        {
+            "reliability": 2,
+            "verified_by": None,
+            "overeni_souhrn": None,
+            "qg_trida": None,
+            "qg_flagy": None,
+            "qg_verze": None,
+        }
+    )
+    assert remaining == {"reliability": 2}
+    assert deleted == [
+        "verified_by",
+        "overeni_souhrn",
+        "qg_trida",
+        "qg_flagy",
+        "qg_verze",
+    ]
+
+    remaining, deleted = split_verification_deletes(
+        {
+            "verification": None,
+            "source_key": None,
+            "content_hash": None,
+        }
+    )
+    assert remaining == {}
+    assert deleted == ["verification", "source_key", "content_hash"]
+
+    with pytest.raises(DocumentMetadataError, match="source_key"):
+        split_verification_deletes({"source_key": None})
+    with pytest.raises(DocumentMetadataError, match="content_hash"):
+        split_verification_deletes({"content_hash": None, "reliability": 1})
+    for field in ("tags", "obec_kod", "gps_presnost", "extrakce_model", "fakt_ref"):
+        with pytest.raises(DocumentMetadataError, match=field):
+            split_verification_deletes({field: None})
 
 
 def test_figure_payload_omits_colliding_keys() -> None:

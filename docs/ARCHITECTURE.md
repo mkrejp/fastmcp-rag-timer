@@ -166,7 +166,7 @@ From `rag/routes.py`, `rag/app.py`, `rag/google_oauth.py`, and `rag/admin_routes
 | `GET` | `/documents/{doc_id}` | **None** | Metadata |
 | `GET` | `/documents/{doc_id}/text` | **None** | Processed full text from disk (no re-parse, no embedding call) |
 | `PATCH` | `/documents/{doc_id}` | same as `/upload` | In-place metadata edit (`filename`, `extra`). Catalog + Qdrant `set_payload` only. `200` updated; `400`/`404`; `401`/`503` |
-| `PATCH` | `/documents/{doc_id}/metadata` | same as `/upload` | Verification fields (`reliability`, `verification[]`, `qg_verze`, `overeni_souhrn`). `set_payload` only; `doc_id` unchanged. Response `truncated` lists clipped field paths |
+| `PATCH` | `/documents/{doc_id}/metadata` | same as `/upload` | Verification fields (`set_payload` / JSON `null` delete). `doc_id`, text, and embeddings unchanged; Qdrant points are not deleted. `200` includes `updated_fields`, `deleted_fields`, `truncated`; `400`/`404`; `401`/`503` |
 | `DELETE` | `/documents/{doc_id}` | same as `/upload` | Remove files (including `images/`), catalog row, and Qdrant points. `200` `{"status":"deleted","doc_id","filename","chunks_removed"}`; `404` if missing; `401`/`503` if unauthorized |
 | `GET` | `/images/{doc_id}/{image_id}` | same as `/upload` | Extracted PDF image bytes; `413` if larger than 50 MiB |
 | `GET` | `/` | None | Redirect to `/ui/` |
@@ -188,7 +188,30 @@ There is **no REST search** endpoint. Similarity search is MCP-only (`search_dom
 points by `payload.doc_id` then calls `RagStorage.remove_document_files`.
 `rag.document_patch.patch_document` updates catalog metadata and matching Qdrant payloads with
 `set_payload` only (no re-embedding). `patch_document_metadata` writes RAGloader verification
-fields the same way (chunks get `verification[]`; figures get flat keys only).
+fields the same way (chunks get full fields including `verification[]`; `pdf_figure` /
+`pdf_image` points get only `figure_payload_fields` — flat keys, no nested `verification[]`).
+
+**JSON `null` deletes (HTTP and MCP `update_document_metadata`).** Non-null values use
+`set_payload` on chunk/image and figure points and merge into catalog `extra`. A JSON `null` on a
+whitelist key (`DELETABLE_VERIFICATION_FIELDS` in `rag/verification_meta.py`) runs Qdrant
+`delete_payload` on all points for that `doc_id` and `pop`s the key from catalog `extra`. Whitelist:
+`verification`, `verification_status`, `verified_by`, `verified_at`, `verified_source_url`,
+`verified_quote`, `reliability`, `source_axis`, `source_key`, `content_hash`, `overeni_souhrn`,
+`qg_trida`, `qg_flagy`, `qg_verze`.
+`source_key` and `content_hash` may be nulled only in the same body as `verification: null` (full
+verification rollback); otherwise **400**. `qg_trida` / `qg_flagy` / `qg_verze` are plain deletes.
+Null on any other field (including `tags`, `obec_kod`, `gps_presnost`, `extrakce_model`, `fakt_ref`)
+is **400**. Success responses
+include `deleted_fields`; vectors and `doc_id` are untouched. Same Bearer MCP/RAG or Google session
+as `POST /upload` / `DELETE`. Operating convention (outside this repo): RAGloader logs each deletion
+to `rag-changes.jsonl` with action `metadata_unset` and the field list.
+
+```json
+PATCH /documents/{doc_id}/metadata
+{"verified_by": null}
+
+→ {"status":"updated","doc_id":"…","deleted_fields":["verified_by"],"updated_fields":[],"points_updated":3,"figures_updated":0,"truncated":[],"meta":{…}}
+```
 
 ## Exposed MCP tools, resources, and prompts
 
@@ -222,8 +245,9 @@ Tool behavior:
 - `ingest_text`: if the filename is not a supported suffix, appends `.txt`; calls `ingest_bytes`; returns JSON or `"Error ingesting text: ..."`
 - `update_document`: calls `patch_document`; empty `filename` leaves the name unchanged; `extra` merges custom keys (`null` removes). Missing ID or invalid fields return `"Error update_document: ..."`
 - `update_document_metadata`: calls `patch_document_metadata`; writes `reliability` /
-  `verification[]` / `qg_verze` / `overeni_souhrn`. Response JSON includes `truncated` field paths
-  when values were clipped. Missing ID or invalid fields return an error string.
+  `verification[]` / `qg_verze` / `overeni_souhrn`. JSON `null` on a whitelist key deletes it
+  (`deleted_fields`). Response JSON includes `truncated` field paths when values were clipped.
+  Missing ID or invalid fields return an error string.
 - `search_domain_knowledge`: `get_query_embedding` (FastEmbed) → `search_similar` on `text_vector` with optional `obec_id` / `cast_obce` payload filter on denormalized `localities` / `cast_obce` arrays → format `Source:` / `Content:` blocks (OCR image hits included when they have text vectors); empty → `"No relevant facts found."`; exceptions → `"Error executing RAG search: ..."`
 - `search_images`: requires `IMAGE_EMBEDDING_ENABLED=true`; CLIP text tower → `image_vector`; `hybrid=true` RRF-merges CLIP hits with `pdf_image` text hits
 - `link_locality` / `verify_link`: when `TRAILS_API_URL` and `TRAILS_API_TOKEN` are set, forward to TrailsAssemblage `POST /locality-links` and `PATCH /locality-links/{id}/verify`. Failures retry with backoff then land in `{RAG_DATA_ROOT}/trails_outbox.json`; MCP tools still succeed. Unset env leaves tools unchanged.

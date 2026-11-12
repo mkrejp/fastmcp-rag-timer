@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Iterator
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -19,6 +20,7 @@ from rag.verification_meta import (
     DocumentMetadataError,
 )
 from tests.conftest import AUTH_HEADERS, patched_embeddings
+from tests.fixtures.pdf_factory import build_image_rich_pdf
 
 if TYPE_CHECKING:
     from qdrant_client import QdrantClient
@@ -43,6 +45,37 @@ def _scroll_doc(qdrant_client: QdrantClient, doc_id: str) -> list[Any]:
         with_vectors=True,
     )
     return list(points)
+
+
+def _mcp_tool_call(client: TestClient, name: str, arguments: dict[str, Any]) -> Any:
+    """Initialize MCP and call one tool; return the tools/call response."""
+    init = client.post(
+        "/mcp/",
+        headers=MCP_HEADERS,
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "capabilities": {},
+                "clientInfo": {"name": "t", "version": "1"},
+            },
+        },
+    )
+    assert init.status_code == 200
+    call = client.post(
+        "/mcp/",
+        headers=MCP_HEADERS,
+        json={
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {"name": name, "arguments": arguments},
+        },
+    )
+    assert call.status_code == 200
+    return call
 
 
 def _item() -> dict[str, Any]:
@@ -150,6 +183,7 @@ def test_patch_document_metadata_set_payload_no_reembed(
     assert "reliability" in result["updated_fields"]
     assert result["points_updated"] >= 1
     assert result["truncated"] == []
+    assert result["deleted_fields"] == []
 
     after = _scroll_doc(qdrant_client, doc_id)
     assert {point.id: point.vector for point in after} == before_vectors
@@ -160,6 +194,23 @@ def test_patch_document_metadata_set_payload_no_reembed(
     assert payload["verification"][0]["method"] == "haversine"
     assert payload["text"] == before_text
     assert payload["doc_id"] == doc_id
+
+    cleared = patch_document_metadata(
+        storage=rag_storage,
+        qdrant=qdrant_client,
+        collection_name=COLLECTION,
+        doc_id=doc_id,
+        metadata={"verification": None, "overeni_souhrn": None},
+    )
+    assert cleared["deleted_fields"] == ["overeni_souhrn", "verification"]
+    after_delete = _scroll_doc(qdrant_client, doc_id)
+    assert {point.id: point.vector for point in after_delete} == before_vectors
+    deleted_payload = after_delete[0].payload or {}
+    assert "verification" not in deleted_payload
+    assert "overeni_souhrn" not in deleted_payload
+    assert deleted_payload["text"] == before_text
+    assert deleted_payload["doc_id"] == doc_id
+    assert deleted_payload["reliability"] == 2
 
 
 def test_patch_document_metadata_http(
@@ -189,6 +240,7 @@ def test_patch_document_metadata_http(
     assert body["meta"]["reliability"] == 3
     assert body["meta"]["overeni_souhrn"] == "primární zdroj, shoda 2"
     assert body["truncated"] == []
+    assert body["deleted_fields"] == []
 
     fetched = client.get(f"/documents/{doc_id}")
     assert fetched.status_code == 200
@@ -253,42 +305,18 @@ def test_update_document_metadata_mcp_tool(client: TestClient) -> None:
     assert upload.status_code == 200
     doc_id = upload.json()["doc_id"]
 
-    init = client.post(
-        "/mcp/",
-        headers=MCP_HEADERS,
-        json={
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "2025-03-26",
-                "capabilities": {},
-                "clientInfo": {"name": "t", "version": "1"},
+    call = _mcp_tool_call(
+        client,
+        "update_document_metadata",
+        {
+            "doc_id": doc_id,
+            "metadata": {
+                "reliability": 2,
+                "overeni_souhrn": "mcp",
+                "verification": [_item()],
             },
         },
     )
-    assert init.status_code == 200
-    call = client.post(
-        "/mcp/",
-        headers=MCP_HEADERS,
-        json={
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "tools/call",
-            "params": {
-                "name": "update_document_metadata",
-                "arguments": {
-                    "doc_id": doc_id,
-                    "metadata": {
-                        "reliability": 2,
-                        "overeni_souhrn": "mcp",
-                        "verification": [_item()],
-                    },
-                },
-            },
-        },
-    )
-    assert call.status_code == 200
     text = call.text
     assert "updated" in text
     fetched = client.get(f"/documents/{doc_id}").json()
@@ -391,6 +419,233 @@ def test_patch_rejects_doc_id_change(
             doc_id=str(ingested["doc_id"]),
             metadata={"doc_id": "new-id"},
         )
+
+
+def test_patch_null_deletes_whitelist_field_from_get(client: TestClient) -> None:
+    """JSON null on a whitelist key should drop it from GET and Qdrant."""
+    upload = client.post(
+        "/upload",
+        files={
+            "file": ("del.txt", b"Null deletes a verification field.", "text/plain")
+        },
+    )
+    assert upload.status_code == 200
+    doc_id = upload.json()["doc_id"]
+    seeded = client.patch(
+        f"/documents/{doc_id}/metadata",
+        json={
+            "verified_by": "auditor",
+            "overeni_souhrn": "keep then drop",
+            "reliability": 2,
+        },
+    )
+    assert seeded.status_code == 200
+    before = client.get(f"/documents/{doc_id}")
+    assert before.status_code == 200
+    assert before.json()["verified_by"] == "auditor"
+
+    deleted = client.patch(
+        f"/documents/{doc_id}/metadata",
+        json={"verified_by": None},
+    )
+    assert deleted.status_code == 200
+    body = deleted.json()
+    assert body["deleted_fields"] == ["verified_by"]
+    assert "verified_by" not in body["updated_fields"]
+    fetched = client.get(f"/documents/{doc_id}").json()
+    assert "verified_by" not in fetched
+    assert fetched["overeni_souhrn"] == "keep then drop"
+    assert fetched["reliability"] == 2
+    assert fetched["doc_id"] == doc_id
+
+
+def test_patch_null_deletes_qg_fields_without_verification_rollback(
+    client: TestClient,
+) -> None:
+    """qg_trida / qg_flagy / qg_verze null-delete without verification:null."""
+    upload = client.post(
+        "/upload",
+        files={
+            "file": ("qg-del.txt", b"Null deletes qg whitelist fields.", "text/plain")
+        },
+    )
+    assert upload.status_code == 200
+    doc_id = upload.json()["doc_id"]
+    seeded = client.patch(
+        f"/documents/{doc_id}/metadata",
+        json={
+            "qg_trida": "A",
+            "qg_flagy": ["ocr"],
+            "qg_verze": "2026-11-12:qg",
+            "reliability": 2,
+        },
+    )
+    assert seeded.status_code == 200
+    before = client.get(f"/documents/{doc_id}").json()
+    assert before["qg_trida"] == "A"
+    assert before["qg_flagy"] == ["ocr"]
+    assert before["qg_verze"] == "2026-11-12:qg"
+
+    deleted = client.patch(
+        f"/documents/{doc_id}/metadata",
+        json={"qg_trida": None, "qg_flagy": None, "qg_verze": None},
+    )
+    assert deleted.status_code == 200
+    assert deleted.json()["deleted_fields"] == ["qg_flagy", "qg_trida", "qg_verze"]
+    fetched = client.get(f"/documents/{doc_id}").json()
+    assert "qg_trida" not in fetched
+    assert "qg_flagy" not in fetched
+    assert "qg_verze" not in fetched
+    assert fetched["reliability"] == 2
+
+
+def test_patch_null_non_whitelist_is_400(client: TestClient) -> None:
+    """Null on tags / obec_kod / gps_presnost / extrakce_model / fakt_ref is 400."""
+    upload = client.post(
+        "/upload",
+        files={"file": ("bad-null.txt", b"Reject non-whitelist nulls.", "text/plain")},
+    )
+    assert upload.status_code == 200
+    doc_id = upload.json()["doc_id"]
+    for field in (
+        "tags",
+        "obec_kod",
+        "gps_presnost",
+        "extrakce_model",
+        "fakt_ref",
+    ):
+        response = client.patch(
+            f"/documents/{doc_id}/metadata",
+            json={field: None},
+        )
+        assert response.status_code == 400, field
+
+
+def test_patch_source_key_content_hash_null_requires_verification_null(
+    client: TestClient,
+) -> None:
+    """source_key/content_hash null is 400 unless verification is also null."""
+    upload = client.post(
+        "/upload",
+        files={
+            "file": (
+                "rollback.txt",
+                b"Rollback source_key with verification.",
+                "text/plain",
+            )
+        },
+    )
+    assert upload.status_code == 200
+    doc_id = upload.json()["doc_id"]
+    seeded = client.patch(
+        f"/documents/{doc_id}/metadata",
+        json={
+            "source_key": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "content_hash": "abc123",
+            "verification": [_item()],
+            "verified_by": "keeper",
+        },
+    )
+    assert seeded.status_code == 200
+    assert (
+        client.patch(
+            f"/documents/{doc_id}/metadata", json={"source_key": None}
+        ).status_code
+        == 400
+    )
+    assert (
+        client.patch(
+            f"/documents/{doc_id}/metadata", json={"content_hash": None}
+        ).status_code
+        == 400
+    )
+
+    rolled = client.patch(
+        f"/documents/{doc_id}/metadata",
+        json={
+            "verification": None,
+            "source_key": None,
+            "content_hash": None,
+        },
+    )
+    assert rolled.status_code == 200
+    assert rolled.json()["deleted_fields"] == [
+        "content_hash",
+        "source_key",
+        "verification",
+    ]
+    fetched = client.get(f"/documents/{doc_id}").json()
+    assert "verification" not in fetched
+    assert "source_key" not in fetched
+    assert "content_hash" not in fetched
+    assert fetched["verified_by"] == "keeper"
+
+
+def test_update_document_metadata_mcp_null_delete(client: TestClient) -> None:
+    """MCP update_document_metadata should delete whitelist keys on null."""
+    upload = client.post(
+        "/upload",
+        files={"file": ("mcp-del.txt", b"MCP null delete.", "text/plain")},
+    )
+    assert upload.status_code == 200
+    doc_id = upload.json()["doc_id"]
+    client.patch(
+        f"/documents/{doc_id}/metadata",
+        json={"verified_quote": "drop me", "reliability": 2},
+    )
+    call = _mcp_tool_call(
+        client,
+        "update_document_metadata",
+        {"doc_id": doc_id, "metadata": {"verified_quote": None}},
+    )
+    assert "deleted_fields" in call.text
+    fetched = client.get(f"/documents/{doc_id}").json()
+    assert "verified_quote" not in fetched
+    assert fetched["reliability"] == 2
+
+
+def test_ingest_pdf_images_omit_nested_verification(
+    rag_storage: RagStorage,
+    qdrant_client: QdrantClient,
+    fake_embed: Callable[[str], list[float]],
+) -> None:
+    """PDF image/figure points should get flat figure fields, not verification[]."""
+    pdf_bytes = build_image_rich_pdf()
+    with patch(
+        "rag.ingest.ocr_image_file",
+        return_value=("indexed ocr phrase long enough", 90.0),
+    ):
+        result = ingest_bytes(
+            storage=rag_storage,
+            qdrant=qdrant_client,
+            collection_name=COLLECTION,
+            filename="fixture.pdf",
+            data=pdf_bytes,
+            embed_fn=fake_embed,
+            metadata={
+                "reliability": 2,
+                "overeni_souhrn": "flat only on figures",
+                "verification": [_item()],
+            },
+        )
+    assert result["status"] == "Success"
+    doc_id = str(result["doc_id"])
+    by_type: dict[str, list[Any]] = {}
+    for point in _scroll_doc(qdrant_client, doc_id):
+        payload = point.payload or {}
+        source_type = str(payload.get("source_type") or "")
+        by_type.setdefault(source_type, []).append(payload)
+        assert payload.get("text")
+        assert payload["doc_id"] == doc_id
+    chunks = by_type.get("pdf_chunk") or []
+    assert chunks
+    assert chunks[0]["verification"][0]["method"] == "haversine"
+    figure_like = (by_type.get("pdf_image") or []) + (by_type.get("pdf_figure") or [])
+    assert figure_like
+    for payload in figure_like:
+        assert "verification" not in payload
+        assert payload.get("reliability") == 2
+        assert payload.get("overeni_souhrn") == "flat only on figures"
 
 
 @pytest.fixture()

@@ -118,8 +118,8 @@ Embedding REST routes (multipart upload, chunked upload, PDF alias, images, dele
 - `GET /documents/{doc_id}` — metadata (**no inbound auth**)
 - `GET /documents/{doc_id}/text` — processed full text, no re-parse (**no inbound auth**)
 - `PATCH /documents/{doc_id}` — update catalog metadata and matching Qdrant payloads in place (no re-embed; same auth as `DELETE`)
-- `PATCH /documents/{doc_id}/metadata` — write verification fields (`reliability`, `verification[]`,
-  `qg_verze`, `overeni_souhrn`, …) via `set_payload` (no re-embed, no `doc_id` change; same auth)
+- `PATCH /documents/{doc_id}/metadata` — write or delete verification fields (`set_payload` / JSON
+  `null` on whitelist keys; no re-embed; same auth as `DELETE`)
 - `DELETE /documents/{doc_id}` — remove originals, processed files (including `images/`), catalog row, and Qdrant points
 - `GET /images/{doc_id}/{image_id}` — extracted PDF image bytes (same auth as `POST /upload`; `413` if larger than 50 MiB)
 - `GET /health` — liveness (`status`, `rag_data_root`, ingest/query embedding providers, `image_embedding_enabled`)
@@ -222,15 +222,31 @@ curl -sS -X PATCH \
 
 ### Patch verification fields (`PATCH /documents/{doc_id}/metadata`)
 
-Write RAGloader flat fields onto every matching Qdrant chunk (`set_payload` only; no re-embed, no
-deletes, `doc_id` unchanged). Same auth as `DELETE`. New uploads also store these fields when the
-optional `metadata` JSON form field (or MCP `ingest_text` `metadata`) is provided; `reliability`
-defaults to `1`. `overeni_souhrn` is truncated to 300 characters and quotes to 500; the response
-includes `truncated` with every clipped field path (for example `overeni_souhrn`,
-`verification[0].quote`, `verified_quote`). Each `verification[]` item may include `method`,
-`compared_value`, `found_value`, `threshold`, and `evidence_type`. Startup creates Qdrant payload
-indexes `source_key` (keyword), `verification_status` (keyword), and `reliability` (integer) if they
-are missing.
+Write RAGloader verification fields onto catalog `extra` and matching Qdrant payloads (`set_payload`
+for non-null values; JSON `null` deletes whitelist keys via `delete_payload`). No re-embed; `doc_id`,
+stored text, embeddings, and Qdrant points are unchanged. Same auth as `DELETE` (Bearer
+`MCP_API_TOKEN` / `RAG_API_TOKEN` or Google session). MCP `update_document_metadata` mirrors this
+behavior.
+
+Non-null patches apply full fields on text/image chunk points (including `verification[]`). Figure
+and page-image points receive only `figure_payload_fields` (flat keys; nested `verification[]` is not
+written there). New uploads also store these fields when the optional `metadata` JSON form field (or
+MCP `ingest_text` `metadata`) is provided; `reliability` defaults to `1`. `overeni_souhrn` is
+truncated to 300 characters and quotes to 500; the response includes `truncated` with every clipped
+field path. Each `verification[]` item may include `method`, `compared_value`, `found_value`,
+`threshold`, and `evidence_type`.
+
+**Deleting fields with JSON `null`.** Only these keys accept `null` (defined in code as
+`DELETABLE_VERIFICATION_FIELDS`): `verification`, `verification_status`, `verified_by`,
+`verified_at`, `verified_source_url`, `verified_quote`, `reliability`, `source_axis`, `source_key`,
+`content_hash`, `overeni_souhrn`, `qg_trida`, `qg_flagy`, `qg_verze`. `source_key` and `content_hash`
+may be nulled only in the same request as `verification: null` (full verification rollback); otherwise
+the API returns **400**. `qg_trida`, `qg_flagy`, and `qg_verze` are plain deletes. `null` on any other
+field — for example `tags`, `obec_kod`, `gps_presnost`, `extrakce_model`, `fakt_ref` — returns **400**.
+Successful responses list removals in `deleted_fields` alongside
+`updated_fields`, `points_updated`, and `figures_updated`. Operating convention (outside this repo):
+RAGloader logs each deletion to `rag-changes.jsonl` with action `metadata_unset` and the list of
+fields.
 
 ```bash
 curl -sS -X PATCH \
@@ -238,6 +254,13 @@ curl -sS -X PATCH \
   -H "Content-Type: application/json" \
   -d '{"reliability":2,"qg_verze":"2026-11-12:abcd","overeni_souhrn":"wiki strop 2"}' \
   http://127.0.0.1:8080/documents/{doc_id}/metadata
+
+curl -sS -X PATCH \
+  -H "Authorization: Bearer $RAG_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"verified_by":null}' \
+  http://127.0.0.1:8080/documents/{doc_id}/metadata
+# → {"status":"updated","deleted_fields":["verified_by"],…}
 ```
 
 ## MCP (AI clients)
@@ -253,7 +276,7 @@ Streamable HTTP MCP is mounted at **`/mcp`** (`stateless_http=True`, `streamable
 - `get_page_highlights` (`doc_id`, `page`, `query`) — JSON boxes `{page_width, page_height, highlights:[{x0,y0,x1,y1,text,method}]}` (normalized 0–1)
 - `ingest_text`
 - `update_document` (`doc_id`, optional `filename`, optional `extra`) — patch catalog + Qdrant payloads, no re-embed
-- `update_document_metadata` (`doc_id`, optional `metadata`) — patch verification payload fields, no re-embed
+- `update_document_metadata` (`doc_id`, optional `metadata`) — patch verification payload fields (`null` deletes whitelist keys), no re-embed
 - `search_domain_knowledge` (text `text_vector` only; optional `obec_id` / `cast_obce` payload filter; PDF hits add `page_image_id`; optional `format=json`)
 - `search_images` (CLIP `image_vector`; optional `hybrid=true`; PDF hits add `page_image_id`; optional `format=json`; optional `precision` / `needs_refinement` filters on `geo_refined`)
 - `link_locality` (upsert document-municipality links into payload-only `locality_links`; forwards to Trails when configured; no embeddings)

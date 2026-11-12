@@ -583,8 +583,9 @@ def register_mcp_tools(
 
         Writes flat RAGloader fields (``reliability``, ``verification[]``,
         ``qg_verze``, ``overeni_souhrn``, …) via ``set_payload`` onto matching
-        chunks. Clipped fields are listed in ``truncated``. Does not change
-        ``doc_id``. Same bearer auth as other MCP write tools.
+        chunks. JSON ``null`` on a whitelist key deletes that payload key
+        (``deleted_fields``). Clipped fields are listed in ``truncated``.
+        Does not change ``doc_id``. Same bearer auth as other MCP write tools.
         """
 
         def _body() -> str:

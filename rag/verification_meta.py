@@ -153,6 +153,28 @@ FIGURE_EXCLUDED_KEYS = frozenset(
     }
 )
 
+# PATCH /documents/{id}/metadata: JSON null deletes these payload keys.
+DELETABLE_VERIFICATION_FIELDS = frozenset(
+    {
+        "verification",
+        "verification_status",
+        "verified_by",
+        "verified_at",
+        "verified_source_url",
+        "verified_quote",
+        "reliability",
+        "source_axis",
+        "source_key",
+        "content_hash",
+        "overeni_souhrn",
+        "qg_trida",
+        "qg_flagy",
+        "qg_verze",
+    }
+)
+# Only allowed as null in the same request as ``verification: null``.
+ROLLBACK_ONLY_DELETE_FIELDS = frozenset({"source_key", "content_hash"})
+
 
 class DocumentMetadataError(ValueError):
     """Raised when verification metadata is missing, unknown, or invalid."""
@@ -413,6 +435,40 @@ def _normalize_verification_item(
             allow_empty=True,
         )
     return out
+
+
+def split_verification_deletes(
+    raw: Mapping[str, Any] | None,
+) -> tuple[dict[str, Any], list[str]]:
+    """Split PATCH metadata into fields to set and whitelist keys to delete.
+
+    JSON ``null`` on a whitelisted key means delete it. ``source_key`` and
+    ``content_hash`` may be nulled only when the same body also has
+    ``verification: null`` (full verification rollback). ``qg_trida``,
+    ``qg_flagy``, and ``qg_verze`` delete without that requirement. Any
+    other null (including ``tags``, ``obec_kod``, …) raises
+    ``DocumentMetadataError``.
+    """
+    if raw is None:
+        return {}, []
+    if not isinstance(raw, Mapping):
+        raise DocumentMetadataError("metadata must be an object")
+    verification_rollback = "verification" in raw and raw["verification"] is None
+    remaining: dict[str, Any] = {}
+    deleted: list[str] = []
+    for key, value in raw.items():
+        if value is not None:
+            remaining[str(key)] = value
+            continue
+        name = str(key)
+        if name not in DELETABLE_VERIFICATION_FIELDS:
+            raise DocumentMetadataError(f"{name} must not be null")
+        if name in ROLLBACK_ONLY_DELETE_FIELDS and not verification_rollback:
+            raise DocumentMetadataError(
+                f"{name} may be null only when verification is also null"
+            )
+        deleted.append(name)
+    return remaining, deleted
 
 
 def normalize_verification_metadata(

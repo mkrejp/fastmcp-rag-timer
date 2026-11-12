@@ -22,7 +22,11 @@ from rag.pdf_images import extract_pdf_images
 from rag.processing import guess_mime, is_supported_filename, process_document
 from rag.storage import DocumentMeta, ImageMeta, RagStorage
 from rag.vectorstore import build_named_vector
-from rag.verification_meta import chunk_payload_fields, normalize_verification_metadata
+from rag.verification_meta import (
+    chunk_payload_fields,
+    figure_payload_fields,
+    normalize_verification_metadata,
+)
 
 EmbedFn = Callable[[str], list[float]]
 logger = get_logger("rag.ingest")
@@ -169,6 +173,7 @@ def ingest_bytes(
         metadata, apply_defaults=True
     )
     chunk_fields = chunk_payload_fields(verification_fields)
+    figure_fields = figure_payload_fields(verification_fields)
     if skip_duplicate:
         existing = storage.find_by_sha256(digest)
         if existing is not None:
@@ -317,7 +322,7 @@ def ingest_bytes(
                 filename=filename,
                 img=img,
                 summary=summary,
-                extra_payload=chunk_fields,
+                extra_payload=figure_fields,
                 text_vector=text_vector,
                 image_vector=visual_vectors.get(img.image_id),
             )
@@ -337,7 +342,7 @@ def ingest_bytes(
                 filename=filename,
                 img=img,
                 summary=build_content_summary(img.page_number, img.ocr_text or ""),
-                extra_payload=chunk_fields,
+                extra_payload=figure_fields,
                 image_vector=image_vector,
             )
         )
