@@ -118,6 +118,8 @@ Embedding REST routes (multipart upload, chunked upload, PDF alias, images, dele
 - `GET /documents/{doc_id}` — metadata (**no inbound auth**)
 - `GET /documents/{doc_id}/text` — processed full text, no re-parse (**no inbound auth**)
 - `PATCH /documents/{doc_id}` — update catalog metadata and matching Qdrant payloads in place (no re-embed; same auth as `DELETE`)
+- `PATCH /documents/{doc_id}/metadata` — write verification fields (`reliability`, `verification[]`,
+  `qg_verze`, `overeni_souhrn`, …) via `set_payload` (no re-embed, no `doc_id` change; same auth)
 - `DELETE /documents/{doc_id}` — remove originals, processed files (including `images/`), catalog row, and Qdrant points
 - `GET /images/{doc_id}/{image_id}` — extracted PDF image bytes (same auth as `POST /upload`; `413` if larger than 50 MiB)
 - `GET /health` — liveness (`status`, `rag_data_root`, ingest/query embedding providers, `image_embedding_enabled`)
@@ -218,6 +220,22 @@ curl -sS -X PATCH \
   http://127.0.0.1:8080/documents/{doc_id}
 ```
 
+### Patch verification fields (`PATCH /documents/{doc_id}/metadata`)
+
+Write RAGloader flat fields onto every matching Qdrant chunk (`set_payload` only; no re-embed, no
+deletes, `doc_id` unchanged). Same auth as `DELETE`. New uploads also store these fields when the
+optional `metadata` JSON form field (or MCP `ingest_text` `metadata`) is provided; `reliability`
+defaults to `1`. `overeni_souhrn` is truncated to 300 characters. Each `verification[]` item may
+include `method`, `compared_value`, `found_value`, `threshold`, and `evidence_type`.
+
+```bash
+curl -sS -X PATCH \
+  -H "Authorization: Bearer $RAG_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"reliability":2,"qg_verze":"2026-11-12:abcd","overeni_souhrn":"wiki strop 2"}' \
+  http://127.0.0.1:8080/documents/{doc_id}/metadata
+```
+
 ## MCP (AI clients)
 
 Streamable HTTP MCP is mounted at **`/mcp`** (`stateless_http=True`, `streamable_http_path="/"` so the endpoint is `/mcp`, not `/mcp/mcp`). The mount is wrapped with bearer auth and an ASGI helper that finishes SSE responses on process shutdown. Tools:
@@ -231,6 +249,7 @@ Streamable HTTP MCP is mounted at **`/mcp`** (`stateless_http=True`, `streamable
 - `get_page_highlights` (`doc_id`, `page`, `query`) — JSON boxes `{page_width, page_height, highlights:[{x0,y0,x1,y1,text,method}]}` (normalized 0–1)
 - `ingest_text`
 - `update_document` (`doc_id`, optional `filename`, optional `extra`) — patch catalog + Qdrant payloads, no re-embed
+- `update_document_metadata` (`doc_id`, optional `metadata`) — patch verification payload fields, no re-embed
 - `search_domain_knowledge` (text `text_vector` only; optional `obec_id` / `cast_obce` payload filter; PDF hits add `page_image_id`; optional `format=json`)
 - `search_images` (CLIP `image_vector`; optional `hybrid=true`; PDF hits add `page_image_id`; optional `format=json`; optional `precision` / `needs_refinement` filters on `geo_refined`)
 - `link_locality` (upsert document-municipality links into payload-only `locality_links`; forwards to Trails when configured; no embeddings)

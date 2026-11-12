@@ -393,6 +393,7 @@ def build_chunk_payload(
     source_url: str | None = None,
     localities: Sequence[str] | None = None,
     cast_obce: Sequence[str] | None = None,
+    extra_payload: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the payload for a ``pdf_chunk`` (or non-PDF text chunk) point.
 
@@ -416,6 +417,8 @@ def build_chunk_payload(
     }
     if source_url:
         payload["source_url"] = source_url
+    if extra_payload:
+        payload.update(dict(extra_payload))
     return payload
 
 
@@ -607,13 +610,14 @@ def build_image_payload(
     content_summary: str,
     localities: Sequence[str] | None = None,
     cast_obce: Sequence[str] | None = None,
+    extra_payload: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the payload for a ``pdf_image`` point (OCR text embedded as vector).
 
     ``chunk_sha256`` hashes ``content_summary`` (the text used for the
     image vector). Locality lists stay empty until ``link_locality``.
     """
-    return {
+    payload: dict[str, Any] = {
         "source_type": "pdf_image",
         "doc_id": doc_id,
         "parent_document": parent_document,
@@ -628,3 +632,6 @@ def build_image_payload(
         "localities": list(localities) if localities else [],
         "cast_obce": list(cast_obce) if cast_obce else [],
     }
+    if extra_payload:
+        payload.update(dict(extra_payload))
+    return payload

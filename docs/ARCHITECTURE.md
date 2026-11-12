@@ -166,6 +166,7 @@ From `rag/routes.py`, `rag/app.py`, `rag/google_oauth.py`, and `rag/admin_routes
 | `GET` | `/documents/{doc_id}` | **None** | Metadata |
 | `GET` | `/documents/{doc_id}/text` | **None** | Processed full text from disk (no re-parse, no embedding call) |
 | `PATCH` | `/documents/{doc_id}` | same as `/upload` | In-place metadata edit (`filename`, `extra`). Catalog + Qdrant `set_payload` only. `200` updated; `400`/`404`; `401`/`503` |
+| `PATCH` | `/documents/{doc_id}/metadata` | same as `/upload` | Verification fields (`reliability`, `verification[]`, `qg_verze`, `overeni_souhrn`). `set_payload` only; `doc_id` unchanged |
 | `DELETE` | `/documents/{doc_id}` | same as `/upload` | Remove files (including `images/`), catalog row, and Qdrant points. `200` `{"status":"deleted","doc_id","filename","chunks_removed"}`; `404` if missing; `401`/`503` if unauthorized |
 | `GET` | `/images/{doc_id}/{image_id}` | same as `/upload` | Extracted PDF image bytes; `413` if larger than 50 MiB |
 | `GET` | `/` | None | Redirect to `/ui/` |
@@ -186,7 +187,8 @@ There is **no REST search** endpoint. Similarity search is MCP-only (`search_dom
 `search_images`). There is no HTTP reindex route. `rag.document_delete.delete_document` deletes Qdrant
 points by `payload.doc_id` then calls `RagStorage.remove_document_files`.
 `rag.document_patch.patch_document` updates catalog metadata and matching Qdrant payloads with
-`set_payload` only (no re-embedding).
+`set_payload` only (no re-embedding). `patch_document_metadata` writes RAGloader verification
+fields the same way (chunks get `verification[]`; figures get flat keys only).
 
 ## Exposed MCP tools, resources, and prompts
 
@@ -201,6 +203,7 @@ From `rag/mcp_tools.py`, registered in `create_app()` and served at **`/mcp`** (
 | Tool | `get_image(image_id: str) -> list[TextContent \| ImageContent]` | Yes |
 | Tool | `ingest_text(filename: str, content: str) -> str` | Yes |
 | Tool | `update_document(doc_id, filename="", extra=None)` | Yes |
+| Tool | `update_document_metadata(doc_id, metadata=None)` | Yes |
 | Tool | `search_domain_knowledge(query: str, limit: int = 3, obec_id: str = "", cast_obce: str = "") -> str` | Yes |
 | Tool | `search_images(query: str, limit: int = 5, hybrid: bool = False) -> str` | Yes |
 | Tool | `sync_links_to_trails(dry_run: bool = False) -> str` | Yes |
@@ -218,6 +221,9 @@ Tool behavior:
 - `get_image`: inline MCP image up to 5 MiB; larger files return a fetch hint (`PUBLIC_BASE_URL/images/...` or a relative path)
 - `ingest_text`: if the filename is not a supported suffix, appends `.txt`; calls `ingest_bytes`; returns JSON or `"Error ingesting text: ..."`
 - `update_document`: calls `patch_document`; empty `filename` leaves the name unchanged; `extra` merges custom keys (`null` removes). Missing ID or invalid fields return `"Error update_document: ..."`
+- `update_document_metadata`: calls `patch_document_metadata`; writes `reliability` /
+  `verification[]` / `qg_verze` / `overeni_souhrn`. Missing ID or invalid fields return an error
+  string.
 - `search_domain_knowledge`: `get_query_embedding` (FastEmbed) → `search_similar` on `text_vector` with optional `obec_id` / `cast_obce` payload filter on denormalized `localities` / `cast_obce` arrays → format `Source:` / `Content:` blocks (OCR image hits included when they have text vectors); empty → `"No relevant facts found."`; exceptions → `"Error executing RAG search: ..."`
 - `search_images`: requires `IMAGE_EMBEDDING_ENABLED=true`; CLIP text tower → `image_vector`; `hybrid=true` RRF-merges CLIP hits with `pdf_image` text hits
 - `link_locality` / `verify_link`: when `TRAILS_API_URL` and `TRAILS_API_TOKEN` are set, forward to TrailsAssemblage `POST /locality-links` and `PATCH /locality-links/{id}/verify`. Failures retry with backoff then land in `{RAG_DATA_ROOT}/trails_outbox.json`; MCP tools still succeed. Unset env leaves tools unchanged.

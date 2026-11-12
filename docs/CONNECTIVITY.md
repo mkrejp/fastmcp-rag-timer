@@ -396,7 +396,9 @@ There are still **no budgets**, spend caps, or dollar conversion.
 - Each Novita ingest text is a separate embeddings request (`input` is a string, not a list).
 - A large PDF means **N sequential HTTPS calls** when ingest is Novita (no parallelism in `ingest_bytes`). FastEmbed ingest batches those strings locally.
 - Duplicate files with the same SHA-256 skip embedding (exact-byte duplicates only).
-- `/documents/{id}/text`, `PATCH /documents/{id}`, `list_documents`, `get_document_chunks`, and `update_document` do **not** embed.
+- `/documents/{id}/text`, `PATCH /documents/{id}`, `PATCH /documents/{id}/metadata`,
+  `list_documents`, `get_document_chunks`, `update_document`, and `update_document_metadata` do
+  **not** embed.
 - Every `search_domain_knowledge` call embeds the query locally (no query-embedding cache; no Novita query spend).
 - `/upload-media` does not embed.
 

@@ -5,12 +5,13 @@ from __future__ import annotations
 import hashlib
 import uuid
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from qdrant_client import QdrantClient
 from qdrant_client.models import PointStruct
 
 from rag.config import FIGURE_INDEX_VERSION, figure_index_enabled
+from rag.document_patch import write_verification_payload
 from rag.embeddings import get_ingest_embeddings
 from rag.figure_index import index_pdf_figures, reindex_figures_for_doc
 from rag.image_embed import embed_image_paths, image_embedding_enabled
@@ -21,6 +22,7 @@ from rag.pdf_images import extract_pdf_images
 from rag.processing import guess_mime, is_supported_filename, process_document
 from rag.storage import DocumentMeta, ImageMeta, RagStorage
 from rag.vectorstore import build_named_vector
+from rag.verification_meta import chunk_payload_fields, normalize_verification_metadata
 
 EmbedFn = Callable[[str], list[float]]
 logger = get_logger("rag.ingest")
@@ -122,6 +124,7 @@ def ingest_bytes(
     skip_duplicate: bool = True,
     source_url: str | None = None,
     reprocess_figures: bool = False,
+    metadata: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Persist, process, and index a document from raw bytes."""
     if not filename:
@@ -132,6 +135,8 @@ def ingest_bytes(
         )
 
     digest = content_sha256(data)
+    verification_fields = normalize_verification_metadata(metadata, apply_defaults=True)
+    chunk_fields = chunk_payload_fields(verification_fields)
     if skip_duplicate:
         existing = storage.find_by_sha256(digest)
         if existing is not None:
@@ -224,6 +229,8 @@ def ingest_bytes(
         images=images,
         status="ready",
     )
+    meta.extra = {**meta.extra, **verification_fields}
+    storage.write_meta(meta)
     if figures_indexed:
         meta.figure_index_version = FIGURE_INDEX_VERSION
         meta.figures_count = figures_indexed
@@ -263,6 +270,7 @@ def ingest_bytes(
                     text=text,
                     chunk_index=int(chunk["index"]),
                     source_url=source_url,
+                    extra_payload=chunk_fields,
                 ),
             )
         )
@@ -287,6 +295,7 @@ def ingest_bytes(
                     image_id=img.image_id,
                     image_sha256=img.sha256,
                     content_summary=summary,
+                    extra_payload=chunk_fields,
                 ),
             )
         )
@@ -312,6 +321,7 @@ def ingest_bytes(
                     image_id=img.image_id,
                     image_sha256=img.sha256,
                     content_summary=summary,
+                    extra_payload=chunk_fields,
                 ),
             )
         )
@@ -319,6 +329,12 @@ def ingest_bytes(
 
     if points:
         qdrant.upsert(collection_name=collection_name, points=points)
+    write_verification_payload(
+        qdrant,
+        collection_name=collection_name,
+        doc_id=doc_id,
+        fields=verification_fields,
+    )
 
     result = {
         "status": "Success",
