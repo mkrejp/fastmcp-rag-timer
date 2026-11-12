@@ -62,14 +62,24 @@ On Railway, mount a volume at `/data`. The app creates `/data/rag` and `/data/ac
 | `RAG_NODE_NAME` | inferred | Optional catalog name for this process when URL / Railway service name would not match |
 | `RAG_ENFORCE_NODE_ROLE` | unset (off) | Set to `1`/`true`/`yes` to reject HTTP and MCP **writes** on a ČTENÍ or STOP node (403). Off by default |
 | `SESSION_SECRET` | ephemeral per process | Cookie session secret; regenerate on restart if unset |
-| `GOOGLE_CLIENT_ID` | unset | Google OAuth client id (required with secret to enable `/ui`) |
+| `GOOGLE_CLIENT_ID` | unset | Google OAuth client ID (required with secret to enable `/ui`) |
 | `GOOGLE_CLIENT_SECRET` | unset | Google OAuth client secret |
 | `GOOGLE_ALLOWED_EMAILS` | empty (allow all) | Comma-separated Google emails allowed into the console |
 | `GOOGLE_ALLOWED_DOMAINS` | empty (allow all) | Comma-separated email domains allowed into the console |
 
-**RAG nodes (login page + `/node-info`):** When `RAG_NODES` is unset, the catalog is `rag-timer-00001` (`https://rag-timer-00001-production.up.railway.app`, **ZÁPIS+ČTENÍ**) and `rag-timer-00002` (`https://rag-artnouveau.up.railway.app`, **ČTENÍ**). This process is matched by `RAG_NODE_NAME`, `RAILWAY_SERVICE_NAME` (including `fastmcp-rag-timer-00002` → `00002`), `PUBLIC_BASE_URL`, or the request host. Railway-provided `RAILWAY_SERVICE_NAME`, `RAILWAY_REPLICA_REGION`, and `RAILWAY_ENVIRONMENT_NAME` are shown when present. Other env values are never returned. Write blocking stays off until `RAG_ENFORCE_NODE_ROLE=1`.
+**RAG nodes (login page + `/node-info`):** When `RAG_NODES` is unset, the catalog is `rag-timer-00001`
+(`https://rag-timer-00001-production.up.railway.app`, **ZÁPIS+ČTENÍ**) and `rag-timer-00002`
+(`https://rag-artnouveau.up.railway.app`, **ČTENÍ**). This process is matched by `RAG_NODE_NAME`,
+`RAILWAY_SERVICE_NAME` (including `fastmcp-rag-timer-00002` → `00002`), `PUBLIC_BASE_URL`, or the
+request host. Railway-provided `RAILWAY_SERVICE_NAME`, `RAILWAY_REPLICA_REGION`, and
+`RAILWAY_ENVIRONMENT_NAME` are shown when present. Other env values are never returned. Write
+blocking stays off until `RAG_ENFORCE_NODE_ROLE=1`.
 
-**Split ingest vs query:** Ingest may use Novita (`baai/bge-m3`, 1024-dim) while every search path uses **local** FastEmbed (`BAAI/bge-m3`, 1024-dim). Search never calls Novita. When `EMBEDDING_PROVIDER` is `novita` (the default), set `EMBEDDING_PROVIDER_QUERY=fastembed` or startup refuses to start. Novita HTTP vs local ONNX can differ slightly; re-check recall after switching ingest provider (optional `scripts/golden_recall_smoke.py`).
+**Split ingest vs query:** Ingest may use Novita (`baai/bge-m3`, 1024-dim) while every search path uses
+**local** FastEmbed (`BAAI/bge-m3`, 1024-dim). Search never calls Novita. When `EMBEDDING_PROVIDER` is
+`novita` (the default), set `EMBEDDING_PROVIDER_QUERY=fastembed` or startup refuses to start. Novita
+HTTP vs local ONNX can differ slightly; re-check recall after switching ingest provider (optional
+`scripts/golden_recall_smoke.py`).
 
 **Named vectors:** Qdrant collection `client_domain_knowledge` uses `text_vector` (BGE-M3 1024) and `image_vector` (CLIP `Qdrant/clip-ViT-B-32-vision`, 512). Collections with a single unnamed vector are recreated on startup; **re-ingest all documents** after that recreate. Enable visual search with `IMAGE_EMBEDDING_ENABLED=true` (lazy CLIP load; extra RAM on top of BGE-M3 — risky on 8GB hosts).
 
@@ -79,7 +89,13 @@ Keep Novita keys in runtime variables; never commit them.
 
 ### PDF images and OCR
 
-During PDF ingest, embedded images are extracted with PyMuPDF, deduplicated by SHA-256, and stored under `processed/{doc_id}/images/`. Images smaller than 64×64 px or 4 KiB are skipped. Local Tesseract OCR (`ces+eng` in Docker) fills `DocumentMeta.images[]` with optional `ocr_text` / `ocr_confidence`. When OCR text is long enough, a **`pdf_image`** point gets a `text_vector` (BGE-M3 ingest backend). With `IMAGE_EMBEDDING_ENABLED=true`, each kept image also receives an `image_vector` (CLIP vision), including images without OCR. Payloads include `source_type`, `doc_id`, `parent_document`, `page_number`, `file_path`, `image_id`, `sha256`, and `content_summary` (no image blobs in Qdrant).
+During PDF ingest, embedded images are extracted with PyMuPDF, deduplicated by SHA-256, and stored
+under `processed/{doc_id}/images/`. Images smaller than 64×64 px or 4 KiB are skipped. Local Tesseract
+OCR (`ces+eng` in Docker) fills `DocumentMeta.images[]` with optional `ocr_text` / `ocr_confidence`.
+When OCR text is long enough, a **`pdf_image`** point gets a `text_vector` (BGE-M3 ingest backend).
+With `IMAGE_EMBEDDING_ENABLED=true`, each kept image also receives an `image_vector` (CLIP vision),
+including images without OCR. Payloads include `source_type`, `doc_id`, `parent_document`,
+`page_number`, `file_path`, `image_id`, `sha256`, and `content_summary` (no image blobs in Qdrant).
 
 Toggling CLIP does not recreate the collection; re-ingest PDFs to backfill `image_vector`.
 
@@ -115,7 +131,11 @@ Listen address is `0.0.0.0` and port `PORT` (default 8080). uvicorn trusts `X-Fo
 
 ### Chunked upload (large files)
 
-Use when a single `POST /upload` would exceed proxy or worker limits. Compute the whole-file SHA-256 client-side, split into fixed-size chunks, then complete to run the same ingest path as `/upload`. Staging lives under `uploads/{upload_id}/` inside `RAG_DATA_ROOT`. Expired sessions return **410**; a resent chunk with different bytes returns **409**. Complete loads the assembled file into memory before ingest.
+Use when a single `POST /upload` would exceed proxy or worker limits. Compute the whole-file SHA-256
+client-side, split into fixed-size chunks, then complete to run the same ingest path as `/upload`.
+Staging lives under `uploads/{upload_id}/` inside `RAG_DATA_ROOT`. Expired sessions return **410**; a
+resent chunk with different bytes returns **409**. Complete loads the assembled file into memory
+before ingest.
 
 ```bash
 export MCP_API_TOKEN=your-token
@@ -166,7 +186,7 @@ curl -sS -X POST http://127.0.0.1:8080/ingest-json \
 Removes the original file, processed artifacts (including `images/`), catalog entry, and Qdrant vectors (chunks and image points) for one `doc_id`. Auth matches `POST /upload`.
 
 Success: `{"status":"deleted","doc_id":"...","filename":"...","chunks_removed":N}`.
-Unknown id: `404` `{"detail":"Document not found"}`. Missing/invalid token: `401`. Tokens unset: `503`.
+Unknown ID: `404` `{"detail":"Document not found"}`. Missing/invalid token: `401`. Tokens unset: `503`.
 
 ```bash
 export RAG_API_TOKEN=your-api-token
@@ -178,10 +198,15 @@ curl -sS -X DELETE \
 
 ### Patch document metadata (`PATCH /documents/{doc_id}`)
 
-Rename a stored document or merge custom `extra` keys without re-uploading or re-embedding. Auth matches `DELETE /documents/{doc_id}`. Allowed JSON fields: `filename` (same suffix as the stored file) and `extra` (object; JSON `null` removes a key). Unknown fields are rejected. Vectors are left untouched; Qdrant payloads are updated with `set_payload` (`parent_document` / `source` / nested `extra`).
+Rename a stored document or merge custom `extra` keys without re-uploading or re-embedding. Auth
+matches `DELETE /documents/{doc_id}`. Allowed JSON fields: `filename` (same suffix as the stored file)
+and `extra` (object; JSON `null` removes a key). Unknown fields are rejected. Vectors are left
+untouched; Qdrant payloads are updated with `set_payload` (`parent_document` / `source` / nested
+`extra`).
 
 Success: `{"status":"updated","doc_id","filename","updated_fields","points_updated","locality_links_updated","meta"}`.
-Unknown id: `404` `{"detail":"Document not found"}`. Invalid body: `400` or `422`. Missing/invalid token: `401`. Tokens unset: `503`.
+Unknown ID: `404` `{"detail":"Document not found"}`. Invalid body: `400` or `422`. Missing/invalid
+token: `401`. Tokens unset: `503`.
 
 ```bash
 export RAG_API_TOKEN=your-api-token
@@ -201,7 +226,7 @@ Streamable HTTP MCP is mounted at **`/mcp`** (`stateless_http=True`, `streamable
 - `get_document_text`
 - `get_document_chunks`
 - `get_document_images`
-- `get_image` (inline image up to 5 MiB, otherwise a URL hint; accepts extracted `image_id` or full-page id `page:{doc_id}:{page}`)
+- `get_image` (inline image up to 5 MiB, otherwise a URL hint; accepts extracted `image_id` or full-page ID `page:{doc_id}:{page}`)
 - `get_page_image` (`doc_id`, 1-based `page`) — lazy JPEG render from stored PDF (`PAGE_RENDER_DPI`, `PAGE_RENDER_QUALITY`)
 - `get_page_highlights` (`doc_id`, `page`, `query`) — JSON boxes `{page_width, page_height, highlights:[{x0,y0,x1,y1,text,method}]}` (normalized 0–1)
 - `ingest_text`
@@ -251,7 +276,7 @@ Backfill after deploy: call `refine_geo_batch` in pages of ≤200 (try `dry_run=
 
 ### Frontend contract (`fastmcp-rag-timer-frontend`)
 
-Search hits can show the PDF page with query highlights without re-ingest. Qdrant payloads still use **0-based** `page_number`; page image ids use **1-based** human page numbers.
+Search hits can show the PDF page with query highlights without re-ingest. Qdrant payloads still use **0-based** `page_number`; page image IDs use **1-based** human page numbers.
 
 | Field | Meaning |
 | --- | --- |

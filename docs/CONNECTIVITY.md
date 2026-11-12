@@ -2,7 +2,11 @@
 
 This document inventories inbound, outbound, and in-process connections for **fastmcp-rag-timer**.
 
-**Sources of truth:** `main.py`, `rag/` (especially `app.py`, `embeddings.py`, `image_embed.py`, `routes.py`, `admin_routes.py`, `google_oauth.py`, `mcp_tools.py`, `auth.py`, `config.py`, `storage.py`, `chunked_upload.py`, `vectorstore.py`, `remote.py`), and `Dockerfile`. There is no reverse-proxy config, TLS cert, compose network, or firewall rules in the repository. Anything about an edge proxy or Railway routing is labeled **Assumption**.
+**Sources of truth:** `main.py`, `rag/` (especially `app.py`, `embeddings.py`, `image_embed.py`,
+`routes.py`, `admin_routes.py`, `google_oauth.py`, `mcp_tools.py`, `auth.py`, `config.py`,
+`storage.py`, `chunked_upload.py`, `vectorstore.py`, `remote.py`), and `Dockerfile`. There is no
+reverse-proxy config, TLS cert, compose network, or firewall rules in the repository. Anything about
+an edge proxy or Railway routing is labeled **Assumption**.
 
 Related: [ARCHITECTURE.md](./ARCHITECTURE.md), [Embedding provider](./embedding-provider.md). Embedding API details are in [Embedding connectivity](#embedding-connectivity).
 
@@ -249,7 +253,11 @@ No encryption-at-rest is configured in this repository. Volume confidentiality i
 
 ## Embedding connectivity
 
-Ingest embeddings are Novita by default (`EMBEDDING_PROVIDER` / `EMBEDDING_PROVIDER_INGEST`). All of it is in `rag/embeddings.py`, called from `rag.ingest.ingest_bytes` (HTTP upload, chunked complete, `/ingest-json`, MCP `ingest_text`). Search (`search_domain_knowledge` and the hybrid text leg of `search_images`) calls `get_query_embedding`, which is **local FastEmbed only** — no Novita tokens on query.
+Ingest embeddings are Novita by default (`EMBEDDING_PROVIDER` / `EMBEDDING_PROVIDER_INGEST`). All of
+it is in `rag/embeddings.py`, called from `rag.ingest.ingest_bytes` (HTTP upload, chunked complete,
+`/ingest-json`, MCP `ingest_text`). Search (`search_domain_knowledge` and the hybrid text leg of
+`search_images`) calls `get_query_embedding`, which is **local FastEmbed only** — no Novita tokens on
+query.
 
 Set `EMBEDDING_PROVIDER_INGEST=fastembed` to skip Novita on ingest as well. The first FastEmbed call downloads ONNX weights from Hugging Face (~2.3GB). Query always needs that download even when ingest stays on Novita.
 

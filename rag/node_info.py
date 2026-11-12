@@ -298,9 +298,9 @@ def parse_rag_nodes(raw: str | None = None) -> tuple[NodeSpec, ...]:
     try:
         loaded: object = json.loads(text)
     except json.JSONDecodeError:
-        specs = _specs_from_simple_list(text)
-        if specs:
-            return tuple(specs)
+        simple_specs = _specs_from_simple_list(text)
+        if simple_specs:
+            return tuple(simple_specs)
         logger.warning("Invalid RAG_NODES value; using built-in node defaults")
         return default_nodes()
 
