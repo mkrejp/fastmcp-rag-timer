@@ -52,9 +52,7 @@ from rag.search_hits import (
     page_image_id_for_hit,
 )
 from rag.storage import ImageMeta, RagStorage
-from rag.trails_sync import (
-    forward_locality_links,
-)
+from rag.trails_sync import forward_locality_links
 from rag.trails_sync import sync_links_to_trails as run_sync_links_to_trails
 from rag.vectorstore import (
     IMAGE_VECTOR_NAME,
