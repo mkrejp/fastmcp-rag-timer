@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -45,13 +46,13 @@ def _marker_payload(qdrant_dir: Path) -> dict[str, object]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _named_collection(client: QdrantClient) -> object:
-    """Return collection info after asserting named text_vector size."""
+def _named_vectors(client: QdrantClient) -> dict[str, Any]:
+    """Return named vectors after asserting text_vector size."""
     info = client.get_collection("client_domain_knowledge")
     vectors = info.config.params.vectors
     assert isinstance(vectors, dict)
     assert vectors[TEXT_VECTOR_NAME].size == EMBEDDING_DIM
-    return info
+    return vectors
 
 
 def test_open_qdrant_creates_named_vectors(tmp_path: Path) -> None:
@@ -59,8 +60,7 @@ def test_open_qdrant_creates_named_vectors(tmp_path: Path) -> None:
     qdrant_dir = tmp_path / "qdrant"
     client = open_qdrant(qdrant_dir)
     try:
-        info = _named_collection(client)
-        vectors = info.config.params.vectors
+        vectors = _named_vectors(client)
         assert vectors[IMAGE_VECTOR_NAME].size == IMAGE_EMBEDDING_DIM
         marker = _marker_payload(qdrant_dir)
         assert marker["schema_version"] == MARKER_SCHEMA_VERSION
@@ -82,7 +82,7 @@ def test_open_qdrant_recreates_legacy_single_vector_collection(tmp_path: Path) -
 
     client = open_qdrant(qdrant_dir)
     try:
-        _named_collection(client)
+        _named_vectors(client)
     finally:
         client.close()
 
@@ -106,7 +106,7 @@ def test_open_qdrant_keeps_matching_named_collection(tmp_path: Path) -> None:
 
     client = open_qdrant(qdrant_dir)
     try:
-        _named_collection(client)
+        _named_vectors(client)
     finally:
         client.close()
 
