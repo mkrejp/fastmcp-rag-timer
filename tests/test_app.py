@@ -256,6 +256,21 @@ def test_openapi_documents_delete_route(client: TestClient) -> None:
     assert "DeleteDocumentResponse" in payload["components"]["schemas"]
 
 
+def test_openapi_documents_metadata_patch_route(client: TestClient) -> None:
+    """OpenAPI should advertise authenticated PATCH /documents/{doc_id}/metadata."""
+    spec = client.get("/openapi.json")
+    assert spec.status_code == 200
+    payload = spec.json()
+    patch_op = payload["paths"]["/documents/{doc_id}/metadata"]["patch"]
+    assert "security" in patch_op or patch_op.get("responses")
+    schema = patch_op["responses"]["200"]["content"]["application/json"]["schema"]
+    ref = schema.get("$ref", "")
+    if not ref:
+        ref = schema.get("anyOf", [{}])[0].get("$ref", "")
+    assert ref.endswith("PatchDocumentMetadataResponse")
+    assert "PatchDocumentMetadataResponse" in payload["components"]["schemas"]
+
+
 def test_openapi_documents_patch_route(client: TestClient) -> None:
     """OpenAPI should advertise authenticated PATCH /documents/{doc_id}."""
     spec = client.get("/openapi.json")

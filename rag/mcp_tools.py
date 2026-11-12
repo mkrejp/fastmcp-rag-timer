@@ -13,7 +13,11 @@ from qdrant_client import QdrantClient
 from rag.accounting import accounting_source, get_global_store
 from rag.config import COLLECTION_NAME, resolve_public_base_url
 from rag.document_delete import DocumentNotFoundError
-from rag.document_patch import DocumentPatchError, patch_document
+from rag.document_patch import (
+    DocumentPatchError,
+    patch_document,
+    patch_document_metadata,
+)
 from rag.embeddings import get_query_embedding
 from rag.figure_index import image_record_stats as aggregate_image_record_stats
 from rag.figure_index import list_figure_payloads_for_doc
@@ -64,6 +68,7 @@ from rag.vectorstore import (
     upsert_locality_links,
     verify_locality_link,
 )
+from rag.verification_meta import DocumentMetadataError
 
 logger = get_logger("rag.mcp")
 
@@ -495,7 +500,11 @@ def register_mcp_tools(
         )
 
     @mcp.tool()
-    def ingest_text(filename: str, content: str) -> str:
+    def ingest_text(
+        filename: str,
+        content: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> str:
         """Ingest a plain-text or markdown document via MCP without multipart upload."""
 
         def _body() -> str:
@@ -509,6 +518,7 @@ def register_mcp_tools(
                     collection_name=collection_name,
                     filename=safe_name,
                     data=content.encode("utf-8"),
+                    metadata=metadata,
                 )
                 return json.dumps(result, ensure_ascii=False)
             except Exception as exc:  # noqa: BLE001 - return tool-visible error text
@@ -560,6 +570,46 @@ def register_mcp_tools(
         return _run_mcp_tool(
             "update_document",
             request_chars=len(doc_id) + len(filename) + extra_chars,
+            source=None,
+            fn=_body,
+        )
+
+    @mcp.tool()
+    def update_document_metadata(
+        doc_id: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> str:
+        """Patch verification payload fields without re-upload or re-embedding.
+
+        Writes flat RAGloader fields (``reliability``, ``verification[]``,
+        ``qg_verze``, ``overeni_souhrn``, …) via ``set_payload`` onto matching
+        chunks. Does not change ``doc_id``. Same bearer auth as other MCP
+        write tools.
+        """
+
+        def _body() -> str:
+            try:
+                result = patch_document_metadata(
+                    storage=storage,
+                    qdrant=qdrant,
+                    collection_name=collection_name,
+                    doc_id=doc_id,
+                    metadata=metadata,
+                )
+                return json.dumps(result, ensure_ascii=False)
+            except DocumentNotFoundError as exc:
+                return f"Error update_document_metadata: {exc}"
+            except (DocumentPatchError, DocumentMetadataError) as exc:
+                return f"Error update_document_metadata: {exc}"
+            except Exception as exc:  # noqa: BLE001 - return tool-visible error text
+                return f"Error update_document_metadata: {exc}"
+
+        meta_chars = 0
+        if metadata is not None:
+            meta_chars = len(json.dumps(metadata, ensure_ascii=False, default=str))
+        return _run_mcp_tool(
+            "update_document_metadata",
+            request_chars=len(doc_id) + meta_chars,
             source=None,
             fn=_body,
         )

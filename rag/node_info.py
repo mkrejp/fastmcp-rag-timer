@@ -47,6 +47,7 @@ MCP_WRITE_TOOLS = frozenset(
     {
         "ingest_text",
         "update_document",
+        "update_document_metadata",
         "link_locality",
         "verify_link",
         "sync_links_to_trails",

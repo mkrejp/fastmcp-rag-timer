@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Callable
 
 from rag.ingest import ingest_bytes, stable_point_id
 from rag.payloads import chunk_text_sha256
@@ -45,7 +45,12 @@ def test_ingest_text_writes_originals_and_processed(
     assert payload["sha256"]
     assert payload["localities"] == []
     assert payload["cast_obce"] == []
+    assert payload["reliability"] == 1
+    assert payload["verification_status"] == "nejiste"
     assert points[0].vector is not None
+    stored = rag_storage.read_meta(doc_id)
+    assert stored is not None
+    assert stored.extra.get("reliability") == 1
 
 
 def test_ingest_skips_duplicate_sha256(

@@ -14,6 +14,13 @@ from rag.document_delete import DocumentNotFoundError
 from rag.logging_setup import get_logger
 from rag.processing import guess_mime, is_supported_filename
 from rag.storage import DocumentMeta, RagStorage
+from rag.verification_meta import (
+    FLAT_PAYLOAD_KEYS,
+    DocumentMetadataError,
+    chunk_payload_fields,
+    figure_payload_fields,
+    normalize_verification_metadata,
+)
 
 logger = get_logger("rag.document_patch")
 
@@ -24,44 +31,49 @@ _EXTRA_KEY_MAX_LEN = 64
 
 # Payload keys that must not be overwritten via ``extra`` (identity, vectors,
 # derived ingest fields, and geo_refined which has its own write path).
-_RESERVED_EXTRA_KEYS = frozenset(ALLOWED_PATCH_FIELDS) | {
-    "bbox",
-    "caption",
-    "cast_obce",
-    "chunk_count",
-    "chunk_index",
-    "chunk_sha256",
-    "chunks_path",
-    "content_summary",
-    "doc_id",
-    "file_path",
-    "figure_id",
-    "figure_index_version",
-    "figures_count",
-    "figures_status",
-    "fulltext_path",
-    "geo_refined",
-    "geo_refined_history",
-    "id",
-    "image_id",
-    "image_sha256",
-    "images",
-    "lat",
-    "localities",
-    "lon",
-    "mime",
-    "original_path",
-    "page_number",
-    "parent_document",
-    "sha256",
-    "source",
-    "source_type",
-    "source_url",
-    "status",
-    "text",
-    "uploaded_at",
-    "vectors",
-}
+_RESERVED_EXTRA_KEYS = (
+    frozenset(ALLOWED_PATCH_FIELDS)
+    | {
+        "bbox",
+        "caption",
+        "cast_obce",
+        "chunk_count",
+        "chunk_index",
+        "chunk_sha256",
+        "chunks_path",
+        "content_summary",
+        "doc_id",
+        "file_path",
+        "figure_id",
+        "figure_index_version",
+        "figures_count",
+        "figures_status",
+        "fulltext_path",
+        "geo_refined",
+        "geo_refined_history",
+        "id",
+        "image_id",
+        "image_sha256",
+        "images",
+        "lat",
+        "localities",
+        "lon",
+        "mime",
+        "original_path",
+        "page_number",
+        "parent_document",
+        "sha256",
+        "source",
+        "source_type",
+        "source_url",
+        "status",
+        "text",
+        "uploaded_at",
+        "vectors",
+    }
+    | FLAT_PAYLOAD_KEYS
+    | frozenset({"source_axis", "overeni_souhrn"})
+)
 
 
 class DocumentPatchError(ValueError):
@@ -80,16 +92,55 @@ def _doc_id_filter(doc_id: str) -> Filter:
     )
 
 
-def _count_points(qdrant: QdrantClient, collection_name: str, doc_id: str) -> int:
+def _count_points(
+    qdrant: QdrantClient,
+    collection_name: str,
+    doc_id: str,
+    payload_filter: Filter | None = None,
+) -> int:
     """Return the number of points in ``collection_name`` for ``doc_id``."""
     if not qdrant.collection_exists(collection_name):
         return 0
     return int(
         qdrant.count(
             collection_name=collection_name,
-            count_filter=_doc_id_filter(doc_id),
+            count_filter=payload_filter or _doc_id_filter(doc_id),
             exact=True,
         ).count
+    )
+
+
+def _not_figure_filter(doc_id: str) -> Filter:
+    """Match knowledge points for ``doc_id`` that are not ``pdf_figure``."""
+    return Filter(
+        must=[
+            FieldCondition(
+                key="doc_id",
+                match=MatchValue(value=doc_id),
+            )
+        ],
+        must_not=[
+            FieldCondition(
+                key="source_type",
+                match=MatchValue(value="pdf_figure"),
+            )
+        ],
+    )
+
+
+def _figure_only_filter(doc_id: str) -> Filter:
+    """Match ``pdf_figure`` points for ``doc_id``."""
+    return Filter(
+        must=[
+            FieldCondition(
+                key="doc_id",
+                match=MatchValue(value=doc_id),
+            ),
+            FieldCondition(
+                key="source_type",
+                match=MatchValue(value="pdf_figure"),
+            ),
+        ]
     )
 
 
@@ -99,6 +150,7 @@ def _set_payload_for_doc(
     collection_name: str,
     doc_id: str,
     payload: Mapping[str, Any],
+    payload_filter: Filter | None = None,
 ) -> int:
     """``set_payload`` on every point matching ``doc_id`` (no vector rewrite).
 
@@ -108,16 +160,48 @@ def _set_payload_for_doc(
         return 0
     if not qdrant.collection_exists(collection_name):
         return 0
-    matched = _count_points(qdrant, collection_name, doc_id)
+    filt = payload_filter or _doc_id_filter(doc_id)
+    matched = _count_points(qdrant, collection_name, doc_id, payload_filter=filt)
     if matched == 0:
         return 0
     qdrant.set_payload(
         collection_name=collection_name,
         payload=dict(payload),
-        points=FilterSelector(filter=_doc_id_filter(doc_id)),
+        points=FilterSelector(filter=filt),
         wait=True,
     )
     return matched
+
+
+def write_verification_payload(
+    qdrant: QdrantClient,
+    *,
+    collection_name: str,
+    doc_id: str,
+    fields: Mapping[str, Any],
+) -> tuple[int, int]:
+    """Write verification fields onto chunks/images and figure-safe keys.
+
+    Does not change ``doc_id``, rewrite vectors, or delete points.
+    Returns ``(chunk_points_updated, figure_points_updated)``.
+    """
+    chunk_fields = chunk_payload_fields(fields)
+    figure_fields = figure_payload_fields(fields)
+    points_updated = _set_payload_for_doc(
+        qdrant,
+        collection_name=collection_name,
+        doc_id=doc_id,
+        payload=chunk_fields,
+        payload_filter=_not_figure_filter(doc_id),
+    )
+    figures_updated = _set_payload_for_doc(
+        qdrant,
+        collection_name=collection_name,
+        doc_id=doc_id,
+        payload=figure_fields,
+        payload_filter=_figure_only_filter(doc_id),
+    )
+    return points_updated, figures_updated
 
 
 def _jsonable(value: object, *, path: str) -> None:
@@ -298,5 +382,54 @@ def patch_document(
         "updated_fields": updated_fields,
         "points_updated": points_updated,
         "locality_links_updated": locality_links_updated,
+        "meta": meta.to_dict(),
+    }
+
+
+def patch_document_metadata(
+    *,
+    storage: RagStorage,
+    qdrant: QdrantClient,
+    collection_name: str,
+    doc_id: str,
+    metadata: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Patch verification fields onto catalog extra and Qdrant payloads.
+
+    Uses ``set_payload`` only. Does not change ``doc_id``, re-embed, or
+    delete points. Empty bodies apply ``reliability=1``.
+    """
+    meta = _load_document(storage, doc_id)
+    apply_defaults = not metadata
+    fields = normalize_verification_metadata(metadata, apply_defaults=apply_defaults)
+    if "doc_id" in fields:
+        raise DocumentMetadataError("doc_id cannot be changed")
+
+    merged_extra = dict(meta.extra)
+    merged_extra.update(fields)
+    meta.extra = merged_extra
+    storage.write_meta(meta)
+
+    points_updated, figures_updated = write_verification_payload(
+        qdrant,
+        collection_name=collection_name,
+        doc_id=doc_id,
+        fields=fields,
+    )
+    logger.info(
+        "Patched document metadata doc_id=%s fields=%s points_updated=%s "
+        "figures_updated=%s",
+        doc_id,
+        ",".join(sorted(fields)) or "-",
+        points_updated,
+        figures_updated,
+    )
+    return {
+        "status": "updated",
+        "doc_id": doc_id,
+        "filename": meta.filename,
+        "updated_fields": sorted(fields),
+        "points_updated": points_updated,
+        "figures_updated": figures_updated,
         "meta": meta.to_dict(),
     }

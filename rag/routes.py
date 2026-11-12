@@ -2,10 +2,20 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, Header, HTTPException, Request, UploadFile
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Request,
+    UploadFile,
+)
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 from qdrant_client import QdrantClient
@@ -21,7 +31,11 @@ from rag.chunked_upload import (
 )
 from rag.config import COLLECTION_NAME
 from rag.document_delete import DocumentNotFoundError, delete_document
-from rag.document_patch import DocumentPatchError, patch_document
+from rag.document_patch import (
+    DocumentPatchError,
+    patch_document,
+    patch_document_metadata,
+)
 from rag.embeddings import embedding_provider_status, validate_embedding_configuration
 from rag.image_delivery import resolve_image_delivery
 from rag.image_embed import image_embedding_enabled
@@ -38,6 +52,7 @@ from rag.remote import (
     filename_from_url,
 )
 from rag.storage import RagStorage
+from rag.verification_meta import DocumentMetadataError
 
 MAX_IMAGE_HTTP_BYTES = 50 * 1024 * 1024
 
@@ -86,6 +101,10 @@ class IngestJsonRequest(BaseModel):
     """Body for remote JSON/GeoJSON ingest."""
 
     url: str = Field(..., min_length=8, max_length=2048)
+    metadata: dict[str, Any] | None = Field(
+        default=None,
+        description="Optional verification / reliability payload fields.",
+    )
 
 
 class DeleteDocumentResponse(BaseModel):
@@ -115,6 +134,18 @@ class PatchDocumentRequest(BaseModel):
         default=None,
         description="Custom metadata to merge. Null values remove a key.",
     )
+
+
+class PatchDocumentMetadataResponse(BaseModel):
+    """Success body for ``PATCH /documents/{doc_id}/metadata``."""
+
+    status: str = Field(..., description="Always ``updated`` on success.")
+    doc_id: str
+    filename: str
+    updated_fields: list[str]
+    points_updated: int
+    figures_updated: int
+    meta: dict[str, Any]
 
 
 class PatchDocumentResponse(BaseModel):
@@ -178,12 +209,28 @@ def _record_http(
     store.record_http(route=route, ok=ok, bytes_in=bytes_in, error=error)
 
 
+def _parse_metadata_form(raw: str | None) -> dict[str, Any] | None:
+    """Parse optional multipart ``metadata`` JSON object."""
+    if raw is None or not str(raw).strip():
+        return None
+    try:
+        loaded: object = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(
+            status_code=400, detail="metadata must be valid JSON"
+        ) from exc
+    if not isinstance(loaded, dict):
+        raise HTTPException(status_code=400, detail="metadata must be a JSON object")
+    return loaded
+
+
 def _ingest_upload(
     request: Request,
     filename: str,
     data: bytes,
     *,
     source_url: str | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Shared ingest path for HTTP uploads."""
     try:
@@ -195,6 +242,7 @@ def _ingest_upload(
                 filename=filename,
                 data=data,
                 source_url=source_url,
+                metadata=metadata,
             )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -237,7 +285,9 @@ def health(request: Request) -> dict[str, object]:
 
 @router.post("/upload", dependencies=[Depends(require_embed_access)])
 async def upload_document(
-    request: Request, file: UploadFile = File(...)
+    request: Request,
+    file: UploadFile = File(...),
+    metadata: str | None = Form(default=None),
 ) -> dict[str, Any]:
     """Upload a PDF or text document into persistent RAG storage."""
     filename = file.filename or ""
@@ -249,7 +299,9 @@ async def upload_document(
         )
     data = await file.read()
     try:
-        result = _ingest_upload(request, filename, data)
+        result = _ingest_upload(
+            request, filename, data, metadata=_parse_metadata_form(metadata)
+        )
         _record_http(route="upload", ok=True, bytes_in=len(data))
         return result
     except HTTPException as exc:
@@ -394,7 +446,11 @@ def upload_abort(upload_id: str, request: Request) -> Response:
 
 
 @router.post("/upload-pdf", dependencies=[Depends(require_embed_access)])
-async def upload_pdf(request: Request, file: UploadFile = File(...)) -> dict[str, Any]:
+async def upload_pdf(
+    request: Request,
+    file: UploadFile = File(...),
+    metadata: str | None = Form(default=None),
+) -> dict[str, Any]:
     """Compatibility alias for PDF uploads."""
     filename = file.filename or ""
     if not filename.lower().endswith(".pdf"):
@@ -405,7 +461,9 @@ async def upload_pdf(request: Request, file: UploadFile = File(...)) -> dict[str
         )
     data = await file.read()
     try:
-        result = _ingest_upload(request, filename, data)
+        result = _ingest_upload(
+            request, filename, data, metadata=_parse_metadata_form(metadata)
+        )
         _record_http(route="upload_pdf", ok=True, bytes_in=len(data))
         return result
     except HTTPException as exc:
@@ -454,7 +512,13 @@ def ingest_json_url(
         final_url,
     )
     try:
-        result = _ingest_upload(request, filename, data, source_url=final_url)
+        result = _ingest_upload(
+            request,
+            filename,
+            data,
+            source_url=final_url,
+            metadata=body.metadata,
+        )
         _record_http(route="ingest_json", ok=True, bytes_in=len(data))
         return result
     except HTTPException as exc:
@@ -554,6 +618,43 @@ def get_document_text_http(doc_id: str, request: Request) -> dict[str, Any]:
         "filename": meta.filename if meta else None,
         "text": text,
     }
+
+
+@router.patch(
+    "/documents/{doc_id}/metadata",
+    response_model=PatchDocumentMetadataResponse,
+    dependencies=[Depends(require_embed_access)],
+)
+def patch_document_metadata_http(
+    doc_id: str,
+    request: Request,
+    body: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Write verification fields onto catalog extra and Qdrant chunk payloads.
+
+    Requires the same auth as ``DELETE /documents/{doc_id}``. Uses
+    ``set_payload`` only (no re-embed, no deletes, ``doc_id`` unchanged).
+    """
+    metadata = body or {}
+    try:
+        result = patch_document_metadata(
+            storage=_storage(request),
+            qdrant=_qdrant(request),
+            collection_name=COLLECTION_NAME,
+            doc_id=doc_id,
+            metadata=metadata,
+        )
+    except DocumentNotFoundError:
+        _record_http(route="documents_metadata_patch", ok=False, error="not found")
+        raise HTTPException(status_code=404, detail="Document not found") from None
+    except (DocumentPatchError, DocumentMetadataError) as exc:
+        _record_http(route="documents_metadata_patch", ok=False, error=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 - surface patch failures to clients
+        _record_http(route="documents_metadata_patch", ok=False, error=str(exc))
+        raise HTTPException(status_code=500, detail=f"Patch failed: {exc}") from exc
+    _record_http(route="documents_metadata_patch", ok=True)
+    return result
 
 
 @router.patch(

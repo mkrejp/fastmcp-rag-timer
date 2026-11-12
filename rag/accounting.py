@@ -20,6 +20,7 @@ MCP_TOOLS = (
     "get_page_image",
     "ingest_text",
     "update_document",
+    "update_document_metadata",
     "search_domain_knowledge",
     "search_images",
     "link_locality",
@@ -40,6 +41,7 @@ HTTP_ROUTES = (
     "documents_get",
     "documents_text",
     "documents_patch",
+    "documents_metadata_patch",
     "documents_delete",
     "health",
 )
