@@ -167,6 +167,9 @@ DELETABLE_VERIFICATION_FIELDS = frozenset(
         "source_key",
         "content_hash",
         "overeni_souhrn",
+        "qg_trida",
+        "qg_flagy",
+        "qg_verze",
     }
 )
 # Only allowed as null in the same request as ``verification: null``.
@@ -441,8 +444,9 @@ def split_verification_deletes(
 
     JSON ``null`` on a whitelisted key means delete it. ``source_key`` and
     ``content_hash`` may be nulled only when the same body also has
-    ``verification: null`` (full verification rollback). Any other null
-    (including ``qg_*``, ``tags``, ``obec_kod``, …) raises
+    ``verification: null`` (full verification rollback). ``qg_trida``,
+    ``qg_flagy``, and ``qg_verze`` delete without that requirement. Any
+    other null (including ``tags``, ``obec_kod``, …) raises
     ``DocumentMetadataError``.
     """
     if raw is None:

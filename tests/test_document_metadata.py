@@ -459,6 +459,46 @@ def test_patch_null_deletes_whitelist_field_from_get(client: TestClient) -> None
     assert fetched["doc_id"] == doc_id
 
 
+def test_patch_null_deletes_qg_fields_without_verification_rollback(
+    client: TestClient,
+) -> None:
+    """qg_trida / qg_flagy / qg_verze null-delete without verification:null."""
+    upload = client.post(
+        "/upload",
+        files={
+            "file": ("qg-del.txt", b"Null deletes qg whitelist fields.", "text/plain")
+        },
+    )
+    assert upload.status_code == 200
+    doc_id = upload.json()["doc_id"]
+    seeded = client.patch(
+        f"/documents/{doc_id}/metadata",
+        json={
+            "qg_trida": "A",
+            "qg_flagy": ["ocr"],
+            "qg_verze": "2026-11-12:qg",
+            "reliability": 2,
+        },
+    )
+    assert seeded.status_code == 200
+    before = client.get(f"/documents/{doc_id}").json()
+    assert before["qg_trida"] == "A"
+    assert before["qg_flagy"] == ["ocr"]
+    assert before["qg_verze"] == "2026-11-12:qg"
+
+    deleted = client.patch(
+        f"/documents/{doc_id}/metadata",
+        json={"qg_trida": None, "qg_flagy": None, "qg_verze": None},
+    )
+    assert deleted.status_code == 200
+    assert deleted.json()["deleted_fields"] == ["qg_flagy", "qg_trida", "qg_verze"]
+    fetched = client.get(f"/documents/{doc_id}").json()
+    assert "qg_trida" not in fetched
+    assert "qg_flagy" not in fetched
+    assert "qg_verze" not in fetched
+    assert fetched["reliability"] == 2
+
+
 def test_patch_null_non_whitelist_is_400(client: TestClient) -> None:
     """Null on tags / obec_kod / gps_presnost / extrakce_model / fakt_ref is 400."""
     upload = client.post(

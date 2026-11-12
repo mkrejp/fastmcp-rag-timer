@@ -124,10 +124,19 @@ def test_split_deletes_whitelist_and_rollback_rule() -> None:
             "reliability": 2,
             "verified_by": None,
             "overeni_souhrn": None,
+            "qg_trida": None,
+            "qg_flagy": None,
+            "qg_verze": None,
         }
     )
     assert remaining == {"reliability": 2}
-    assert deleted == ["verified_by", "overeni_souhrn"]
+    assert deleted == [
+        "verified_by",
+        "overeni_souhrn",
+        "qg_trida",
+        "qg_flagy",
+        "qg_verze",
+    ]
 
     remaining, deleted = split_verification_deletes(
         {
