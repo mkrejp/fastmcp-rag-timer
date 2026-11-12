@@ -239,10 +239,11 @@ field path. Each `verification[]` item may include `method`, `compared_value`, `
 **Deleting fields with JSON `null`.** Only these keys accept `null` (defined in code as
 `DELETABLE_VERIFICATION_FIELDS`): `verification`, `verification_status`, `verified_by`,
 `verified_at`, `verified_source_url`, `verified_quote`, `reliability`, `source_axis`, `source_key`,
-`content_hash`, `overeni_souhrn`. `source_key` and `content_hash` may be nulled only in the same
-request as `verification: null` (full verification rollback); otherwise the API returns **400**. `null`
-on any other field — for example `tags`, `obec_kod`, `gps_presnost`, `extrakce_model`, `fakt_ref`, or
-any `qg_*` key — returns **400**. Successful responses list removals in `deleted_fields` alongside
+`content_hash`, `overeni_souhrn`, `qg_trida`, `qg_flagy`, `qg_verze`. `source_key` and `content_hash`
+may be nulled only in the same request as `verification: null` (full verification rollback); otherwise
+the API returns **400**. `qg_trida`, `qg_flagy`, and `qg_verze` are plain deletes. `null` on any other
+field — for example `tags`, `obec_kod`, `gps_presnost`, `extrakce_model`, `fakt_ref` — returns **400**.
+Successful responses list removals in `deleted_fields` alongside
 `updated_fields`, `points_updated`, and `figures_updated`. Operating convention (outside this repo):
 RAGloader logs each deletion to `rag-changes.jsonl` with action `metadata_unset` and the list of
 fields.

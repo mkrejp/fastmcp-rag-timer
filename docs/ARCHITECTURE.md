@@ -196,10 +196,12 @@ fields the same way (chunks get full fields including `verification[]`; `pdf_fig
 whitelist key (`DELETABLE_VERIFICATION_FIELDS` in `rag/verification_meta.py`) runs Qdrant
 `delete_payload` on all points for that `doc_id` and `pop`s the key from catalog `extra`. Whitelist:
 `verification`, `verification_status`, `verified_by`, `verified_at`, `verified_source_url`,
-`verified_quote`, `reliability`, `source_axis`, `source_key`, `content_hash`, `overeni_souhrn`.
+`verified_quote`, `reliability`, `source_axis`, `source_key`, `content_hash`, `overeni_souhrn`,
+`qg_trida`, `qg_flagy`, `qg_verze`.
 `source_key` and `content_hash` may be nulled only in the same body as `verification: null` (full
-verification rollback); otherwise **400**. Null on any other field (including `tags`, `obec_kod`,
-`gps_presnost`, `extrakce_model`, `fakt_ref`, and all `qg_*` keys) is **400**. Success responses
+verification rollback); otherwise **400**. `qg_trida` / `qg_flagy` / `qg_verze` are plain deletes.
+Null on any other field (including `tags`, `obec_kod`, `gps_presnost`, `extrakce_model`, `fakt_ref`)
+is **400**. Success responses
 include `deleted_fields`; vectors and `doc_id` are untouched. Same Bearer MCP/RAG or Google session
 as `POST /upload` / `DELETE`. Operating convention (outside this repo): RAGloader logs each deletion
 to `rag-changes.jsonl` with action `metadata_unset` and the field list.
