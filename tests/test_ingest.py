@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Callable
 
 from rag.ingest import ingest_bytes, stable_point_id
 from rag.payloads import chunk_text_sha256

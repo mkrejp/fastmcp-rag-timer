@@ -88,6 +88,36 @@ def _process_pdf_images(
     return images_meta
 
 
+def _image_point(
+    *,
+    doc_id: str,
+    filename: str,
+    img: ImageMeta,
+    summary: str,
+    extra_payload: Mapping[str, Any] | None,
+    text_vector: list[float] | None = None,
+    image_vector: list[float] | None = None,
+) -> PointStruct:
+    """Build a named-vector point for one extracted PDF image."""
+    return PointStruct(
+        id=stable_image_point_id(doc_id, img.image_id),
+        vector=build_named_vector(
+            text_vector=text_vector,
+            image_vector=image_vector,
+        ),
+        payload=build_image_payload(
+            doc_id=doc_id,
+            parent_document=filename,
+            page_number=img.page_number,
+            file_path=img.file_path,
+            image_id=img.image_id,
+            image_sha256=img.sha256,
+            content_summary=summary,
+            extra_payload=extra_payload,
+        ),
+    )
+
+
 def _embed_pdf_images(
     storage: RagStorage,
     doc_id: str,
@@ -279,24 +309,15 @@ def ingest_bytes(
     for (img, summary), text_vector in zip(
         image_summaries, image_text_vectors, strict=True
     ):
-        image_vector = visual_vectors.get(img.image_id)
         points.append(
-            PointStruct(
-                id=stable_image_point_id(doc_id, img.image_id),
-                vector=build_named_vector(
-                    text_vector=text_vector,
-                    image_vector=image_vector,
-                ),
-                payload=build_image_payload(
-                    doc_id=doc_id,
-                    parent_document=filename,
-                    page_number=img.page_number,
-                    file_path=img.file_path,
-                    image_id=img.image_id,
-                    image_sha256=img.sha256,
-                    content_summary=summary,
-                    extra_payload=chunk_fields,
-                ),
+            _image_point(
+                doc_id=doc_id,
+                filename=filename,
+                img=img,
+                summary=summary,
+                extra_payload=chunk_fields,
+                text_vector=text_vector,
+                image_vector=visual_vectors.get(img.image_id),
             )
         )
         indexed_images += 1
@@ -308,21 +329,14 @@ def ingest_bytes(
         image_vector = visual_vectors.get(img.image_id)
         if image_vector is None:
             continue
-        summary = build_content_summary(img.page_number, img.ocr_text or "")
         points.append(
-            PointStruct(
-                id=stable_image_point_id(doc_id, img.image_id),
-                vector=build_named_vector(image_vector=image_vector),
-                payload=build_image_payload(
-                    doc_id=doc_id,
-                    parent_document=filename,
-                    page_number=img.page_number,
-                    file_path=img.file_path,
-                    image_id=img.image_id,
-                    image_sha256=img.sha256,
-                    content_summary=summary,
-                    extra_payload=chunk_fields,
-                ),
+            _image_point(
+                doc_id=doc_id,
+                filename=filename,
+                img=img,
+                summary=build_content_summary(img.page_number, img.ocr_text or ""),
+                extra_payload=chunk_fields,
+                image_vector=image_vector,
             )
         )
         indexed_images += 1
