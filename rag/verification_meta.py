@@ -175,10 +175,11 @@ def _jsonable(value: object, *, path: str) -> None:
     raise DocumentMetadataError(f"{path} must be JSON-serializable")
 
 
-def _truncate(text: str, limit: int) -> str:
-    """Return ``text`` clipped to ``limit`` characters."""
+def _clip(text: str, limit: int, *, path: str, truncated: list[str]) -> str:
+    """Return ``text`` clipped to ``limit`` characters, recording ``path`` if cut."""
     if len(text) <= limit:
         return text
+    truncated.append(path)
     return text[:limit]
 
 
@@ -255,18 +256,30 @@ def _list_or_string(value: object, *, path: str) -> list[str] | str:
     raise DocumentMetadataError(f"{path} must be a string or list of strings")
 
 
-def _normalize_quote(value: object, *, path: str, allow_empty: bool = True) -> str:
+def _normalize_quote(
+    value: object,
+    *,
+    path: str,
+    truncated: list[str],
+    allow_empty: bool = True,
+) -> str:
     """Return a quote/citace string truncated to ``MAX_QUOTE_LEN``."""
     if value is None:
         return ""
     text = _require_str(value, path=path, allow_empty=allow_empty)
-    return _truncate(text, MAX_QUOTE_LEN)
+    return _clip(text, MAX_QUOTE_LEN, path=path, truncated=truncated)
 
 
-def normalize_overeni_souhrn(value: object) -> str:
+def normalize_overeni_souhrn(value: object, truncated: list[str] | None = None) -> str:
     """Validate and truncate the flat ``overeni_souhrn`` string (~300 chars)."""
+    sink = truncated if truncated is not None else []
     text = _require_str(value, path="overeni_souhrn", allow_empty=True)
-    return _truncate(text.strip(), MAX_OVERENI_SOUHRN_LEN)
+    return _clip(
+        text.strip(),
+        MAX_OVERENI_SOUHRN_LEN,
+        path="overeni_souhrn",
+        truncated=sink,
+    )
 
 
 def _normalize_verification_item(
@@ -274,6 +287,7 @@ def _normalize_verification_item(
     *,
     index: int,
     default_source_key: str | None,
+    truncated: list[str],
 ) -> dict[str, Any]:
     """Return one ``verification[]`` object after alias and enum checks."""
     if not isinstance(raw, Mapping):
@@ -317,7 +331,9 @@ def _normalize_verification_item(
             allow_empty=True,
         ),
         "quote": _normalize_quote(
-            item.get("quote"), path=f"verification[{index}].quote"
+            item.get("quote"),
+            path=f"verification[{index}].quote",
+            truncated=truncated,
         ),
         "independent": _as_bool(
             item["independent"], path=f"verification[{index}].independent"
@@ -403,11 +419,13 @@ def normalize_verification_metadata(
     raw: Mapping[str, Any] | None,
     *,
     apply_defaults: bool = False,
-) -> dict[str, Any]:
-    """Return a cleaned payload dict of allowed verification fields.
+) -> tuple[dict[str, Any], list[str]]:
+    """Return cleaned payload fields and paths of values that were truncated.
 
     Unknown keys are rejected. ``apply_defaults`` writes ``reliability=1``
     (and ``verification_status=nejiste``) when those keys are absent.
+    Truncation keeps the stored value clipped; callers must surface
+    ``truncated`` so the cut is not silent.
     """
     if raw is None:
         data: dict[str, Any] = {}
@@ -452,6 +470,7 @@ def normalize_verification_metadata(
         raise DocumentMetadataError("doc_id cannot be changed")
 
     out: dict[str, Any] = {}
+    truncated: list[str] = []
     for key, value in data.items():
         if key in {"overil", "overeno_dne"}:
             # Stored via verified_by / verified_at; keep aliases too when sent.
@@ -470,10 +489,10 @@ def normalize_verification_metadata(
             out[key] = _enum(value, _FLAT_STRING_ENUMS[key], path=key)
             continue
         if key == "overeni_souhrn":
-            out[key] = normalize_overeni_souhrn(value)
+            out[key] = normalize_overeni_souhrn(value, truncated=truncated)
             continue
         if key == "verified_quote":
-            out[key] = _normalize_quote(value, path=key)
+            out[key] = _normalize_quote(value, path=key, truncated=truncated)
             continue
         if key in _FLAT_STRINGS:
             out[key] = _require_str(value, path=key, allow_empty=True)
@@ -533,7 +552,10 @@ def normalize_verification_metadata(
                 default_key = source_key.strip()
             out[key] = [
                 _normalize_verification_item(
-                    item, index=index, default_source_key=default_key
+                    item,
+                    index=index,
+                    default_source_key=default_key,
+                    truncated=truncated,
                 )
                 for index, item in enumerate(value)
             ]
@@ -554,7 +576,7 @@ def normalize_verification_metadata(
         out["verification_status"] = DEFAULT_VERIFICATION_STATUS
     if not out:
         raise DocumentMetadataError("at least one metadata field is required")
-    return out
+    return out, truncated
 
 
 def chunk_payload_fields(meta: Mapping[str, Any]) -> dict[str, Any]:

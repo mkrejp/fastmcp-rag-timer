@@ -401,7 +401,9 @@ def patch_document_metadata(
     """
     meta = _load_document(storage, doc_id)
     apply_defaults = not metadata
-    fields = normalize_verification_metadata(metadata, apply_defaults=apply_defaults)
+    fields, truncated = normalize_verification_metadata(
+        metadata, apply_defaults=apply_defaults
+    )
     if "doc_id" in fields:
         raise DocumentMetadataError("doc_id cannot be changed")
 
@@ -431,5 +433,6 @@ def patch_document_metadata(
         "updated_fields": sorted(fields),
         "points_updated": points_updated,
         "figures_updated": figures_updated,
+        "truncated": truncated,
         "meta": meta.to_dict(),
     }

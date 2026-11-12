@@ -13,7 +13,11 @@ from qdrant_client.models import FieldCondition, Filter, MatchValue
 from rag.document_patch import patch_document_metadata
 from rag.ingest import ingest_bytes, stable_point_id
 from rag.storage import RagStorage
-from rag.verification_meta import MAX_OVERENI_SOUHRN_LEN, DocumentMetadataError
+from rag.verification_meta import (
+    MAX_OVERENI_SOUHRN_LEN,
+    MAX_QUOTE_LEN,
+    DocumentMetadataError,
+)
 from tests.conftest import AUTH_HEADERS, patched_embeddings
 
 if TYPE_CHECKING:
@@ -101,6 +105,8 @@ def test_ingest_writes_provided_verification_fields(
     assert payload["verification"][0]["threshold"] == 100
     assert payload["verification"][0]["evidence_type"] == "gps"
     assert payload["verification"][0]["result"] == "potvrzeno-wiki"
+    assert "truncated" not in payload
+    assert result["truncated"] == ["overeni_souhrn"]
     meta = rag_storage.read_meta(doc_id)
     assert meta is not None
     assert meta.extra["qg_verze"] == "2026-11-12:abcd"
@@ -143,6 +149,7 @@ def test_patch_document_metadata_set_payload_no_reembed(
     assert result["doc_id"] == doc_id
     assert "reliability" in result["updated_fields"]
     assert result["points_updated"] >= 1
+    assert result["truncated"] == []
 
     after = _scroll_doc(qdrant_client, doc_id)
     assert {point.id: point.vector for point in after} == before_vectors
@@ -181,6 +188,7 @@ def test_patch_document_metadata_http(
     assert body["doc_id"] == doc_id
     assert body["meta"]["reliability"] == 3
     assert body["meta"]["overeni_souhrn"] == "primární zdroj, shoda 2"
+    assert body["truncated"] == []
 
     fetched = client.get(f"/documents/{doc_id}")
     assert fetched.status_code == 200
@@ -233,6 +241,7 @@ def test_upload_metadata_form_field(client: TestClient) -> None:
     assert fetched["qg_verze"] == "form-1"
     assert fetched["overeni_souhrn"] == "form upload"
     assert fetched["verification"][0]["evidence_type"] == "gps"
+    assert response.json()["truncated"] == []
 
 
 def test_update_document_metadata_mcp_tool(client: TestClient) -> None:
@@ -285,6 +294,79 @@ def test_update_document_metadata_mcp_tool(client: TestClient) -> None:
     fetched = client.get(f"/documents/{doc_id}").json()
     assert fetched["reliability"] == 2
     assert fetched["verification"][0]["method"] == "haversine"
+
+
+def test_ingest_reports_truncated_field_paths(
+    rag_storage: RagStorage,
+    qdrant_client: QdrantClient,
+    fake_embed: Callable[[str], list[float]],
+) -> None:
+    """Ingest metadata responses list every field that was clipped."""
+    long_souhrn = "s" * (MAX_OVERENI_SOUHRN_LEN + 12)
+    long_quote = "q" * (MAX_QUOTE_LEN + 8)
+    long_verified = "v" * (MAX_QUOTE_LEN + 4)
+    item = _item()
+    item["quote"] = long_quote
+    ingested = ingest_bytes(
+        storage=rag_storage,
+        qdrant=qdrant_client,
+        collection_name=COLLECTION,
+        filename="trunc.txt",
+        data=b"Truncation must be reported.",
+        embed_fn=fake_embed,
+        metadata={
+            "overeni_souhrn": long_souhrn,
+            "verified_quote": long_verified,
+            "verification": [item],
+        },
+    )
+    assert ingested["truncated"] == [
+        "overeni_souhrn",
+        "verified_quote",
+        "verification[0].quote",
+    ]
+    payload = (
+        qdrant_client.retrieve(
+            collection_name=COLLECTION,
+            ids=[stable_point_id(str(ingested["doc_id"]), 0)],
+            with_payload=True,
+        )[0].payload
+        or {}
+    )
+    assert payload["overeni_souhrn"] == "s" * MAX_OVERENI_SOUHRN_LEN
+    assert "truncated" not in payload
+
+
+def test_patch_http_reports_truncated_field_paths(client: TestClient) -> None:
+    """PATCH /documents/{id}/metadata lists every field that was clipped."""
+    long_souhrn = "s" * (MAX_OVERENI_SOUHRN_LEN + 12)
+    long_quote = "q" * (MAX_QUOTE_LEN + 8)
+    long_verified = "v" * (MAX_QUOTE_LEN + 4)
+    item = _item()
+    item["quote"] = long_quote
+    upload = client.post(
+        "/upload",
+        files={"file": ("http-trunc.txt", b"HTTP truncation report.", "text/plain")},
+    )
+    assert upload.status_code == 200
+    doc_id = upload.json()["doc_id"]
+    patched = client.patch(
+        f"/documents/{doc_id}/metadata",
+        json={
+            "overeni_souhrn": long_souhrn,
+            "verified_quote": long_verified,
+            "verification": [item],
+        },
+    )
+    assert patched.status_code == 200
+    body = patched.json()
+    assert body["truncated"] == [
+        "overeni_souhrn",
+        "verified_quote",
+        "verification[0].quote",
+    ]
+    assert body["meta"]["overeni_souhrn"] == "s" * MAX_OVERENI_SOUHRN_LEN
+    assert body["meta"]["verified_quote"] == "v" * MAX_QUOTE_LEN
 
 
 def test_patch_rejects_doc_id_change(

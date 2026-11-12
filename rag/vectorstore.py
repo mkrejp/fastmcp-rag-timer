@@ -60,6 +60,25 @@ _LOCALITY_LINK_INDEXES: tuple[tuple[str, PayloadSchemaType], ...] = (
     ("cast_obce_kod", PayloadSchemaType.KEYWORD),
     ("cast_obce", PayloadSchemaType.KEYWORD),
 )
+KNOWLEDGE_PAYLOAD_INDEXES: tuple[tuple[str, PayloadSchemaType], ...] = (
+    ("source_type", PayloadSchemaType.KEYWORD),
+    ("doc_id", PayloadSchemaType.KEYWORD),
+    ("chunk_sha256", PayloadSchemaType.KEYWORD),
+    ("localities", PayloadSchemaType.KEYWORD),
+    ("cast_obce", PayloadSchemaType.KEYWORD),
+    ("verification_status", PayloadSchemaType.KEYWORD),
+    ("source_key", PayloadSchemaType.KEYWORD),
+    ("reliability", PayloadSchemaType.INTEGER),
+    ("figure_number", PayloadSchemaType.KEYWORD),
+    ("page_number", PayloadSchemaType.INTEGER),
+    ("verified", PayloadSchemaType.BOOL),
+    ("image_id", PayloadSchemaType.KEYWORD),
+    ("geo_refined.precision", PayloadSchemaType.KEYWORD),
+    ("geo_refined.status", PayloadSchemaType.KEYWORD),
+    ("geo_refined.confidence_level", PayloadSchemaType.KEYWORD),
+    ("geo_refined.needs_refinement", PayloadSchemaType.BOOL),
+    ("geo_refined.verified", PayloadSchemaType.BOOL),
+)
 DEFAULT_TOP_OBCE = 20
 
 logger = get_logger("rag.vectorstore")
@@ -190,31 +209,41 @@ def _layout_mismatch(named_sizes: dict[str, int] | None) -> bool:
     return set(named_sizes.keys()) != set(expected.keys())
 
 
+def _existing_payload_index_names(
+    client: QdrantClient, collection_name: str
+) -> set[str]:
+    """Return payload field names already indexed on ``collection_name``."""
+    try:
+        info = client.get_collection(collection_name)
+    except Exception:  # noqa: BLE001 - treat lookup failure as no indexes
+        return set()
+    schema = getattr(info, "payload_schema", None)
+    if not isinstance(schema, Mapping):
+        return set()
+    return {str(name) for name in schema}
+
+
 def ensure_payload_indexes(
     client: QdrantClient,
     *,
     collection_name: str = COLLECTION_NAME,
 ) -> None:
-    """Create keyword indexes used by filters and admin tooling."""
+    """Create filter indexes used by search and RAGloader tooling.
+
+    Idempotent: existing indexes are skipped. Does not re-embed, delete
+    points, or rewrite payloads.
+    """
     if not client.collection_exists(collection_name):
         return
-    for field_name, schema in (
-        ("source_type", PayloadSchemaType.KEYWORD),
-        ("doc_id", PayloadSchemaType.KEYWORD),
-        ("chunk_sha256", PayloadSchemaType.KEYWORD),
-        ("localities", PayloadSchemaType.KEYWORD),
-        ("cast_obce", PayloadSchemaType.KEYWORD),
-        ("verification_status", PayloadSchemaType.KEYWORD),
-        ("figure_number", PayloadSchemaType.KEYWORD),
-        ("page_number", PayloadSchemaType.INTEGER),
-        ("verified", PayloadSchemaType.BOOL),
-        ("image_id", PayloadSchemaType.KEYWORD),
-        ("geo_refined.precision", PayloadSchemaType.KEYWORD),
-        ("geo_refined.status", PayloadSchemaType.KEYWORD),
-        ("geo_refined.confidence_level", PayloadSchemaType.KEYWORD),
-        ("geo_refined.needs_refinement", PayloadSchemaType.BOOL),
-        ("geo_refined.verified", PayloadSchemaType.BOOL),
-    ):
+    existing = _existing_payload_index_names(client, collection_name)
+    for field_name, schema in KNOWLEDGE_PAYLOAD_INDEXES:
+        if field_name in existing:
+            logger.debug(
+                "Payload index %s on %s already exists; skip",
+                field_name,
+                collection_name,
+            )
+            continue
         try:
             client.create_payload_index(
                 collection_name=collection_name,
@@ -430,40 +459,40 @@ def _locality_point_vector(
     similarity. Existing collections are never deleted to change layout.
     """
     _legacy, named_sizes = _collection_vector_layout(client, LOCALITY_LINKS_COLLECTION)
+    empty: dict[str, Any] = {}
     if not named_sizes:
-        return {}
+        return empty
     if set(named_sizes.keys()) == {"default"} and named_sizes["default"] == 1:
         return [0.0]
     if len(named_sizes) == 1:
         name, size = next(iter(named_sizes.items()))
         if size == 1:
             return {name: [0.0]}
-    return {}
+    return empty
 
 
-def _locality_links_filter(
-    *,
-    doc_id: str | None = None,
-    obec_id: str | None = None,
-    status: str | None = None,
-    ambiguous: bool | None = None,
-    locality_level: str | None = None,
-    cast_obce: str | None = None,
-) -> Filter | None:
+def _locality_links_filter(query: Mapping[str, Any]) -> Filter | None:
     """Build a Qdrant payload filter for ``list_locality_links``."""
     must: list[FieldCondition] = []
+    doc_id = query.get("doc_id")
+    obec_id = query.get("obec_id")
+    status = query.get("status")
+    ambiguous = query.get("ambiguous")
+    locality_level = query.get("locality_level")
+    cast_obce = query.get("cast_obce")
     if doc_id:
-        must.append(FieldCondition(key="doc_id", match=MatchValue(value=doc_id)))
+        must.append(FieldCondition(key="doc_id", match=MatchValue(value=str(doc_id))))
     if obec_id:
-        must.append(FieldCondition(key="obec_id", match=MatchValue(value=obec_id)))
+        must.append(FieldCondition(key="obec_id", match=MatchValue(value=str(obec_id))))
     if status:
-        if status not in LOCALITY_VERIFICATION_STATUSES:
+        status_text = str(status)
+        if status_text not in LOCALITY_VERIFICATION_STATUSES:
             allowed = ", ".join(sorted(LOCALITY_VERIFICATION_STATUSES))
             raise LocalityLinkPayloadError(f"status must be one of: {allowed}")
         must.append(
             FieldCondition(
                 key="verification_status",
-                match=MatchValue(value=status),
+                match=MatchValue(value=status_text),
             )
         )
     if ambiguous is not None:
@@ -474,20 +503,21 @@ def _locality_links_filter(
             )
         )
     if locality_level:
-        if locality_level not in LOCALITY_LEVELS:
+        level_text = str(locality_level)
+        if level_text not in LOCALITY_LEVELS:
             allowed = ", ".join(sorted(LOCALITY_LEVELS))
             raise LocalityLinkPayloadError(f"locality_level must be one of: {allowed}")
         must.append(
             FieldCondition(
                 key="locality_level",
-                match=MatchValue(value=locality_level),
+                match=MatchValue(value=level_text),
             )
         )
     if cast_obce:
         must.append(
             FieldCondition(
                 key="cast_obce_kod",
-                match=MatchValue(value=cast_obce),
+                match=MatchValue(value=str(cast_obce)),
             )
         )
     if not must:
@@ -575,12 +605,14 @@ def list_locality_links(
     limit_n = min(max(limit_n, 1), MAX_LOCALITY_LIST_LIMIT)
     offset_n = max(offset_n, 0)
     scroll_filter = _locality_links_filter(
-        doc_id=doc_id or None,
-        obec_id=obec_id or None,
-        status=status or None,
-        ambiguous=ambiguous,
-        locality_level=locality_level or None,
-        cast_obce=cast_obce or None,
+        {
+            "doc_id": doc_id or None,
+            "obec_id": obec_id or None,
+            "status": status or None,
+            "ambiguous": ambiguous,
+            "locality_level": locality_level or None,
+            "cast_obce": cast_obce or None,
+        }
     )
     gathered: list[Any] = []
     next_offset: Any = None

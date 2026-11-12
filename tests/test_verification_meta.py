@@ -6,6 +6,7 @@ import pytest
 
 from rag.verification_meta import (
     MAX_OVERENI_SOUHRN_LEN,
+    MAX_QUOTE_LEN,
     DocumentMetadataError,
     figure_payload_fields,
     normalize_overeni_souhrn,
@@ -32,22 +33,43 @@ def _item(**overrides: object) -> dict[str, object]:
 
 def test_defaults_reliability_one() -> None:
     """Absent reliability should default to 1 when requested."""
-    out = normalize_verification_metadata(None, apply_defaults=True)
+    out, truncated = normalize_verification_metadata(None, apply_defaults=True)
     assert out["reliability"] == 1
     assert out["verification_status"] == "nejiste"
+    assert truncated == []
 
 
 def test_overeni_souhrn_is_truncated() -> None:
     """``overeni_souhrn`` longer than ~300 chars should be truncated."""
     long_text = "ž" * (MAX_OVERENI_SOUHRN_LEN + 40)
-    assert len(normalize_overeni_souhrn(long_text)) == MAX_OVERENI_SOUHRN_LEN
-    out = normalize_verification_metadata({"overeni_souhrn": long_text})
+    clipped: list[str] = []
+    assert len(normalize_overeni_souhrn(long_text, truncated=clipped)) == (
+        MAX_OVERENI_SOUHRN_LEN
+    )
+    assert clipped == ["overeni_souhrn"]
+    out, truncated = normalize_verification_metadata({"overeni_souhrn": long_text})
     assert out["overeni_souhrn"] == "ž" * MAX_OVERENI_SOUHRN_LEN
+    assert truncated == ["overeni_souhrn"]
+
+
+def test_quote_fields_report_truncated_paths() -> None:
+    """Long quote / verified_quote values should list their field paths."""
+    long_quote = "q" * (MAX_QUOTE_LEN + 10)
+    long_verified = "v" * (MAX_QUOTE_LEN + 3)
+    out, truncated = normalize_verification_metadata(
+        {
+            "verified_quote": long_verified,
+            "verification": [_item(quote=long_quote)],
+        }
+    )
+    assert out["verified_quote"] == "v" * MAX_QUOTE_LEN
+    assert out["verification"][0]["quote"] == "q" * MAX_QUOTE_LEN
+    assert truncated == ["verified_quote", "verification[0].quote"]
 
 
 def test_verification_item_new_fields_round_trip() -> None:
     """Optional method / compared / found / threshold / evidence_type are kept."""
-    out = normalize_verification_metadata(
+    out, truncated = normalize_verification_metadata(
         {
             "reliability": 2,
             "source_key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -62,6 +84,7 @@ def test_verification_item_new_fields_round_trip() -> None:
             ],
         }
     )
+    assert truncated == []
     item = out["verification"][0]
     assert item["method"] == "haversine"
     assert item["compared_value"] == 49.2
@@ -72,17 +95,19 @@ def test_verification_item_new_fields_round_trip() -> None:
 
 def test_overeno_without_quote_is_downgraded() -> None:
     """``overeno`` without source_url+quote becomes ``nejiste``."""
-    out = normalize_verification_metadata(
+    out, truncated = normalize_verification_metadata(
         {"verification": [_item(source_url="", quote="")]}
     )
     assert out["verification"][0]["result"] == "nejiste"
+    assert truncated == []
 
 
 def test_source_axis_does_not_use_filename_key() -> None:
     """Reliability axis ``source`` is stored as ``source_axis``."""
-    out = normalize_verification_metadata({"source": "primary"})
+    out, truncated = normalize_verification_metadata({"source": "primary"})
     assert out["source_axis"] == "primary"
     assert "source" not in out
+    assert truncated == []
 
 
 def test_unknown_field_rejected() -> None:
@@ -93,7 +118,7 @@ def test_unknown_field_rejected() -> None:
 
 def test_figure_payload_omits_colliding_keys() -> None:
     """Figures must not receive document verification[] or status."""
-    fields = normalize_verification_metadata(
+    fields, truncated = normalize_verification_metadata(
         {
             "reliability": 1,
             "verification_status": "nejiste",
@@ -101,6 +126,7 @@ def test_figure_payload_omits_colliding_keys() -> None:
             "verification": [_item()],
         }
     )
+    assert truncated == []
     figure = figure_payload_fields(fields)
     assert figure["reliability"] == 1
     assert figure["overeni_souhrn"] == "nejisté"

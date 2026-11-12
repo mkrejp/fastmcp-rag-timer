@@ -145,6 +145,13 @@ class PatchDocumentMetadataResponse(BaseModel):
     updated_fields: list[str]
     points_updated: int
     figures_updated: int
+    truncated: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Field paths clipped to spec limits (e.g. overeni_souhrn, "
+            "verification[0].quote, verified_quote)."
+        ),
+    )
     meta: dict[str, Any]
 
 
