@@ -46,6 +46,7 @@ RAILWAY_PUBLIC_ENV_KEYS = (
 MCP_WRITE_TOOLS = frozenset(
     {
         "ingest_text",
+        "update_document",
         "link_locality",
         "verify_link",
         "sync_links_to_trails",
@@ -544,6 +545,8 @@ def is_http_write_request(method: str, path: str) -> bool:
     if upper == "POST" and normalized in {"/ingest-json"}:
         return True
     if upper == "DELETE" and normalized.startswith("/documents/"):
+        return True
+    if upper == "PATCH" and normalized.startswith("/documents/"):
         return True
     return False
 

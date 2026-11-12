@@ -75,7 +75,7 @@ Trust notes from code:
 - Catalog (`GET /documents*`), `/upload-media`, `/health`, FastAPI OpenAPI UI, and `/auth/status` have **no authentication**.
 - `POST /ingest-json` requires inbound `Authorization: Bearer` matching `RAG_API_TOKEN` (503 if that env var is unset).
 - `/mcp` requires Bearer `MCP_API_TOKEN` or fallback `RAG_API_TOKEN` (401 invalid, 503 unset). FastMCP also checks `Host` against `MCP_ALLOWED_HOSTS` (421 on mismatch) unless `MCP_DISABLE_DNS_REBINDING_PROTECTION` is set.
-- `POST /upload`, chunked upload routes, `POST /upload-pdf`, `GET /images/...`, and `DELETE /documents/{doc_id}` require that same MCP/RAG bearer **or** a signed-in Google session.
+- `POST /upload`, chunked upload routes, `POST /upload-pdf`, `GET /images/...`, and `PATCH`/`DELETE /documents/{doc_id}` require that same MCP/RAG bearer **or** a signed-in Google session.
 - `/ui/` and `/api/admin/*` require Google OAuth (`GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET`) and optional email/domain allow-lists.
 - Secrets: outbound Novita embedding key (`BGE_M3_NOVITA_API_KEY`, then `NOVITA_API_KEY`, `OPENAI_TOKEN`, `OPENAI_API_KEY`); inbound `RAG_API_TOKEN` / `MCP_API_TOKEN`; Google client secret; `SESSION_SECRET`; optional Trails Bearer `TRAILS_API_TOKEN` (never logged).
 - Embedded Qdrant does **not** listen on a network port; it uses `{RAG_DATA_ROOT}/qdrant`.
@@ -116,6 +116,8 @@ sequenceDiagram
     API-->>Client: 401/503 without RAG_API_TOKEN, else fetch+index
   else GET /documents...
     API-->>Client: 200 or 404
+  else PATCH /documents/{doc_id}
+    API-->>Client: 401/503 without token, else 200, 400, 422, or 404
   else DELETE /documents/{doc_id}
     API-->>Client: 401/503 without token, else 200 or 404
   else GET /images/{doc_id}/{image_id}
@@ -188,7 +190,7 @@ No second container is required for the vector store.
 | Interface | Transport | Port | Auth in repository |
 | --- | --- | --- | --- |
 | FastAPI REST (catalog, fulltext, `/upload-media`, `/health`, OpenAPI) | HTTP/1.1 via uvicorn | **`PORT` (default 8080)/tcp** | **None** |
-| `POST /upload`, chunked upload, `POST /upload-pdf`, `GET /images/...`, `DELETE /documents/{doc_id}` | HTTP/1.1 via uvicorn | `PORT` | Bearer `MCP_API_TOKEN`/`RAG_API_TOKEN` or Google session |
+| `POST /upload`, chunked upload, `POST /upload-pdf`, `GET /images/...`, `PATCH`/`DELETE /documents/{doc_id}` | HTTP/1.1 via uvicorn | `PORT` | Bearer `MCP_API_TOKEN`/`RAG_API_TOKEN` or Google session |
 | `POST /ingest-json` | HTTP/1.1 via uvicorn | `PORT` | Bearer `RAG_API_TOKEN` |
 | `/ui/` and `/api/admin/*` | HTTP | `PORT` | Google session |
 | `/auth/*` | HTTP | `PORT` | Public login/status; `/auth/me` requires session |
@@ -232,6 +234,7 @@ Auth points that do not exist: JWT (other than Google session cookie), mTLS, MCP
 | Inbound `/ingest-json` | Remote GeoJSON/JSON bytes fetched by the service; feature attributes indexed (coordinates skipped) |
 | Inbound `/upload-media` | Arbitrary bytes; stored under `originals/{uuid}/` only |
 | Inbound `GET /documents*` | Catalog metadata and processed fulltext from disk (unauthenticated) |
+| Inbound `PATCH /documents/{doc_id}` | Authenticated in-place catalog + Qdrant payload metadata update (no re-embed) |
 | Inbound `DELETE /documents/{doc_id}` | Authenticated removal of originals, processed files, catalog row, and Qdrant points |
 | Inbound `/mcp` | Tool arguments and return strings (including document text/chunks); optional inline image bytes up to 5 MiB |
 | Inbound `/ui` and `/api/admin` | Google profile in session; volume listings, log buffer, accounting rollups |
@@ -385,7 +388,7 @@ There are still **no budgets**, spend caps, or dollar conversion.
 - Each Novita ingest text is a separate embeddings request (`input` is a string, not a list).
 - A large PDF means **N sequential HTTPS calls** when ingest is Novita (no parallelism in `ingest_bytes`). FastEmbed ingest batches those strings locally.
 - Duplicate files with the same SHA-256 skip embedding (exact-byte duplicates only).
-- `/documents/{id}/text`, `list_documents`, and `get_document_chunks` do **not** embed.
+- `/documents/{id}/text`, `PATCH /documents/{id}`, `list_documents`, `get_document_chunks`, and `update_document` do **not** embed.
 - Every `search_domain_knowledge` call embeds the query locally (no query-embedding cache; no Novita query spend).
 - `/upload-media` does not embed.
 

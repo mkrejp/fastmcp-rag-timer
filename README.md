@@ -87,7 +87,7 @@ Toggling CLIP does not recreate the collection; re-ingest PDFs to backfill `imag
 
 ## HTTP API
 
-Embedding REST routes (multipart upload, chunked upload, PDF alias, images, delete) require `Authorization: Bearer $MCP_API_TOKEN` (or `$RAG_API_TOKEN` if MCP token is unset) or a signed-in Google session. Missing both tokens fail closed with **503**.
+Embedding REST routes (multipart upload, chunked upload, PDF alias, images, delete, metadata patch) require `Authorization: Bearer $MCP_API_TOKEN` (or `$RAG_API_TOKEN` if MCP token is unset) or a signed-in Google session. Missing both tokens fail closed with **503**.
 
 - `POST /upload` — PDF, TXT, Markdown, JSON, or GeoJSON → persist + index (small files)
 - `POST /upload/init` — start a chunked upload (large files; same auth as `/upload`)
@@ -101,6 +101,7 @@ Embedding REST routes (multipart upload, chunked upload, PDF alias, images, dele
 - `GET /documents` — catalog (**no inbound auth**)
 - `GET /documents/{doc_id}` — metadata (**no inbound auth**)
 - `GET /documents/{doc_id}/text` — processed full text, no re-parse (**no inbound auth**)
+- `PATCH /documents/{doc_id}` — update catalog metadata and matching Qdrant payloads in place (no re-embed; same auth as `DELETE`)
 - `DELETE /documents/{doc_id}` — remove originals, processed files (including `images/`), catalog row, and Qdrant points
 - `GET /images/{doc_id}/{image_id}` — extracted PDF image bytes (same auth as `POST /upload`; `413` if larger than 50 MiB)
 - `GET /health` — liveness (`status`, `rag_data_root`, ingest/query embedding providers, `image_embedding_enabled`)
@@ -175,6 +176,23 @@ curl -sS -X DELETE \
   http://127.0.0.1:8080/documents/{doc_id}
 ```
 
+### Patch document metadata (`PATCH /documents/{doc_id}`)
+
+Rename a stored document or merge custom `extra` keys without re-uploading or re-embedding. Auth matches `DELETE /documents/{doc_id}`. Allowed JSON fields: `filename` (same suffix as the stored file) and `extra` (object; JSON `null` removes a key). Unknown fields are rejected. Vectors are left untouched; Qdrant payloads are updated with `set_payload` (`parent_document` / `source` / nested `extra`).
+
+Success: `{"status":"updated","doc_id","filename","updated_fields","points_updated","locality_links_updated","meta"}`.
+Unknown id: `404` `{"detail":"Document not found"}`. Invalid body: `400` or `422`. Missing/invalid token: `401`. Tokens unset: `503`.
+
+```bash
+export RAG_API_TOKEN=your-api-token
+
+curl -sS -X PATCH \
+  -H "Authorization: Bearer $RAG_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"filename":"renamed.txt","extra":{"akon_id":"AK110_057"}}' \
+  http://127.0.0.1:8080/documents/{doc_id}
+```
+
 ## MCP (AI clients)
 
 Streamable HTTP MCP is mounted at **`/mcp`** (`stateless_http=True`, `streamable_http_path="/"` so the endpoint is `/mcp`, not `/mcp/mcp`). The mount is wrapped with bearer auth and an ASGI helper that finishes SSE responses on process shutdown. Tools:
@@ -187,6 +205,7 @@ Streamable HTTP MCP is mounted at **`/mcp`** (`stateless_http=True`, `streamable
 - `get_page_image` (`doc_id`, 1-based `page`) — lazy JPEG render from stored PDF (`PAGE_RENDER_DPI`, `PAGE_RENDER_QUALITY`)
 - `get_page_highlights` (`doc_id`, `page`, `query`) — JSON boxes `{page_width, page_height, highlights:[{x0,y0,x1,y1,text,method}]}` (normalized 0–1)
 - `ingest_text`
+- `update_document` (`doc_id`, optional `filename`, optional `extra`) — patch catalog + Qdrant payloads, no re-embed
 - `search_domain_knowledge` (text `text_vector` only; optional `obec_id` / `cast_obce` payload filter; PDF hits add `page_image_id`; optional `format=json`)
 - `search_images` (CLIP `image_vector`; optional `hybrid=true`; PDF hits add `page_image_id`; optional `format=json`; optional `precision` / `needs_refinement` filters on `geo_refined`)
 - `link_locality` (upsert document-municipality links into payload-only `locality_links`; forwards to Trails when configured; no embeddings)
@@ -361,7 +380,7 @@ Endpoint: `https://rag-timer-00001-production.up.railway.app/mcp/` (Streamable H
 
 Auth: the **whole `/mcp` endpoint** requires `Authorization: Bearer <token>`.
 The token comes from `MCP_API_TOKEN`; if that is unset, `RAG_API_TOKEN` is used.
-If neither is set, `/mcp` and the embedding REST routes (`/upload`, chunked upload, `/upload-pdf`, `GET /images/...`, `DELETE /documents/{doc_id}`) fail closed with 503 and log a warning.
+If neither is set, `/mcp` and the embedding REST routes (`/upload`, chunked upload, `/upload-pdf`, `GET /images/...`, `PATCH`/`DELETE /documents/{doc_id}`) fail closed with 503 and log a warning.
 Those embedding REST routes also accept a signed-in Google session, which the console uses.
 `POST /ingest-json` requires `RAG_API_TOKEN` specifically (not the MCP token, unless they are the same value). Tokens are compared in constant time.
 

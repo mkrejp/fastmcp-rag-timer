@@ -155,13 +155,14 @@ def test_node_info_payload_exposes_railway_public_fields(
 
 
 def test_is_http_write_request_covers_mutating_routes() -> None:
-    """Upload, ingest, and document delete are writes; health and catalog are not."""
+    """Upload, ingest, and document PATCH/DELETE are writes; health and catalog are not."""
     assert is_http_write_request("POST", "/upload") is True
     assert is_http_write_request("POST", "/upload/init") is True
     assert is_http_write_request("PUT", "/upload/abc/chunks/0") is True
     assert is_http_write_request("DELETE", "/upload/abc") is True
     assert is_http_write_request("POST", "/ingest-json") is True
     assert is_http_write_request("DELETE", "/documents/abc") is True
+    assert is_http_write_request("PATCH", "/documents/abc") is True
     assert is_http_write_request("GET", "/upload/abc") is False
     assert is_http_write_request("GET", "/health") is False
     assert is_http_write_request("GET", "/node-info") is False
@@ -306,6 +307,11 @@ def test_write_blocking_on_read_node(
             assert ingest.status_code == 403
             deleted = client.delete("/documents/00000000-0000-0000-0000-000000000000")
             assert deleted.status_code == 403
+            patched = client.patch(
+                "/documents/00000000-0000-0000-0000-000000000000",
+                json={"filename": "blocked.txt"},
+            )
+            assert patched.status_code == 403
             listed = client.get("/documents")
             assert listed.status_code == 200
             health = client.get("/health")

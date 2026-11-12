@@ -39,6 +39,7 @@ def test_mcp_accepts_railway_host_with_token(client):
         "get_document_text",
         "get_document_chunks",
         "ingest_text",
+        "update_document",
         "search_domain_knowledge",
         "link_locality",
         "list_links",
@@ -81,6 +82,16 @@ def test_delete_document_requires_bearer(client):
     assert client.delete("/documents/not-a-real-doc").status_code == 401
 
 
+def test_patch_document_requires_bearer(client):
+    """PATCH /documents/{doc_id} should reject missing bearer tokens."""
+    assert (
+        client.patch(
+            "/documents/not-a-real-doc", json={"filename": "x.txt"}
+        ).status_code
+        == 401
+    )
+
+
 def test_fail_closed_without_token(client, monkeypatch):
     monkeypatch.delenv("MCP_API_TOKEN", raising=False)
     monkeypatch.delenv("RAG_API_TOKEN", raising=False)
@@ -92,3 +103,9 @@ def test_fail_closed_without_token(client, monkeypatch):
         == 503
     )
     assert client.delete("/documents/not-a-real-doc").status_code == 503
+    assert (
+        client.patch(
+            "/documents/not-a-real-doc", json={"filename": "x.txt"}
+        ).status_code
+        == 503
+    )

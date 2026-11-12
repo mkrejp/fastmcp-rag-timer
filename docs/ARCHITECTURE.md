@@ -165,6 +165,7 @@ From `rag/routes.py`, `rag/app.py`, `rag/google_oauth.py`, and `rag/admin_routes
 | `GET` | `/documents` | **None** | Catalog from `index.json` |
 | `GET` | `/documents/{doc_id}` | **None** | Metadata |
 | `GET` | `/documents/{doc_id}/text` | **None** | Processed full text from disk (no re-parse, no embedding call) |
+| `PATCH` | `/documents/{doc_id}` | same as `/upload` | In-place metadata edit. Allowed JSON: `filename`, `extra`. Updates `meta.json`, `index.json`, and Qdrant payloads via `set_payload` (no re-embed, no point deletes). `200` `{"status":"updated","doc_id","filename","updated_fields","points_updated","locality_links_updated","meta"}`; `400` invalid fields; `404` if missing; `401`/`503` if unauthorized |
 | `DELETE` | `/documents/{doc_id}` | same as `/upload` | Remove files (including `images/`), catalog row, and Qdrant points. `200` `{"status":"deleted","doc_id","filename","chunks_removed"}`; `404` if missing; `401`/`503` if unauthorized |
 | `GET` | `/images/{doc_id}/{image_id}` | same as `/upload` | Extracted PDF image bytes; `413` if larger than 50 MiB |
 | `GET` | `/` | None | Redirect to `/ui/` |
@@ -181,7 +182,7 @@ From `rag/routes.py`, `rag/app.py`, `rag/google_oauth.py`, and `rag/admin_routes
 
 Chunked-upload errors: `400` validation, `404` unknown session, `409` chunk conflict, `410` expired.
 
-There is **no REST search** endpoint. Similarity search is MCP-only (`search_domain_knowledge`, `search_images`). There is no HTTP reindex route. `rag.document_delete.delete_document` deletes Qdrant points by `payload.doc_id` then calls `RagStorage.remove_document_files`.
+There is **no REST search** endpoint. Similarity search is MCP-only (`search_domain_knowledge`, `search_images`). There is no HTTP reindex route. `rag.document_delete.delete_document` deletes Qdrant points by `payload.doc_id` then calls `RagStorage.remove_document_files`. `rag.document_patch.patch_document` updates catalog metadata and matching Qdrant payloads with `set_payload` only (no re-embedding).
 
 ## Exposed MCP tools, resources, and prompts
 
@@ -195,6 +196,7 @@ From `rag/mcp_tools.py`, registered in `create_app()` and served at **`/mcp`** (
 | Tool | `get_document_images(doc_id: str) -> str` | Yes |
 | Tool | `get_image(image_id: str) -> list[TextContent \| ImageContent]` | Yes |
 | Tool | `ingest_text(filename: str, content: str) -> str` | Yes |
+| Tool | `update_document(doc_id, filename="", extra=None)` | Yes |
 | Tool | `search_domain_knowledge(query: str, limit: int = 3, obec_id: str = "", cast_obce: str = "") -> str` | Yes |
 | Tool | `search_images(query: str, limit: int = 5, hybrid: bool = False) -> str` | Yes |
 | Tool | `sync_links_to_trails(dry_run: bool = False) -> str` | Yes |
@@ -211,6 +213,7 @@ Tool behavior:
 - `get_document_images`: JSON of `DocumentMeta.images` plus optional public URL from `PUBLIC_BASE_URL`
 - `get_image`: inline MCP image up to 5 MiB; larger files return a fetch hint (`PUBLIC_BASE_URL/images/...` or a relative path)
 - `ingest_text`: if the filename is not a supported suffix, appends `.txt`; calls `ingest_bytes`; returns JSON or `"Error ingesting text: ..."`
+- `update_document`: calls `patch_document`; empty `filename` leaves the name unchanged; `extra` merges custom keys (`null` removes). Missing id or invalid fields return `"Error update_document: ..."`
 - `search_domain_knowledge`: `get_query_embedding` (FastEmbed) → `search_similar` on `text_vector` with optional `obec_id` / `cast_obce` payload filter on denormalized `localities` / `cast_obce` arrays → format `Source:` / `Content:` blocks (OCR image hits included when they have text vectors); empty → `"No relevant facts found."`; exceptions → `"Error executing RAG search: ..."`
 - `search_images`: requires `IMAGE_EMBEDDING_ENABLED=true`; CLIP text tower → `image_vector`; `hybrid=true` RRF-merges CLIP hits with `pdf_image` text hits
 - `link_locality` / `verify_link`: when `TRAILS_API_URL` and `TRAILS_API_TOKEN` are set, forward to TrailsAssemblage `POST /locality-links` and `PATCH /locality-links/{id}/verify`. Failures retry with backoff then land in `{RAG_DATA_ROOT}/trails_outbox.json`; MCP tools still succeed. Unset env leaves tools unchanged.
@@ -437,7 +440,7 @@ Local run and pytest install lines: [README.md](../README.md#local-run).
 
 | Topic | What the code does |
 | --- | --- |
-| HTTP auth | `POST /ingest-json` requires Bearer `RAG_API_TOKEN` (503 if unset). `/upload`, chunked upload, `/upload-pdf`, `GET /images/...`, and `DELETE /documents/{doc_id}` require Bearer `MCP_API_TOKEN` or `RAG_API_TOKEN`, or a Google session (503 if no token and no session). Catalog, fulltext, `/upload-media`, `/health`, `/node-info`, OpenAPI UI, and `/auth/status` have **no** inbound auth. Optional `RAG_ENFORCE_NODE_ROLE` returns **403** on HTTP/MCP writes when this node is ČTENÍ or STOP (off by default). |
+| HTTP auth | `POST /ingest-json` requires Bearer `RAG_API_TOKEN` (503 if unset). `/upload`, chunked upload, `/upload-pdf`, `GET /images/...`, and `PATCH`/`DELETE /documents/{doc_id}` require Bearer `MCP_API_TOKEN` or `RAG_API_TOKEN`, or a Google session (503 if no token and no session). Catalog, fulltext, `/upload-media`, `/health`, `/node-info`, OpenAPI UI, and `/auth/status` have **no** inbound auth. Optional `RAG_ENFORCE_NODE_ROLE` returns **403** on HTTP/MCP writes when this node is ČTENÍ or STOP (off by default). |
 | MCP auth | Bearer on every `/mcp` request (`McpBearerAuth`). Host allow-list via FastMCP `TransportSecuritySettings` (`MCP_ALLOWED_HOSTS`). |
 | Console auth | `/ui/` and `/api/admin/*` require Google OAuth (`GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET`) and optional email/domain allow-lists. Cookie session via `SESSION_SECRET`. |
 | Secrets | Embedding key from `BGE_M3_NOVITA_API_KEY`, then `NOVITA_API_KEY`, `OPENAI_TOKEN`, `OPENAI_API_KEY`; sent as `Authorization: Bearer` to Novita. Inbound tokens compared with `hmac.compare_digest`. Not read from a file or vault. |
