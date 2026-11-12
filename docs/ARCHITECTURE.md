@@ -166,7 +166,7 @@ From `rag/routes.py`, `rag/app.py`, `rag/google_oauth.py`, and `rag/admin_routes
 | `GET` | `/documents/{doc_id}` | **None** | Metadata |
 | `GET` | `/documents/{doc_id}/text` | **None** | Processed full text from disk (no re-parse, no embedding call) |
 | `PATCH` | `/documents/{doc_id}` | same as `/upload` | In-place metadata edit (`filename`, `extra`). Catalog + Qdrant `set_payload` only. `200` updated; `400`/`404`; `401`/`503` |
-| `PATCH` | `/documents/{doc_id}/metadata` | same as `/upload` | Verification fields (`reliability`, `verification[]`, `qg_verze`, `overeni_souhrn`). `set_payload` only; `doc_id` unchanged |
+| `PATCH` | `/documents/{doc_id}/metadata` | same as `/upload` | Verification fields (`reliability`, `verification[]`, `qg_verze`, `overeni_souhrn`). `set_payload` only; `doc_id` unchanged. Response `truncated` lists clipped field paths |
 | `DELETE` | `/documents/{doc_id}` | same as `/upload` | Remove files (including `images/`), catalog row, and Qdrant points. `200` `{"status":"deleted","doc_id","filename","chunks_removed"}`; `404` if missing; `401`/`503` if unauthorized |
 | `GET` | `/images/{doc_id}/{image_id}` | same as `/upload` | Extracted PDF image bytes; `413` if larger than 50 MiB |
 | `GET` | `/` | None | Redirect to `/ui/` |
@@ -222,8 +222,8 @@ Tool behavior:
 - `ingest_text`: if the filename is not a supported suffix, appends `.txt`; calls `ingest_bytes`; returns JSON or `"Error ingesting text: ..."`
 - `update_document`: calls `patch_document`; empty `filename` leaves the name unchanged; `extra` merges custom keys (`null` removes). Missing ID or invalid fields return `"Error update_document: ..."`
 - `update_document_metadata`: calls `patch_document_metadata`; writes `reliability` /
-  `verification[]` / `qg_verze` / `overeni_souhrn`. Missing ID or invalid fields return an error
-  string.
+  `verification[]` / `qg_verze` / `overeni_souhrn`. Response JSON includes `truncated` field paths
+  when values were clipped. Missing ID or invalid fields return an error string.
 - `search_domain_knowledge`: `get_query_embedding` (FastEmbed) → `search_similar` on `text_vector` with optional `obec_id` / `cast_obce` payload filter on denormalized `localities` / `cast_obce` arrays → format `Source:` / `Content:` blocks (OCR image hits included when they have text vectors); empty → `"No relevant facts found."`; exceptions → `"Error executing RAG search: ..."`
 - `search_images`: requires `IMAGE_EMBEDDING_ENABLED=true`; CLIP text tower → `image_vector`; `hybrid=true` RRF-merges CLIP hits with `pdf_image` text hits
 - `link_locality` / `verify_link`: when `TRAILS_API_URL` and `TRAILS_API_TOKEN` are set, forward to TrailsAssemblage `POST /locality-links` and `PATCH /locality-links/{id}/verify`. Failures retry with backoff then land in `{RAG_DATA_ROOT}/trails_outbox.json`; MCP tools still succeed. Unset env leaves tools unchanged.
@@ -280,10 +280,13 @@ See [Embedding connectivity](./CONNECTIVITY.md#embedding-connectivity) and [Embe
 - Default directory: `{RAG_DATA_ROOT}/qdrant` → `/data/rag/qdrant` in the image.
 - Collection name (hardcoded): `client_domain_knowledge`.
 - Named vectors: `text_vector` (1024, cosine) and `image_vector` (512, cosine). Payload indexes on
-  `source_type`, `doc_id`, `chunk_sha256`, `localities`, `cast_obce`, `image_id`, and nested
-  `geo_refined.{precision,status,confidence_level,needs_refinement,verified}`. New ingests store empty
-  `localities` / `cast_obce` arrays and `chunk_sha256` (hash of chunk text). Existing points are
-  backfilled with `set_payload` only (no re-embed, no delete). `link_locality` denormalizes `obec_id` /
+  `source_type`, `doc_id`, `chunk_sha256`, `localities`, `cast_obce`, `image_id`, `source_key`
+  (keyword), `verification_status` (keyword), `reliability` (integer), and nested
+  `geo_refined.{precision,status,confidence_level,needs_refinement,verified}`. Indexes are created
+  idempotently at collection init (skip if the field already exists; no re-embed, no deletes). New
+  ingests store empty `localities` / `cast_obce` arrays and `chunk_sha256` (hash of chunk text).
+  Existing points are backfilled with `set_payload` only (no re-embed, no delete).
+  `link_locality` denormalizes `obec_id` /
   `cast_obce` onto matching knowledge points. Optional `geo_refined` is written the same way (no
   collection recreate, no migration).
 - Created in `open_qdrant()` if missing. Unnamed single-vector collections, or a marker /

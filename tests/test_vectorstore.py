@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 from _pytest.monkeypatch import MonkeyPatch
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, PointStruct, VectorParams
+from qdrant_client.models import Distance, PayloadSchemaType, PointStruct, VectorParams
 
 from rag.config import LOCALITY_LINKS_COLLECTION
 from rag.embeddings import EMBEDDING_DIM, FASTEMBED_MODEL
@@ -27,6 +28,7 @@ from rag.vectorstore import (
     backfill_chunk_payload_fields,
     build_named_vector,
     ensure_locality_links_collection,
+    ensure_payload_indexes,
     knowledge_locality_filter,
     list_locality_links,
     locality_link_stats,
@@ -88,7 +90,9 @@ def test_open_qdrant_keeps_matching_named_collection(tmp_path: Path) -> None:
     old_client.create_collection(
         collection_name="client_domain_knowledge",
         vectors_config={
-            TEXT_VECTOR_NAME: VectorParams(size=EMBEDDING_DIM, distance=Distance.COSINE),
+            TEXT_VECTOR_NAME: VectorParams(
+                size=EMBEDDING_DIM, distance=Distance.COSINE
+            ),
             IMAGE_VECTOR_NAME: VectorParams(
                 size=IMAGE_EMBEDDING_DIM, distance=Distance.COSINE
             ),
@@ -127,6 +131,45 @@ def test_open_qdrant_allows_ingest_provider_switch_without_recreate(
         assert info.points_count == 0
     finally:
         client.close()
+
+
+def test_ensure_payload_indexes_creates_verification_filters() -> None:
+    """Startup should index source_key, verification_status, and reliability."""
+    client = MagicMock()
+    client.collection_exists.return_value = True
+    client.get_collection.return_value.payload_schema = {}
+    ensure_payload_indexes(client, collection_name="client_domain_knowledge")
+    created = {
+        (call.kwargs["field_name"], call.kwargs["field_schema"])
+        for call in client.create_payload_index.call_args_list
+    }
+    assert ("source_key", PayloadSchemaType.KEYWORD) in created
+    assert ("verification_status", PayloadSchemaType.KEYWORD) in created
+    assert ("reliability", PayloadSchemaType.INTEGER) in created
+    client.delete_collection.assert_not_called()
+    client.upsert.assert_not_called()
+    client.delete.assert_not_called()
+
+
+def test_ensure_payload_indexes_skips_existing() -> None:
+    """Existing payload indexes must not be recreated or cause deletes."""
+    client = MagicMock()
+    client.collection_exists.return_value = True
+    client.get_collection.return_value.payload_schema = {
+        "source_key": MagicMock(data_type=PayloadSchemaType.KEYWORD),
+        "verification_status": MagicMock(data_type=PayloadSchemaType.KEYWORD),
+        "reliability": MagicMock(data_type=PayloadSchemaType.INTEGER),
+        "doc_id": MagicMock(data_type=PayloadSchemaType.KEYWORD),
+    }
+    ensure_payload_indexes(client, collection_name="client_domain_knowledge")
+    created = {
+        call.kwargs["field_name"] for call in client.create_payload_index.call_args_list
+    }
+    assert "source_key" not in created
+    assert "verification_status" not in created
+    assert "reliability" not in created
+    assert "doc_id" not in created
+    client.delete_collection.assert_not_called()
 
 
 def _sample_link(**overrides: object) -> dict[str, object]:
@@ -270,16 +313,12 @@ def test_verify_and_stats_and_cast_obce_filters(tmp_path: Path) -> None:
         assert verified["link"]["verified"] is True
         assert verified["link"]["verified_by"] == "reviewer"
         assert verified["link"]["verified_at"]
-        verify_locality_link(
-            client, link_id=brno["ids"][0], status="rejected"
-        )
+        verify_locality_link(client, link_id=brno["ids"][0], status="rejected")
         missing = "00000000-0000-0000-0000-000000000000"
         with pytest.raises(LocalityLinkNotFoundError, match="not found"):
             verify_locality_link(client, link_id=missing, status="verified")
         with pytest.raises(LocalityLinkPayloadError, match="status"):
-            verify_locality_link(
-                client, link_id=praha["ids"][0], status="maybe"
-            )
+            verify_locality_link(client, link_id=praha["ids"][0], status="maybe")
 
         by_level = list_locality_links(client, locality_level="cast_obce")
         assert by_level["returned"] == 1

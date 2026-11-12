@@ -60,6 +60,25 @@ _LOCALITY_LINK_INDEXES: tuple[tuple[str, PayloadSchemaType], ...] = (
     ("cast_obce_kod", PayloadSchemaType.KEYWORD),
     ("cast_obce", PayloadSchemaType.KEYWORD),
 )
+KNOWLEDGE_PAYLOAD_INDEXES: tuple[tuple[str, PayloadSchemaType], ...] = (
+    ("source_type", PayloadSchemaType.KEYWORD),
+    ("doc_id", PayloadSchemaType.KEYWORD),
+    ("chunk_sha256", PayloadSchemaType.KEYWORD),
+    ("localities", PayloadSchemaType.KEYWORD),
+    ("cast_obce", PayloadSchemaType.KEYWORD),
+    ("verification_status", PayloadSchemaType.KEYWORD),
+    ("source_key", PayloadSchemaType.KEYWORD),
+    ("reliability", PayloadSchemaType.INTEGER),
+    ("figure_number", PayloadSchemaType.KEYWORD),
+    ("page_number", PayloadSchemaType.INTEGER),
+    ("verified", PayloadSchemaType.BOOL),
+    ("image_id", PayloadSchemaType.KEYWORD),
+    ("geo_refined.precision", PayloadSchemaType.KEYWORD),
+    ("geo_refined.status", PayloadSchemaType.KEYWORD),
+    ("geo_refined.confidence_level", PayloadSchemaType.KEYWORD),
+    ("geo_refined.needs_refinement", PayloadSchemaType.BOOL),
+    ("geo_refined.verified", PayloadSchemaType.BOOL),
+)
 DEFAULT_TOP_OBCE = 20
 
 logger = get_logger("rag.vectorstore")
@@ -190,31 +209,41 @@ def _layout_mismatch(named_sizes: dict[str, int] | None) -> bool:
     return set(named_sizes.keys()) != set(expected.keys())
 
 
+def _existing_payload_index_names(
+    client: QdrantClient, collection_name: str
+) -> set[str]:
+    """Return payload field names already indexed on ``collection_name``."""
+    try:
+        info = client.get_collection(collection_name)
+    except Exception:  # noqa: BLE001 - treat lookup failure as no indexes
+        return set()
+    schema = getattr(info, "payload_schema", None)
+    if not isinstance(schema, Mapping):
+        return set()
+    return {str(name) for name in schema}
+
+
 def ensure_payload_indexes(
     client: QdrantClient,
     *,
     collection_name: str = COLLECTION_NAME,
 ) -> None:
-    """Create keyword indexes used by filters and admin tooling."""
+    """Create filter indexes used by search and RAGloader tooling.
+
+    Idempotent: existing indexes are skipped. Does not re-embed, delete
+    points, or rewrite payloads.
+    """
     if not client.collection_exists(collection_name):
         return
-    for field_name, schema in (
-        ("source_type", PayloadSchemaType.KEYWORD),
-        ("doc_id", PayloadSchemaType.KEYWORD),
-        ("chunk_sha256", PayloadSchemaType.KEYWORD),
-        ("localities", PayloadSchemaType.KEYWORD),
-        ("cast_obce", PayloadSchemaType.KEYWORD),
-        ("verification_status", PayloadSchemaType.KEYWORD),
-        ("figure_number", PayloadSchemaType.KEYWORD),
-        ("page_number", PayloadSchemaType.INTEGER),
-        ("verified", PayloadSchemaType.BOOL),
-        ("image_id", PayloadSchemaType.KEYWORD),
-        ("geo_refined.precision", PayloadSchemaType.KEYWORD),
-        ("geo_refined.status", PayloadSchemaType.KEYWORD),
-        ("geo_refined.confidence_level", PayloadSchemaType.KEYWORD),
-        ("geo_refined.needs_refinement", PayloadSchemaType.BOOL),
-        ("geo_refined.verified", PayloadSchemaType.BOOL),
-    ):
+    existing = _existing_payload_index_names(client, collection_name)
+    for field_name, schema in KNOWLEDGE_PAYLOAD_INDEXES:
+        if field_name in existing:
+            logger.debug(
+                "Payload index %s on %s already exists; skip",
+                field_name,
+                collection_name,
+            )
+            continue
         try:
             client.create_payload_index(
                 collection_name=collection_name,

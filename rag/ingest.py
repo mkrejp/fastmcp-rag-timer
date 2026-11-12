@@ -165,7 +165,9 @@ def ingest_bytes(
         )
 
     digest = content_sha256(data)
-    verification_fields = normalize_verification_metadata(metadata, apply_defaults=True)
+    verification_fields, truncated = normalize_verification_metadata(
+        metadata, apply_defaults=True
+    )
     chunk_fields = chunk_payload_fields(verification_fields)
     if skip_duplicate:
         existing = storage.find_by_sha256(digest)
@@ -361,6 +363,7 @@ def ingest_bytes(
         "figure_index_version": meta.figure_index_version,
         "sha256": meta.sha256,
         "reused": False,
+        "truncated": truncated,
     }
     if source_url:
         result["source_url"] = source_url

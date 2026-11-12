@@ -225,8 +225,12 @@ curl -sS -X PATCH \
 Write RAGloader flat fields onto every matching Qdrant chunk (`set_payload` only; no re-embed, no
 deletes, `doc_id` unchanged). Same auth as `DELETE`. New uploads also store these fields when the
 optional `metadata` JSON form field (or MCP `ingest_text` `metadata`) is provided; `reliability`
-defaults to `1`. `overeni_souhrn` is truncated to 300 characters. Each `verification[]` item may
-include `method`, `compared_value`, `found_value`, `threshold`, and `evidence_type`.
+defaults to `1`. `overeni_souhrn` is truncated to 300 characters and quotes to 500; the response
+includes `truncated` with every clipped field path (for example `overeni_souhrn`,
+`verification[0].quote`, `verified_quote`). Each `verification[]` item may include `method`,
+`compared_value`, `found_value`, `threshold`, and `evidence_type`. Startup creates Qdrant payload
+indexes `source_key` (keyword), `verification_status` (keyword), and `reliability` (integer) if they
+are missing.
 
 ```bash
 curl -sS -X PATCH \

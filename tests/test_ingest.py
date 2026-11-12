@@ -27,6 +27,7 @@ def test_ingest_text_writes_originals_and_processed(
         embed_fn=fake_embed,
     )
     assert result["status"] == "Success"
+    assert result["truncated"] == []
     doc_id = str(result["doc_id"])
     assert (rag_storage.original_dir(doc_id) / "facts.txt").is_file()
     assert rag_storage.read_fulltext(doc_id) is not None

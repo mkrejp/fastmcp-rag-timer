@@ -268,7 +268,8 @@ def test_openapi_documents_metadata_patch_route(client: TestClient) -> None:
     if not ref:
         ref = schema.get("anyOf", [{}])[0].get("$ref", "")
     assert ref.endswith("PatchDocumentMetadataResponse")
-    assert "PatchDocumentMetadataResponse" in payload["components"]["schemas"]
+    schema_body = payload["components"]["schemas"]["PatchDocumentMetadataResponse"]
+    assert "truncated" in schema_body.get("properties", {})
 
 
 def test_openapi_documents_patch_route(client: TestClient) -> None:
