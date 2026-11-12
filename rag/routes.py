@@ -143,6 +143,13 @@ class PatchDocumentMetadataResponse(BaseModel):
     doc_id: str
     filename: str
     updated_fields: list[str]
+    deleted_fields: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Whitelist keys removed via JSON null (Qdrant delete_payload + "
+            "catalog extra pop)."
+        ),
+    )
     points_updated: int
     figures_updated: int
     truncated: list[str] = Field(
@@ -639,8 +646,9 @@ def patch_document_metadata_http(
 ) -> dict[str, Any]:
     """Write verification fields onto catalog extra and Qdrant chunk payloads.
 
-    Requires the same auth as ``DELETE /documents/{doc_id}``. Uses
-    ``set_payload`` only (no re-embed, no deletes, ``doc_id`` unchanged).
+    Requires the same auth as ``DELETE /documents/{doc_id}``. Non-null
+    fields use ``set_payload``. JSON ``null`` on a whitelist key uses
+    ``delete_payload`` (no re-embed, no point deletes, ``doc_id`` unchanged).
     """
     metadata = body or {}
     try:

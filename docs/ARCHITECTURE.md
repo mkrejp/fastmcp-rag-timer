@@ -222,8 +222,9 @@ Tool behavior:
 - `ingest_text`: if the filename is not a supported suffix, appends `.txt`; calls `ingest_bytes`; returns JSON or `"Error ingesting text: ..."`
 - `update_document`: calls `patch_document`; empty `filename` leaves the name unchanged; `extra` merges custom keys (`null` removes). Missing ID or invalid fields return `"Error update_document: ..."`
 - `update_document_metadata`: calls `patch_document_metadata`; writes `reliability` /
-  `verification[]` / `qg_verze` / `overeni_souhrn`. Response JSON includes `truncated` field paths
-  when values were clipped. Missing ID or invalid fields return an error string.
+  `verification[]` / `qg_verze` / `overeni_souhrn`. JSON `null` on a whitelist key deletes it
+  (`deleted_fields`). Response JSON includes `truncated` field paths when values were clipped.
+  Missing ID or invalid fields return an error string.
 - `search_domain_knowledge`: `get_query_embedding` (FastEmbed) → `search_similar` on `text_vector` with optional `obec_id` / `cast_obce` payload filter on denormalized `localities` / `cast_obce` arrays → format `Source:` / `Content:` blocks (OCR image hits included when they have text vectors); empty → `"No relevant facts found."`; exceptions → `"Error executing RAG search: ..."`
 - `search_images`: requires `IMAGE_EMBEDDING_ENABLED=true`; CLIP text tower → `image_vector`; `hybrid=true` RRF-merges CLIP hits with `pdf_image` text hits
 - `link_locality` / `verify_link`: when `TRAILS_API_URL` and `TRAILS_API_TOKEN` are set, forward to TrailsAssemblage `POST /locality-links` and `PATCH /locality-links/{id}/verify`. Failures retry with backoff then land in `{RAG_DATA_ROOT}/trails_outbox.json`; MCP tools still succeed. Unset env leaves tools unchanged.

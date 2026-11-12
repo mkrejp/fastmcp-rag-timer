@@ -20,6 +20,7 @@ from rag.verification_meta import (
     chunk_payload_fields,
     figure_payload_fields,
     normalize_verification_metadata,
+    split_verification_deletes,
 )
 
 logger = get_logger("rag.document_patch")
@@ -111,7 +112,7 @@ def _count_points(
 
 
 def _not_figure_filter(doc_id: str) -> Filter:
-    """Match knowledge points for ``doc_id`` that are not ``pdf_figure``."""
+    """Match knowledge points for ``doc_id`` that are text chunks."""
     return Filter(
         must=[
             FieldCondition(
@@ -123,13 +124,17 @@ def _not_figure_filter(doc_id: str) -> Filter:
             FieldCondition(
                 key="source_type",
                 match=MatchValue(value="pdf_figure"),
-            )
+            ),
+            FieldCondition(
+                key="source_type",
+                match=MatchValue(value="pdf_image"),
+            ),
         ],
     )
 
 
-def _figure_only_filter(doc_id: str) -> Filter:
-    """Match ``pdf_figure`` points for ``doc_id``."""
+def _source_type_filter(doc_id: str, source_type: str) -> Filter:
+    """Match knowledge points for ``doc_id`` with ``source_type``."""
     return Filter(
         must=[
             FieldCondition(
@@ -138,10 +143,27 @@ def _figure_only_filter(doc_id: str) -> Filter:
             ),
             FieldCondition(
                 key="source_type",
-                match=MatchValue(value="pdf_figure"),
+                match=MatchValue(value=source_type),
             ),
         ]
     )
+
+
+def _prepare_payload_selector(
+    qdrant: QdrantClient,
+    *,
+    collection_name: str,
+    doc_id: str,
+    payload_filter: Filter | None,
+) -> tuple[int, Filter] | None:
+    """Return ``(matched_count, filter)`` or ``None`` when there is nothing to write."""
+    if not qdrant.collection_exists(collection_name):
+        return None
+    filt = payload_filter or _doc_id_filter(doc_id)
+    matched = _count_points(qdrant, collection_name, doc_id, payload_filter=filt)
+    if matched == 0:
+        return None
+    return matched, filt
 
 
 def _set_payload_for_doc(
@@ -158,15 +180,47 @@ def _set_payload_for_doc(
     """
     if not payload:
         return 0
-    if not qdrant.collection_exists(collection_name):
+    prepared = _prepare_payload_selector(
+        qdrant,
+        collection_name=collection_name,
+        doc_id=doc_id,
+        payload_filter=payload_filter,
+    )
+    if prepared is None:
         return 0
-    filt = payload_filter or _doc_id_filter(doc_id)
-    matched = _count_points(qdrant, collection_name, doc_id, payload_filter=filt)
-    if matched == 0:
-        return 0
+    matched, filt = prepared
     qdrant.set_payload(
         collection_name=collection_name,
         payload=dict(payload),
+        points=FilterSelector(filter=filt),
+        wait=True,
+    )
+    return matched
+
+
+def _delete_payload_for_doc(
+    qdrant: QdrantClient,
+    *,
+    collection_name: str,
+    doc_id: str,
+    keys: list[str],
+    payload_filter: Filter | None = None,
+) -> int:
+    """``delete_payload`` on matching points (no vector rewrite, no point deletes)."""
+    if not keys:
+        return 0
+    prepared = _prepare_payload_selector(
+        qdrant,
+        collection_name=collection_name,
+        doc_id=doc_id,
+        payload_filter=payload_filter,
+    )
+    if prepared is None:
+        return 0
+    matched, filt = prepared
+    qdrant.delete_payload(
+        collection_name=collection_name,
+        keys=list(keys),
         points=FilterSelector(filter=filt),
         wait=True,
     )
@@ -194,13 +248,17 @@ def write_verification_payload(
         payload=chunk_fields,
         payload_filter=_not_figure_filter(doc_id),
     )
-    figures_updated = _set_payload_for_doc(
-        qdrant,
-        collection_name=collection_name,
-        doc_id=doc_id,
-        payload=figure_fields,
-        payload_filter=_figure_only_filter(doc_id),
-    )
+    figures_updated = 0
+    for source_type in ("pdf_figure", "pdf_image"):
+        updated = _set_payload_for_doc(
+            qdrant,
+            collection_name=collection_name,
+            doc_id=doc_id,
+            payload=figure_fields,
+            payload_filter=_source_type_filter(doc_id, source_type),
+        )
+        if source_type == "pdf_figure":
+            figures_updated = updated
     return points_updated, figures_updated
 
 
@@ -396,33 +454,70 @@ def patch_document_metadata(
 ) -> dict[str, Any]:
     """Patch verification fields onto catalog extra and Qdrant payloads.
 
-    Uses ``set_payload`` only. Does not change ``doc_id``, re-embed, or
-    delete points. Empty bodies apply ``reliability=1``.
+    Non-null fields use ``set_payload``. JSON ``null`` on a whitelist key
+    uses ``delete_payload`` (chunks and figures) and pops catalog extra.
+    Does not change ``doc_id``, re-embed, or delete points. Empty bodies
+    apply ``reliability=1``.
     """
     meta = _load_document(storage, doc_id)
+    remaining, deleted = split_verification_deletes(metadata)
     apply_defaults = not metadata
-    fields, truncated = normalize_verification_metadata(
-        metadata, apply_defaults=apply_defaults
-    )
+    if remaining:
+        fields, truncated = normalize_verification_metadata(
+            remaining, apply_defaults=False
+        )
+    elif apply_defaults:
+        fields, truncated = normalize_verification_metadata(None, apply_defaults=True)
+    elif deleted:
+        fields, truncated = {}, []
+    else:
+        raise DocumentMetadataError("at least one metadata field is required")
     if "doc_id" in fields:
         raise DocumentMetadataError("doc_id cannot be changed")
 
     merged_extra = dict(meta.extra)
     merged_extra.update(fields)
+    for key in deleted:
+        merged_extra.pop(key, None)
     meta.extra = merged_extra
     storage.write_meta(meta)
 
-    points_updated, figures_updated = write_verification_payload(
-        qdrant,
-        collection_name=collection_name,
-        doc_id=doc_id,
-        fields=fields,
-    )
+    points_updated = 0
+    figures_updated = 0
+    if fields:
+        points_updated, figures_updated = write_verification_payload(
+            qdrant,
+            collection_name=collection_name,
+            doc_id=doc_id,
+            fields=fields,
+        )
+    if deleted:
+        _delete_payload_for_doc(
+            qdrant,
+            collection_name=collection_name,
+            doc_id=doc_id,
+            keys=deleted,
+        )
+        if not fields:
+            points_updated = _count_points(
+                qdrant,
+                collection_name,
+                doc_id,
+                payload_filter=_not_figure_filter(doc_id),
+            )
+            figures_updated = _count_points(
+                qdrant,
+                collection_name,
+                doc_id,
+                payload_filter=_source_type_filter(doc_id, "pdf_figure"),
+            )
+
     logger.info(
-        "Patched document metadata doc_id=%s fields=%s points_updated=%s "
-        "figures_updated=%s",
+        "Patched document metadata doc_id=%s fields=%s deleted=%s "
+        "points_updated=%s figures_updated=%s",
         doc_id,
         ",".join(sorted(fields)) or "-",
+        ",".join(deleted) or "-",
         points_updated,
         figures_updated,
     )
@@ -431,6 +526,7 @@ def patch_document_metadata(
         "doc_id": doc_id,
         "filename": meta.filename,
         "updated_fields": sorted(fields),
+        "deleted_fields": sorted(deleted),
         "points_updated": points_updated,
         "figures_updated": figures_updated,
         "truncated": truncated,
