@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, File, Header, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from qdrant_client import QdrantClient
 
 from rag.accounting import accounting_source, get_global_store
@@ -21,6 +21,7 @@ from rag.chunked_upload import (
 )
 from rag.config import COLLECTION_NAME
 from rag.document_delete import DocumentNotFoundError, delete_document
+from rag.document_patch import DocumentPatchError, patch_document
 from rag.embeddings import embedding_provider_status, validate_embedding_configuration
 from rag.image_delivery import resolve_image_delivery
 from rag.image_embed import image_embedding_enabled
@@ -97,6 +98,41 @@ class DeleteDocumentResponse(BaseModel):
         ...,
         description="Number of Qdrant points removed for this document.",
     )
+
+
+class PatchDocumentRequest(BaseModel):
+    """Body for ``PATCH /documents/{doc_id}``. Unknown keys are rejected."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    filename: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=512,
+        description="Display name; suffix must match the stored document type.",
+    )
+    extra: dict[str, Any] | None = Field(
+        default=None,
+        description="Custom metadata to merge. Null values remove a key.",
+    )
+
+
+class PatchDocumentResponse(BaseModel):
+    """Success body for ``PATCH /documents/{doc_id}``."""
+
+    status: str = Field(..., description="Always ``updated`` on success.")
+    doc_id: str
+    filename: str
+    updated_fields: list[str]
+    points_updated: int = Field(
+        ...,
+        description="Knowledge-collection points whose payload was patched.",
+    )
+    locality_links_updated: int = Field(
+        ...,
+        description="locality_links points whose parent_document was patched.",
+    )
+    meta: dict[str, Any]
 
 
 def _storage(request: Request) -> RagStorage:
@@ -518,6 +554,44 @@ def get_document_text_http(doc_id: str, request: Request) -> dict[str, Any]:
         "filename": meta.filename if meta else None,
         "text": text,
     }
+
+
+@router.patch(
+    "/documents/{doc_id}",
+    response_model=PatchDocumentResponse,
+    dependencies=[Depends(require_embed_access)],
+)
+def patch_document_http(
+    doc_id: str,
+    body: PatchDocumentRequest,
+    request: Request,
+) -> dict[str, Any]:
+    """Update catalog metadata and matching Qdrant payloads without re-embedding.
+
+    Requires ``Authorization: Bearer`` matching ``MCP_API_TOKEN`` or
+    ``RAG_API_TOKEN``, or a signed-in Google session (same as ``DELETE
+    /documents/{doc_id}``). Allowed body fields: ``filename``, ``extra``.
+    """
+    try:
+        result = patch_document(
+            storage=_storage(request),
+            qdrant=_qdrant(request),
+            collection_name=COLLECTION_NAME,
+            doc_id=doc_id,
+            filename=body.filename,
+            extra=body.extra,
+        )
+    except DocumentNotFoundError:
+        _record_http(route="documents_patch", ok=False, error="not found")
+        raise HTTPException(status_code=404, detail="Document not found") from None
+    except DocumentPatchError as exc:
+        _record_http(route="documents_patch", ok=False, error=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 - surface patch failures to clients
+        _record_http(route="documents_patch", ok=False, error=str(exc))
+        raise HTTPException(status_code=500, detail=f"Patch failed: {exc}") from exc
+    _record_http(route="documents_patch", ok=True)
+    return result
 
 
 @router.delete(

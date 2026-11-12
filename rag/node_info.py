@@ -46,6 +46,7 @@ RAILWAY_PUBLIC_ENV_KEYS = (
 MCP_WRITE_TOOLS = frozenset(
     {
         "ingest_text",
+        "update_document",
         "link_locality",
         "verify_link",
         "sync_links_to_trails",
@@ -297,9 +298,9 @@ def parse_rag_nodes(raw: str | None = None) -> tuple[NodeSpec, ...]:
     try:
         loaded: object = json.loads(text)
     except json.JSONDecodeError:
-        specs = _specs_from_simple_list(text)
-        if specs:
-            return tuple(specs)
+        simple_specs = _specs_from_simple_list(text)
+        if simple_specs:
+            return tuple(simple_specs)
         logger.warning("Invalid RAG_NODES value; using built-in node defaults")
         return default_nodes()
 
@@ -544,6 +545,8 @@ def is_http_write_request(method: str, path: str) -> bool:
     if upper == "POST" and normalized in {"/ingest-json"}:
         return True
     if upper == "DELETE" and normalized.startswith("/documents/"):
+        return True
+    if upper == "PATCH" and normalized.startswith("/documents/"):
         return True
     return False
 

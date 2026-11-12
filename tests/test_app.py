@@ -165,6 +165,83 @@ def test_delete_document_requires_bearer(
             assert response.json()["detail"] == "Missing or invalid bearer token"
 
 
+def test_patch_document_updates_catalog_and_rejects_bad_input(
+    client: TestClient,
+) -> None:
+    """Authenticated PATCH should rename a document and reject invalid fields."""
+    upload = client.post(
+        "/upload",
+        files={
+            "file": ("before.txt", b"Patch this catalog row in place.", "text/plain")
+        },
+    )
+    assert upload.status_code == 200
+    doc_id = upload.json()["doc_id"]
+
+    patched = client.patch(
+        f"/documents/{doc_id}",
+        json={"filename": "after.txt", "extra": {"akon_id": "AK110_057"}},
+    )
+    assert patched.status_code == 200
+    body = patched.json()
+    assert body["status"] == "updated"
+    assert body["filename"] == "after.txt"
+    assert "filename" in body["updated_fields"]
+    assert "extra" in body["updated_fields"]
+    assert body["points_updated"] >= 1
+    assert body["meta"]["akon_id"] == "AK110_057"
+
+    listed = client.get("/documents")
+    assert listed.status_code == 200
+    assert any(
+        d["doc_id"] == doc_id and d["filename"] == "after.txt"
+        for d in listed.json()["documents"]
+    )
+    fetched = client.get(f"/documents/{doc_id}")
+    assert fetched.status_code == 200
+    assert fetched.json()["filename"] == "after.txt"
+    assert fetched.json()["akon_id"] == "AK110_057"
+    text_resp = client.get(f"/documents/{doc_id}/text")
+    assert text_resp.status_code == 200
+    assert "Patch this catalog" in text_resp.json()["text"]
+
+    unknown_field = client.patch(f"/documents/{doc_id}", json={"sha256": "nope"})
+    assert unknown_field.status_code == 422
+    empty = client.patch(f"/documents/{doc_id}", json={})
+    assert empty.status_code == 400
+    wrong_suffix = client.patch(f"/documents/{doc_id}", json={"filename": "after.pdf"})
+    assert wrong_suffix.status_code == 400
+
+
+def test_patch_missing_document_returns_404(client: TestClient) -> None:
+    """PATCH of an unknown or invalid doc_id should return 404."""
+    missing = client.patch(
+        "/documents/00000000-0000-0000-0000-000000000000",
+        json={"filename": "gone.txt"},
+    )
+    assert missing.status_code == 404
+    assert missing.json()["detail"] == "Document not found"
+    invalid = client.patch("/documents/missing-doc-id", json={"filename": "gone.txt"})
+    assert invalid.status_code == 404
+    assert invalid.json()["detail"] == "Document not found"
+
+
+def test_patch_document_requires_bearer(
+    rag_root: Path,
+    accnt_root: Path,
+    fake_embed: Callable[[str], list[float]],
+) -> None:
+    """PATCH /documents/{doc_id} should reject callers without a bearer token."""
+    with patched_embeddings(fake_embed):
+        from rag.app import create_app
+
+        app = create_app(str(rag_root), accnt_data_root=str(accnt_root))
+        with TestClient(app) as unauth:
+            response = unauth.patch("/documents/any-doc-id", json={"filename": "x.txt"})
+            assert response.status_code == 401
+            assert response.json()["detail"] == "Missing or invalid bearer token"
+
+
 def test_openapi_documents_delete_route(client: TestClient) -> None:
     """OpenAPI should advertise authenticated DELETE /documents/{doc_id}."""
     spec = client.get("/openapi.json")
@@ -177,6 +254,23 @@ def test_openapi_documents_delete_route(client: TestClient) -> None:
         ref = schema.get("anyOf", [{}])[0].get("$ref", "")
     assert ref.endswith("DeleteDocumentResponse")
     assert "DeleteDocumentResponse" in payload["components"]["schemas"]
+
+
+def test_openapi_documents_patch_route(client: TestClient) -> None:
+    """OpenAPI should advertise authenticated PATCH /documents/{doc_id}."""
+    spec = client.get("/openapi.json")
+    assert spec.status_code == 200
+    payload = spec.json()
+    patch_op = payload["paths"]["/documents/{doc_id}"]["patch"]
+    schema = patch_op["responses"]["200"]["content"]["application/json"]["schema"]
+    ref = schema.get("$ref", "")
+    if not ref:
+        ref = schema.get("anyOf", [{}])[0].get("$ref", "")
+    assert ref.endswith("PatchDocumentResponse")
+    assert "PatchDocumentResponse" in payload["components"]["schemas"]
+    assert "PatchDocumentRequest" in payload["components"]["schemas"]
+    request_schema = payload["components"]["schemas"]["PatchDocumentRequest"]
+    assert request_schema.get("additionalProperties") is False
 
 
 def test_mcp_mount_registered(

@@ -54,6 +54,7 @@ MCP_TOOL_DOCS = {
     "get_page_image": "Render a full PDF page to JPEG (cached on disk).",
     "get_page_highlights": "Highlight boxes for a search query on one PDF page.",
     "ingest_text": "Ingest plain-text or markdown via MCP.",
+    "update_document": "Patch document filename/extra metadata without re-embedding.",
     "search_domain_knowledge": "Query RAG facts; optional obec_id/cast_obce filter.",
     "search_images": "Search PDF images by CLIP visual similarity (optional hybrid).",
     "link_locality": "Upsert document-municipality links into locality_links (no embeddings).",

@@ -12,6 +12,8 @@ from qdrant_client import QdrantClient
 
 from rag.accounting import accounting_source, get_global_store
 from rag.config import COLLECTION_NAME, resolve_public_base_url
+from rag.document_delete import DocumentNotFoundError
+from rag.document_patch import DocumentPatchError, patch_document
 from rag.embeddings import get_query_embedding
 from rag.figure_index import image_record_stats as aggregate_image_record_stats
 from rag.figure_index import list_figure_payloads_for_doc
@@ -50,9 +52,7 @@ from rag.search_hits import (
     page_image_id_for_hit,
 )
 from rag.storage import ImageMeta, RagStorage
-from rag.trails_sync import (
-    forward_locality_links,
-)
+from rag.trails_sync import forward_locality_links
 from rag.trails_sync import sync_links_to_trails as run_sync_links_to_trails
 from rag.vectorstore import (
     IMAGE_VECTOR_NAME,
@@ -518,6 +518,49 @@ def register_mcp_tools(
             "ingest_text",
             request_chars=len(filename) + len(content),
             source="ingest_mcp",
+            fn=_body,
+        )
+
+    @mcp.tool()
+    def update_document(
+        doc_id: str,
+        filename: str = "",
+        extra: dict[str, Any] | None = None,
+    ) -> str:
+        """Patch stored document metadata without re-upload or re-embedding.
+
+        Updates ``index.json`` / ``meta.json`` and matching Qdrant payloads
+        (``parent_document`` / ``source`` / nested ``extra``) via set_payload.
+        Allowed fields: ``filename`` (same suffix) and ``extra`` (merge;
+        JSON ``null`` removes a custom key). Same bearer auth as other MCP
+        write tools.
+        """
+
+        def _body() -> str:
+            try:
+                result = patch_document(
+                    storage=storage,
+                    qdrant=qdrant,
+                    collection_name=collection_name,
+                    doc_id=doc_id,
+                    filename=filename.strip() or None,
+                    extra=extra,
+                )
+                return json.dumps(result, ensure_ascii=False)
+            except DocumentNotFoundError as exc:
+                return f"Error update_document: {exc}"
+            except DocumentPatchError as exc:
+                return f"Error update_document: {exc}"
+            except Exception as exc:  # noqa: BLE001 - return tool-visible error text
+                return f"Error update_document: {exc}"
+
+        extra_chars = 0
+        if extra is not None:
+            extra_chars = len(json.dumps(extra, ensure_ascii=False, default=str))
+        return _run_mcp_tool(
+            "update_document",
+            request_chars=len(doc_id) + len(filename) + extra_chars,
+            source=None,
             fn=_body,
         )
 

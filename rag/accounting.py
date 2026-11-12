@@ -19,6 +19,7 @@ MCP_TOOLS = (
     "get_page_highlights",
     "get_page_image",
     "ingest_text",
+    "update_document",
     "search_domain_knowledge",
     "search_images",
     "link_locality",
@@ -38,6 +39,7 @@ HTTP_ROUTES = (
     "documents_list",
     "documents_get",
     "documents_text",
+    "documents_patch",
     "documents_delete",
     "health",
 )
