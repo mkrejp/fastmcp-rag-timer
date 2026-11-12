@@ -45,15 +45,22 @@ def _marker_payload(qdrant_dir: Path) -> dict[str, object]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _named_collection(client: QdrantClient) -> object:
+    """Return collection info after asserting named text_vector size."""
+    info = client.get_collection("client_domain_knowledge")
+    vectors = info.config.params.vectors
+    assert isinstance(vectors, dict)
+    assert vectors[TEXT_VECTOR_NAME].size == EMBEDDING_DIM
+    return info
+
+
 def test_open_qdrant_creates_named_vectors(tmp_path: Path) -> None:
     """A new collection exposes text_vector and image_vector with expected sizes."""
     qdrant_dir = tmp_path / "qdrant"
     client = open_qdrant(qdrant_dir)
     try:
-        info = client.get_collection("client_domain_knowledge")
+        info = _named_collection(client)
         vectors = info.config.params.vectors
-        assert isinstance(vectors, dict)
-        assert vectors[TEXT_VECTOR_NAME].size == EMBEDDING_DIM
         assert vectors[IMAGE_VECTOR_NAME].size == IMAGE_EMBEDDING_DIM
         marker = _marker_payload(qdrant_dir)
         assert marker["schema_version"] == MARKER_SCHEMA_VERSION
@@ -75,10 +82,7 @@ def test_open_qdrant_recreates_legacy_single_vector_collection(tmp_path: Path) -
 
     client = open_qdrant(qdrant_dir)
     try:
-        info = client.get_collection("client_domain_knowledge")
-        vectors = info.config.params.vectors
-        assert isinstance(vectors, dict)
-        assert vectors[TEXT_VECTOR_NAME].size == EMBEDDING_DIM
+        _named_collection(client)
     finally:
         client.close()
 
@@ -102,10 +106,7 @@ def test_open_qdrant_keeps_matching_named_collection(tmp_path: Path) -> None:
 
     client = open_qdrant(qdrant_dir)
     try:
-        info = client.get_collection("client_domain_knowledge")
-        vectors = info.config.params.vectors
-        assert isinstance(vectors, dict)
-        assert vectors[TEXT_VECTOR_NAME].size == EMBEDDING_DIM
+        _named_collection(client)
     finally:
         client.close()
 

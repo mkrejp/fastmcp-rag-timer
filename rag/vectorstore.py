@@ -459,40 +459,40 @@ def _locality_point_vector(
     similarity. Existing collections are never deleted to change layout.
     """
     _legacy, named_sizes = _collection_vector_layout(client, LOCALITY_LINKS_COLLECTION)
+    empty: dict[str, Any] = {}
     if not named_sizes:
-        return {}
+        return empty
     if set(named_sizes.keys()) == {"default"} and named_sizes["default"] == 1:
         return [0.0]
     if len(named_sizes) == 1:
         name, size = next(iter(named_sizes.items()))
         if size == 1:
             return {name: [0.0]}
-    return {}
+    return empty
 
 
-def _locality_links_filter(
-    *,
-    doc_id: str | None = None,
-    obec_id: str | None = None,
-    status: str | None = None,
-    ambiguous: bool | None = None,
-    locality_level: str | None = None,
-    cast_obce: str | None = None,
-) -> Filter | None:
+def _locality_links_filter(query: Mapping[str, Any]) -> Filter | None:
     """Build a Qdrant payload filter for ``list_locality_links``."""
     must: list[FieldCondition] = []
+    doc_id = query.get("doc_id")
+    obec_id = query.get("obec_id")
+    status = query.get("status")
+    ambiguous = query.get("ambiguous")
+    locality_level = query.get("locality_level")
+    cast_obce = query.get("cast_obce")
     if doc_id:
-        must.append(FieldCondition(key="doc_id", match=MatchValue(value=doc_id)))
+        must.append(FieldCondition(key="doc_id", match=MatchValue(value=str(doc_id))))
     if obec_id:
-        must.append(FieldCondition(key="obec_id", match=MatchValue(value=obec_id)))
+        must.append(FieldCondition(key="obec_id", match=MatchValue(value=str(obec_id))))
     if status:
-        if status not in LOCALITY_VERIFICATION_STATUSES:
+        status_text = str(status)
+        if status_text not in LOCALITY_VERIFICATION_STATUSES:
             allowed = ", ".join(sorted(LOCALITY_VERIFICATION_STATUSES))
             raise LocalityLinkPayloadError(f"status must be one of: {allowed}")
         must.append(
             FieldCondition(
                 key="verification_status",
-                match=MatchValue(value=status),
+                match=MatchValue(value=status_text),
             )
         )
     if ambiguous is not None:
@@ -503,20 +503,21 @@ def _locality_links_filter(
             )
         )
     if locality_level:
-        if locality_level not in LOCALITY_LEVELS:
+        level_text = str(locality_level)
+        if level_text not in LOCALITY_LEVELS:
             allowed = ", ".join(sorted(LOCALITY_LEVELS))
             raise LocalityLinkPayloadError(f"locality_level must be one of: {allowed}")
         must.append(
             FieldCondition(
                 key="locality_level",
-                match=MatchValue(value=locality_level),
+                match=MatchValue(value=level_text),
             )
         )
     if cast_obce:
         must.append(
             FieldCondition(
                 key="cast_obce_kod",
-                match=MatchValue(value=cast_obce),
+                match=MatchValue(value=str(cast_obce)),
             )
         )
     if not must:
@@ -604,12 +605,14 @@ def list_locality_links(
     limit_n = min(max(limit_n, 1), MAX_LOCALITY_LIST_LIMIT)
     offset_n = max(offset_n, 0)
     scroll_filter = _locality_links_filter(
-        doc_id=doc_id or None,
-        obec_id=obec_id or None,
-        status=status or None,
-        ambiguous=ambiguous,
-        locality_level=locality_level or None,
-        cast_obce=cast_obce or None,
+        {
+            "doc_id": doc_id or None,
+            "obec_id": obec_id or None,
+            "status": status or None,
+            "ambiguous": ambiguous,
+            "locality_level": locality_level or None,
+            "cast_obce": cast_obce or None,
+        }
     )
     gathered: list[Any] = []
     next_offset: Any = None
