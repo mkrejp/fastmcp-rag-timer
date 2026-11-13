@@ -490,7 +490,7 @@ pytest -q
 
 Optional integration tests (phrase-only-in-image search) require the Tesseract binary (`tesseract-ocr`, `tesseract-ocr-ces`, `tesseract-ocr-eng`). They are marked `integration` and skip when Tesseract is missing.
 
-CI (`.github/workflows/`) runs Super Linter on changed files and builds the Docker image; it does not run pytest.
+CI (`.github/workflows/`) runs Super Linter on changed files, pytest on Python 3.11 (same interpreter as the Dockerfile), and builds the Docker image.
 
 ## Connecting MCP clients
 

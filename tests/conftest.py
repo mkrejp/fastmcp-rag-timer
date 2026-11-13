@@ -38,6 +38,7 @@ def patched_embeddings(
         patch("rag.embeddings.get_embedding", side_effect=fake_embed),
         patch("rag.embeddings.get_embeddings", side_effect=fake_many),
         patch("rag.ingest.get_ingest_embeddings", side_effect=fake_many),
+        patch("rag.figure_index.get_ingest_embeddings", side_effect=fake_many),
         patch("rag.mcp_tools.get_query_embedding", side_effect=fake_embed),
     ):
         yield
@@ -62,6 +63,25 @@ def _default_embedding_provider(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("IMAGE_EMBEDDING_ENABLED", "false")
     reset_fastembed_runtime()
     reset_image_embed_runtime()
+
+
+@pytest.fixture(autouse=True)
+def _stub_figure_index_embeddings() -> Iterator[None]:
+    """Keep ``pdf_figure`` ingest off the live Novita/FastEmbed backends.
+
+    ``ingest_bytes(embed_fn=...)`` stubs chunk/image vectors, but figure
+    indexing calls ``rag.figure_index.get_ingest_embeddings`` directly.
+    Without this stub the figure pipeline raises when no API key/model is
+    present and is swallowed; with a working backend it indexes large
+    placements and skips them from ``meta.images``.
+    """
+
+    def fake_many(texts: list[str], **_kwargs: object) -> list[list[float]]:
+        """Map texts to deterministic vectors without a live backend."""
+        return [[float(len(text) % 97) / 97.0] * EMBEDDING_DIM for text in texts]
+
+    with patch("rag.figure_index.get_ingest_embeddings", side_effect=fake_many):
+        yield
 
 
 @pytest.fixture()

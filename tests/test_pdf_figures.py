@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from rag.config import resolve_figure_min_area_ratio
+from rag.payloads import build_figure_content_summary
 from rag.pdf_figures import (
     collect_raw_placements,
     compute_verification,
@@ -24,6 +25,18 @@ from tests.fixtures.pdf_figure_factory import (
 
 if TYPE_CHECKING:
     from _pytest.monkeypatch import MonkeyPatch
+
+
+def test_figure_content_summary_fallback_when_empty() -> None:
+    """Caption-less figures still get a non-empty page-label text body."""
+    text = build_figure_content_summary(
+        page_number=2,
+        caption=None,
+        summary="",
+        ocr_text=None,
+    )
+    assert text
+    assert "3" in text
 
 
 def test_small_icon_yields_no_raw_placements() -> None:

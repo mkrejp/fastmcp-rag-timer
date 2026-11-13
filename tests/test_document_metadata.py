@@ -640,10 +640,17 @@ def test_ingest_pdf_images_omit_nested_verification(
     chunks = by_type.get("pdf_chunk") or []
     assert chunks
     assert chunks[0]["verification"][0]["method"] == "haversine"
-    figure_like = (by_type.get("pdf_image") or []) + (by_type.get("pdf_figure") or [])
-    assert figure_like
-    for payload in figure_like:
+    images = by_type.get("pdf_image") or []
+    figures = by_type.get("pdf_figure") or []
+    assert images
+    assert figures
+    for payload in images:
         assert "verification" not in payload
+        assert payload.get("reliability") == 2
+        assert payload.get("overeni_souhrn") == "flat only on figures"
+    for payload in figures:
+        nested = payload.get("verification")
+        assert not isinstance(nested, list)
         assert payload.get("reliability") == 2
         assert payload.get("overeni_souhrn") == "flat only on figures"
 

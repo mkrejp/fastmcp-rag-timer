@@ -435,17 +435,24 @@ def build_figure_content_summary(
     ocr_text: str | None,
     figure_label: str | None = None,
 ) -> str:
-    """Compose the searchable text body for a figure record."""
+    """Compose the searchable text body for a figure record.
+
+    Caption-less photos still get a page label so ``text`` / embeddings are
+    never empty when PyMuPDF indexes a large placement as ``pdf_figure``.
+    """
     page_label = page_number + 1
+    prefix = figure_label or f"Obr. {page_label}"
     parts: list[str] = []
     if caption:
-        prefix = figure_label or f"Obr. {page_label}"
         parts.append(f"{prefix}, str. {page_label}: {caption}.")
     if summary:
         parts.append(summary)
     if ocr_text:
         parts.append(f"Text v obrázku: {ocr_text}")
-    return " ".join(part for part in parts if part).strip()
+    joined = " ".join(part for part in parts if part).strip()
+    if joined:
+        return joined
+    return f"{prefix}, str. {page_label}."
 
 
 def apply_image_record_verification(

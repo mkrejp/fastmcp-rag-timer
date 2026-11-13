@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 from unittest.mock import patch
 
@@ -13,7 +12,7 @@ from rag.ingest import ingest_bytes, stable_image_point_id
 from rag.ocr import tesseract_is_available
 from rag.payloads import build_chunk_payload, build_image_payload
 from rag.pdf_images import extract_pdf_images
-from rag.storage import DocumentMeta, ImageMeta, RagStorage
+from rag.storage import DocumentMeta, RagStorage
 from tests.fixtures.pdf_factory import build_image_rich_pdf
 
 if TYPE_CHECKING:
@@ -96,8 +95,15 @@ def test_ingest_pdf_stores_images_with_mock_ocr(
     rag_storage: RagStorage,
     qdrant_client: QdrantClient,
     fake_embed: Callable[[str], list[float]],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """PDF ingest should persist images and index OCR summaries when OCR returns text."""
+    """PDF ingest should persist images and index OCR summaries when OCR returns text.
+
+    Figure indexing is disabled here: the photo placement is above the
+    ``pdf_figure`` area threshold and would otherwise be skipped from
+    ``meta.images`` (one image instead of two).
+    """
+    monkeypatch.setenv("FIGURE_INDEX_ENABLED", "false")
     pdf_bytes = build_image_rich_pdf()
     with patch(
         "rag.ingest.ocr_image_file",
@@ -122,9 +128,7 @@ def test_ingest_pdf_stores_images_with_mock_ocr(
     assert len(meta.images) == 2
     images_dir = rag_storage.images_dir(doc_id)
     assert images_dir.is_dir()
-    indexed = [
-        img for img in meta.images if img.ocr_text and len(img.ocr_text) >= 20
-    ]
+    indexed = [img for img in meta.images if img.ocr_text and len(img.ocr_text) >= 20]
     assert result["images_indexed"] == len(indexed)
 
 
@@ -192,9 +196,7 @@ def test_integration_image_only_phrase_is_searchable(
         limit=5,
     )
     image_hits = [
-        h
-        for h in hits
-        if (h.payload or {}).get("source_type") == "pdf_image"
+        h for h in hits if (h.payload or {}).get("source_type") == "pdf_image"
     ]
     assert image_hits
     assert phrase in str((image_hits[0].payload or {}).get("content_summary", ""))
