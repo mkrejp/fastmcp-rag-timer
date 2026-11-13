@@ -22,6 +22,7 @@ def test_ensure_layout_creates_tree(rag_root: Path) -> None:
     assert (rag_root / "originals").is_dir()
     assert (rag_root / "processed").is_dir()
     assert (rag_root / "qdrant").is_dir()
+    assert (rag_root / "versions").is_dir()
     assert (rag_root / "index.json").is_file()
     assert storage.list_documents() == []
 
@@ -90,7 +91,9 @@ def test_meta_preserves_original_lat_lon_and_extra(rag_storage: RagStorage) -> N
     assert loaded.geo_refined is not None
     assert loaded.geo_refined["lat"] == pytest.approx(50.366)
     raw = json.loads(
-        (rag_storage.processed_doc_dir(doc_id) / "meta.json").read_text(encoding="utf-8")
+        (rag_storage.processed_doc_dir(doc_id) / "meta.json").read_text(
+            encoding="utf-8"
+        )
     )
     assert raw["lat"] == pytest.approx(50.0755)
     assert raw["akon_id"] == "AK110_057"

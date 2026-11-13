@@ -10,6 +10,7 @@ All RAG server data lives under **`/data/rag`** (override with `RAG_DATA_ROOT`):
 /data/rag/
   originals/{doc_id}/...
   processed/{doc_id}/meta.json, fulltext.txt, chunks.json, images/{image_id}.{ext}
+  versions/{doc_id}/index.json, v0001/manifest.json, v0001/fulltext.txt
   uploads/{upload_id}/          # chunked-upload staging (TTL)
   qdrant/
   index.json
@@ -23,6 +24,10 @@ All RAG server data lives under **`/data/rag`** (override with `RAG_DATA_ROOT`):
 ```
 
 On Railway, mount a volume at `/data`. The app creates `/data/rag` and `/data/accnt` at startup. Dockerfile does not declare `VOLUME`.
+
+`versions/{doc_id}/` lives only on that node's volume. Nodes `00001` and `00002` do
+**not** replicate version snapshots (or Qdrant) to each other. Include `versions/`
+in any backup or restore of `/data/rag`; there is no in-repo backup tooling.
 
 ## Configuration
 
@@ -103,7 +108,7 @@ Toggling CLIP does not recreate the collection; re-ingest PDFs to backfill `imag
 
 ## HTTP API
 
-Embedding REST routes (multipart upload, chunked upload, PDF alias, images, delete, metadata patch) require `Authorization: Bearer $MCP_API_TOKEN` (or `$RAG_API_TOKEN` if MCP token is unset) or a signed-in Google session. Missing both tokens fail closed with **503**.
+Embedding REST routes (multipart upload, chunked upload, PDF alias, images, delete, metadata patch, in-place content replace, versions) require `Authorization: Bearer $MCP_API_TOKEN` (or `$RAG_API_TOKEN` if MCP token is unset) or a signed-in Google session. Missing both tokens fail closed with **503**.
 
 - `POST /upload` — PDF, TXT, Markdown, JSON, or GeoJSON → persist + index (small files)
 - `POST /upload/init` — start a chunked upload (large files; same auth as `/upload`)
@@ -117,6 +122,9 @@ Embedding REST routes (multipart upload, chunked upload, PDF alias, images, dele
 - `GET /documents` — catalog (**no inbound auth**)
 - `GET /documents/{doc_id}` — metadata (**no inbound auth**)
 - `GET /documents/{doc_id}/text` — processed full text, no re-parse (**no inbound auth**)
+- `PUT /documents/{doc_id}/content` — replace indexed text in place (same `doc_id`), archive the previous version, re-chunk and re-embed; same auth as `DELETE`. Required `reason`; `dry_run=true` previews hashes/counts. Process-local `doc_lock` shared with metadata PATCH and DELETE (not cross-process / cross-node)
+- `GET /documents/{doc_id}/versions` — list archived versions (no full text by default; `include_text=true` adds it). Same auth as `PUT /documents/{doc_id}/content`
+- `POST /documents/{doc_id}/versions/{n}/restore` — restore version `n` through the same safe replace path (archives current first). Same auth; required `reason`
 - `PATCH /documents/{doc_id}` — update catalog metadata and matching Qdrant payloads in place (no re-embed; same auth as `DELETE`)
 - `PATCH /documents/{doc_id}/metadata` — write or delete verification fields (`set_payload` / JSON
   `null` on whitelist keys; no re-embed; same auth as `DELETE`). Lifecycle field is `doc_status`
@@ -124,7 +132,7 @@ Embedding REST routes (multipart upload, chunked upload, PDF alias, images, dele
 - `POST /documents/{doc_id}/supersede` — atomically link this document as superseded by `new_doc_id`
   (sets both sides + `doc_status=superseded`; optional `correction_note`)
 - `POST /documents/{doc_id}/unsupersede` — atomically remove that link from both documents (`doc_status` is deleted only when it is `superseded`)
-- `DELETE /documents/{doc_id}` — remove originals, processed files (including `images/`), catalog row, and Qdrant points; **409** if supersession links remain
+- `DELETE /documents/{doc_id}` — remove originals, processed files (including `images/` and version history), catalog row, and Qdrant points; **409** if supersession links remain
 - `GET /images/{doc_id}/{image_id}` — extracted PDF image bytes (same auth as `POST /upload`; `413` if larger than 50 MiB)
 - `GET /health` — liveness (`status`, `rag_data_root`, ingest/query embedding providers, `image_embedding_enabled`)
 - `GET /node-info` — public JSON: this instance (name, public URL, Railway service/region when present), catalog of nodes with Czech roles (`ZÁPIS` / `ČTENÍ` / `STOP`). No secrets
@@ -189,7 +197,9 @@ curl -sS -X POST http://127.0.0.1:8080/ingest-json \
 
 ### Delete a document (`DELETE /documents/{doc_id}`)
 
-Removes the original file, processed artifacts (including `images/`), catalog entry, and Qdrant vectors (chunks and image points) for one `doc_id`. Auth matches `POST /upload`.
+Removes the original file, processed artifacts (including `images/`), version history under
+`versions/{doc_id}/`, catalog entry, and Qdrant vectors (chunks and image points) for one `doc_id`.
+Auth matches `POST /upload`.
 
 Success: `{"status":"deleted","doc_id":"...","filename":"...","chunks_removed":N}`.
 Unknown ID: `404` `{"detail":"Document not found"}`. Missing/invalid token: `401`. Tokens unset: `503`.
@@ -200,6 +210,72 @@ export RAG_API_TOKEN=your-api-token
 curl -sS -X DELETE \
   -H "Authorization: Bearer $RAG_API_TOKEN" \
   http://127.0.0.1:8080/documents/{doc_id}
+```
+
+### Replace document content (`PUT /documents/{doc_id}/content`)
+
+Replace the indexed text of an existing document **without changing `doc_id`**. The previous
+processed fulltext is archived under `{RAG_DATA_ROOT}/versions/{doc_id}/vNNNN/` (manifest + text),
+then the new text is chunked and embedded with the same ingest pipeline / embedding model as
+`POST /upload`. Qdrant has no transactions: **new `pdf_chunk` points are inserted first** (generation-
+scoped IDs so they cannot overwrite the live points), processed files are updated, then the old
+text-chunk points are deleted. If embed or upsert fails, the new points are deleted, processed files
+are restored, the unused version snapshot is dropped, and the live document is unchanged. If
+deleting the old points fails after the new generation is committed, the call still returns
+**200** with `cleanup_pending=true`, leftover IDs/count, and a loud error log (retries first).
+
+Document-level metadata from catalog `extra` (and payload keys identical across every old
+chunk) is copied onto the new points. Per-chunk keys that differ between old chunks are **not**
+smeared from the first chunk; their names are returned as `dropped_chunk_fields`. Only
+`content_hash` and `updated_at` are always rewritten. **`pdf_image` and `pdf_figure` points are
+kept** (same vectors and image files); their `content_hash` / `updated_at` (and figure `sha256`)
+are updated in place. **`locality_links` rows are not deleted**; the response includes
+`affected_locality_links`. Those links still point at ingest-time chunk UUIDs, so they need a
+later re-link. After replace, live chunk IDs are `uuid5(doc_id:g{generation}:{chunk_index})` and
+no longer equal `stable_point_id(doc_id, chunk_index)`. PDF originals stay on disk; this endpoint
+replaces extracted/indexed text, not PDF bytes. Text and successfully parsed JSON originals are
+overwritten to match the new content.
+
+Replace, restore, `PATCH /documents/{doc_id}/metadata`, and `DELETE /documents/{doc_id}` share a
+**process-local** `doc_lock` (`rag/doc_locks.py`). It does not coordinate across processes or
+between nodes `00001`/`00002`. Version snapshots live only on the node volume and are not
+replicated.
+
+Required: same Bearer (or Google session) as `POST /upload` / `DELETE`, and a non-empty `reason`
+(JSON body or query param). `dry_run=true` returns old/new hashes, chunk counts, `next_version`,
+`dropped_chunk_fields`, and `affected_locality_links` without writing. Identical content returns
+`{"status":"unchanged",...}` and does not create a version. Unknown `doc_id`: **404**. Missing
+reason: **400**. Missing/invalid token: **401**.
+
+```bash
+export RAG_API_TOKEN=your-api-token
+
+curl -sS -X PUT \
+  -H "Authorization: Bearer $RAG_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"content":"Corrected full text…","reason":"OCR fix"}' \
+  http://127.0.0.1:8080/documents/{doc_id}/content
+
+curl -sS -X PUT \
+  -H "Authorization: Bearer $RAG_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"content":"Corrected full text…","reason":"OCR fix","dry_run":true}' \
+  http://127.0.0.1:8080/documents/{doc_id}/content
+```
+
+List versions with `GET /documents/{doc_id}/versions` (same auth). Full text is omitted unless
+`include_text=true`. Restore with `POST /documents/{doc_id}/versions/{n}/restore` and a `reason`;
+that path archives the live text first, then runs the same safe replace.
+
+```bash
+curl -sS -H "Authorization: Bearer $RAG_API_TOKEN" \
+  "http://127.0.0.1:8080/documents/{doc_id}/versions"
+
+curl -sS -X POST \
+  -H "Authorization: Bearer $RAG_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"reason":"undo last edit"}' \
+  http://127.0.0.1:8080/documents/{doc_id}/versions/1/restore
 ```
 
 ### Patch document metadata (`PATCH /documents/{doc_id}`)
@@ -447,6 +523,8 @@ rag/
   geo_refined.py        # geo_refined schema, prefer-refined helpers
   geo_index.py          # refine_geo / refine_geo_batch / list_geo_refinements
   document_delete.py    # remove one document from disk + Qdrant
+  doc_locks.py          # process-local per-doc_id lock (sorted unique IDs)
+  document_replace.py   # in-place text replace + versions/{doc_id} snapshots
   geojson.py            # generic GeoJSON → RAG text
   remote.py             # fetch remote JSON (GitHub blob → raw, SSRF guards)
   auth.py               # inbound bearer for /ingest-json, /mcp, embedding REST
@@ -498,7 +576,7 @@ Endpoint: `https://rag-timer-00001-production.up.railway.app/mcp/` (Streamable H
 
 Auth: the **whole `/mcp` endpoint** requires `Authorization: Bearer <token>`.
 The token comes from `MCP_API_TOKEN`; if that is unset, `RAG_API_TOKEN` is used.
-If neither is set, `/mcp` and the embedding REST routes (`/upload`, chunked upload, `/upload-pdf`, `GET /images/...`, `PATCH`/`DELETE /documents/{doc_id}`) fail closed with 503 and log a warning.
+If neither is set, `/mcp` and the embedding REST routes (`/upload`, chunked upload, `/upload-pdf`, `GET /images/...`, `PATCH`/`DELETE /documents/{doc_id}`, `PUT /documents/{doc_id}/content`, versions) fail closed with 503 and log a warning.
 Those embedding REST routes also accept a signed-in Google session, which the console uses.
 `POST /ingest-json` requires `RAG_API_TOKEN` specifically (not the MCP token, unless they are the same value). Tokens are compared in constant time.
 

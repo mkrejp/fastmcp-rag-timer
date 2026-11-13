@@ -9,7 +9,7 @@ import shutil
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, cast
 
 _IMAGE_ID_RE = re.compile(r"^[a-f0-9]{16}$")
 _DOC_ID_RE = re.compile(
@@ -116,7 +116,9 @@ def _optional_float(value: object) -> float | None:
     """Return ``value`` as float, or ``None`` when unset."""
     if value is None or value == "":
         return None
-    return float(value)
+    if isinstance(value, (int, float, str)):
+        return float(value)
+    return float(cast(Any, value))
 
 
 def _optional_geo_object(value: object) -> dict[str, Any] | None:
@@ -135,6 +137,29 @@ def _geo_history(value: object) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
     return [dict(item) for item in value if isinstance(item, dict)]
+
+
+def _geo_constructor_kwargs(data: Mapping[str, Any]) -> dict[str, Any]:
+    """Return lat/lon/geo_refined kwargs shared by metadata dataclasses."""
+    return {
+        "lat": _optional_float(data.get("lat")),
+        "lon": _optional_float(data.get("lon")),
+        "geo_refined": _optional_geo_object(data.get("geo_refined")),
+        "geo_refined_history": _geo_history(data.get("geo_refined_history")),
+    }
+
+
+def _omit_empty_geo(out: dict[str, Any]) -> dict[str, Any]:
+    """Drop unset GPS fields from a serialized metadata payload."""
+    if out.get("lat") is None:
+        out.pop("lat", None)
+    if out.get("lon") is None:
+        out.pop("lon", None)
+    if out.get("geo_refined") is None:
+        out.pop("geo_refined", None)
+    if not out.get("geo_refined_history"):
+        out.pop("geo_refined_history", None)
+    return out
 
 
 def _unknown_extra(data: Mapping[str, Any], known: frozenset[str]) -> dict[str, Any]:
@@ -163,26 +188,17 @@ class ImageMeta:
     mime: str
     ocr_text: str | None = None
     ocr_confidence: float | None = None
+    extra: dict[str, Any] = field(default_factory=dict)
     lat: float | None = None
     lon: float | None = None
     geo_refined: dict[str, Any] | None = None
     geo_refined_history: list[dict[str, Any]] = field(default_factory=list)
-    extra: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize image metadata to a plain dictionary."""
         payload = asdict(self)
         extra = payload.pop("extra", {}) or {}
-        out = {**extra, **payload}
-        if out.get("lat") is None:
-            out.pop("lat", None)
-        if out.get("lon") is None:
-            out.pop("lon", None)
-        if out.get("geo_refined") is None:
-            out.pop("geo_refined", None)
-        if not out.get("geo_refined_history"):
-            out.pop("geo_refined_history", None)
-        return out
+        return _omit_empty_geo({**extra, **payload})
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ImageMeta:
@@ -200,11 +216,8 @@ class ImageMeta:
                 str(data["ocr_text"]) if data.get("ocr_text") is not None else None
             ),
             ocr_confidence=float(ocr_conf) if ocr_conf is not None else None,
-            lat=_optional_float(data.get("lat")),
-            lon=_optional_float(data.get("lon")),
-            geo_refined=_optional_geo_object(data.get("geo_refined")),
-            geo_refined_history=_geo_history(data.get("geo_refined_history")),
             extra=_unknown_extra(data, _IMAGE_META_KNOWN),
+            **_geo_constructor_kwargs(data),
         )
 
 
@@ -239,15 +252,7 @@ class DocumentMeta:
         payload.pop("images", None)
         out = {**extra, **payload}
         out["images"] = [img.to_dict() for img in self.images]
-        if out.get("lat") is None:
-            out.pop("lat", None)
-        if out.get("lon") is None:
-            out.pop("lon", None)
-        if out.get("geo_refined") is None:
-            out.pop("geo_refined", None)
-        if not out.get("geo_refined_history"):
-            out.pop("geo_refined_history", None)
-        return out
+        return _omit_empty_geo(out)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> DocumentMeta:
@@ -271,11 +276,8 @@ class DocumentMeta:
             figure_index_version=int(data.get("figure_index_version") or 0),
             figures_count=int(data.get("figures_count") or 0),
             figures_status=str(data.get("figures_status") or "pending"),
-            lat=_optional_float(data.get("lat")),
-            lon=_optional_float(data.get("lon")),
-            geo_refined=_optional_geo_object(data.get("geo_refined")),
-            geo_refined_history=_geo_history(data.get("geo_refined_history")),
             extra=_unknown_extra(data, _DOCUMENT_META_KNOWN),
+            **_geo_constructor_kwargs(data),
         )
 
 
@@ -288,6 +290,7 @@ class RagStorage:
         self.originals_dir = self.root / "originals"
         self.processed_dir = self.root / "processed"
         self.qdrant_dir = self.root / "qdrant"
+        self.versions_dir = self.root / "versions"
         self.index_path = self.root / "index.json"
         self.trails_outbox_path = self.root / "trails_outbox.json"
 
@@ -298,6 +301,7 @@ class RagStorage:
             self.originals_dir,
             self.processed_dir,
             self.qdrant_dir,
+            self.versions_dir,
         ):
             path.mkdir(parents=True, exist_ok=True)
         if not self.index_path.exists():
@@ -310,6 +314,10 @@ class RagStorage:
     def processed_doc_dir(self, doc_id: str) -> Path:
         """Return the processed artifacts directory for ``doc_id``."""
         return self.processed_dir / doc_id
+
+    def versions_doc_dir(self, doc_id: str) -> Path:
+        """Return the on-disk version history directory for ``doc_id``."""
+        return self.versions_dir / doc_id
 
     def images_dir(self, doc_id: str) -> Path:
         """Return the extracted images directory for ``doc_id``."""
@@ -623,7 +631,11 @@ class RagStorage:
 
         Processed cleanup includes the extracted ``images/`` directory.
         """
-        for path in (self.original_dir(doc_id), self.processed_doc_dir(doc_id)):
+        for path in (
+            self.original_dir(doc_id),
+            self.processed_doc_dir(doc_id),
+            self.versions_doc_dir(doc_id),
+        ):
             if path.exists():
                 shutil.rmtree(path)
         entries = [e for e in self.list_documents() if e.get("doc_id") != doc_id]

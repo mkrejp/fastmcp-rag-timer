@@ -1,10 +1,10 @@
 """In-process per-document locks for concurrent catalog/payload writes.
 
 Acquire every involved ``doc_id`` in sorted order so supersede (two ids),
-metadata PATCH, and DELETE cannot deadlock or interleave. Per-doc locks are
-``threading.RLock`` so nested ``doc_lock`` (for example DELETE calling a
-locked helper) does not self-deadlock. A parallel PUT /content path can
-reuse ``doc_lock`` after rebase.
+metadata PATCH, DELETE, and PUT /content cannot deadlock or interleave.
+Per-doc locks are ``threading.RLock`` so nested ``doc_lock`` (for example
+DELETE calling a locked helper, or restore wrapping replace) does not
+self-deadlock.
 """
 
 from __future__ import annotations

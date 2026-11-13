@@ -1,4 +1,4 @@
-"""HTTP routes for document ingest, retrieval, and deletion."""
+"""HTTP routes for document ingest, retrieval, replacement, and deletion."""
 
 from __future__ import annotations
 
@@ -40,8 +40,16 @@ from rag.document_patch import (
     patch_document,
     patch_document_metadata,
 )
+from rag.document_replace import (
+    DocumentReplaceError,
+    DocumentVersionNotFoundError,
+    list_document_versions,
+    replace_document_content,
+    restore_document_version,
+)
 from rag.document_supersede import supersede_document, unsupersede_document
 from rag.embeddings import embedding_provider_status, validate_embedding_configuration
+from rag.google_oauth import current_user
 from rag.image_delivery import resolve_image_delivery
 from rag.image_embed import image_embedding_enabled
 from rag.ingest import ingest_bytes, meta_to_public
@@ -217,6 +225,45 @@ class UnsupersedeDocumentResponse(BaseModel):
     new: dict[str, Any] | None = None
 
 
+class ReplaceDocumentContentRequest(BaseModel):
+    """Body for ``PUT /documents/{doc_id}/content``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    content: str = Field(
+        ...,
+        min_length=1,
+        description="Replacement document text (UTF-8). Re-chunked and re-embedded.",
+    )
+    reason: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=2000,
+        description="Required non-empty reason (also accepted as a query param).",
+    )
+    dry_run: bool = Field(
+        default=False,
+        description="When true, report hashes and counts without writing.",
+    )
+
+
+class RestoreDocumentVersionRequest(BaseModel):
+    """Optional body for ``POST /documents/{doc_id}/versions/{n}/restore``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=2000,
+        description="Required non-empty reason (also accepted as a query param).",
+    )
+    dry_run: bool = Field(
+        default=False,
+        description="When true, report the restore plan without writing.",
+    )
+
+
 class PatchDocumentResponse(BaseModel):
     """Success body for ``PATCH /documents/{doc_id}``."""
 
@@ -276,6 +323,33 @@ def _record_http(
     if store is None:
         return
     store.record_http(route=route, ok=ok, bytes_in=bytes_in, error=error)
+
+
+def _caller_identity(request: Request) -> str:
+    """Return Google email or ``bearer`` for version authorship."""
+    if "session" not in request.scope:
+        return "bearer"
+    user = current_user(request)
+    if not user:
+        return "bearer"
+    email = str(user.get("email") or "").strip()
+    if email:
+        return email
+    sub = str(user.get("sub") or "").strip()
+    if sub:
+        return f"google:{sub}"
+    return "bearer"
+
+
+def _resolve_reason(*candidates: str | None) -> str:
+    """Return the first non-empty reason among ``candidates``."""
+    for raw in candidates:
+        if raw is None:
+            continue
+        text = str(raw).strip()
+        if text:
+            return text
+    return ""
 
 
 def _parse_metadata_form(raw: str | None) -> dict[str, Any] | None:
@@ -687,6 +761,127 @@ def get_document_text_http(doc_id: str, request: Request) -> dict[str, Any]:
         "filename": meta.filename if meta else None,
         "text": text,
     }
+
+
+@router.put(
+    "/documents/{doc_id}/content",
+    dependencies=[Depends(require_embed_access)],
+)
+def replace_document_content_http(
+    doc_id: str,
+    body: ReplaceDocumentContentRequest,
+    request: Request,
+    reason: str | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Replace indexed text in place, archive the previous version, and re-embed.
+
+    Keeps ``doc_id``. New chunk points are inserted first; old text-chunk
+    points are deleted afterwards. On embed/upsert failure the new points
+    are removed and the live document is left unchanged. If old-point
+    delete fails after commit, the response is still success with
+    ``cleanup_pending``. ``pdf_image`` / ``pdf_figure`` points and
+    ``locality_links`` rows are kept. Same auth as ``POST /upload``.
+    """
+    resolved_reason = _resolve_reason(body.reason, reason)
+    do_dry_run = bool(body.dry_run or dry_run)
+    try:
+        result = replace_document_content(
+            storage=_storage(request),
+            qdrant=_qdrant(request),
+            collection_name=COLLECTION_NAME,
+            doc_id=doc_id,
+            content=body.content,
+            reason=resolved_reason,
+            author=_caller_identity(request),
+            dry_run=do_dry_run,
+        )
+    except DocumentNotFoundError:
+        _record_http(route="documents_content_put", ok=False, error="not found")
+        raise HTTPException(status_code=404, detail="Document not found") from None
+    except DocumentReplaceError as exc:
+        _record_http(route="documents_content_put", ok=False, error=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 - surface replace failures
+        _record_http(route="documents_content_put", ok=False, error=str(exc))
+        raise HTTPException(status_code=500, detail=f"Replace failed: {exc}") from exc
+    _record_http(route="documents_content_put", ok=True)
+    return result
+
+
+@router.get(
+    "/documents/{doc_id}/versions",
+    dependencies=[Depends(require_embed_access)],
+)
+def list_document_versions_http(
+    doc_id: str,
+    request: Request,
+    include_text: bool = False,
+) -> dict[str, Any]:
+    """List archived content versions. Full text is omitted unless requested."""
+    try:
+        result = list_document_versions(
+            storage=_storage(request),
+            doc_id=doc_id,
+            include_text=include_text,
+        )
+    except DocumentNotFoundError:
+        _record_http(route="documents_versions_list", ok=False, error="not found")
+        raise HTTPException(status_code=404, detail="Document not found") from None
+    except Exception as exc:  # noqa: BLE001 - surface version-list failures
+        _record_http(route="documents_versions_list", ok=False, error=str(exc))
+        raise HTTPException(
+            status_code=500, detail=f"List versions failed: {exc}"
+        ) from exc
+    _record_http(route="documents_versions_list", ok=True)
+    return result
+
+
+@router.post(
+    "/documents/{doc_id}/versions/{version}/restore",
+    dependencies=[Depends(require_embed_access)],
+)
+def restore_document_version_http(
+    doc_id: str,
+    version: int,
+    request: Request,
+    body: RestoreDocumentVersionRequest | None = None,
+    reason: str | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Restore archived version ``n`` through the same safe replace path.
+
+    Archives the live text as a new version before restoring. Same auth as
+    ``PUT /documents/{doc_id}/content``.
+    """
+    payload = body or RestoreDocumentVersionRequest()
+    resolved_reason = _resolve_reason(payload.reason, reason)
+    do_dry_run = bool(payload.dry_run or dry_run)
+    try:
+        result = restore_document_version(
+            storage=_storage(request),
+            qdrant=_qdrant(request),
+            collection_name=COLLECTION_NAME,
+            doc_id=doc_id,
+            version=version,
+            reason=resolved_reason,
+            author=_caller_identity(request),
+            dry_run=do_dry_run,
+        )
+    except DocumentNotFoundError:
+        _record_http(route="documents_versions_restore", ok=False, error="not found")
+        raise HTTPException(status_code=404, detail="Document not found") from None
+    except DocumentVersionNotFoundError as exc:
+        _record_http(route="documents_versions_restore", ok=False, error=str(exc))
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except DocumentReplaceError as exc:
+        _record_http(route="documents_versions_restore", ok=False, error=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 - surface restore failures
+        _record_http(route="documents_versions_restore", ok=False, error=str(exc))
+        raise HTTPException(status_code=500, detail=f"Restore failed: {exc}") from exc
+    _record_http(route="documents_versions_restore", ok=True)
+    return result
 
 
 @router.patch(

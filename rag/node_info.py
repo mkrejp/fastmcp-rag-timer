@@ -547,12 +547,11 @@ def is_http_write_request(method: str, path: str) -> bool:
         return True
     if upper == "POST" and normalized in {"/ingest-json"}:
         return True
-    if upper == "DELETE" and normalized.startswith("/documents/"):
-        return True
-    if upper == "PATCH" and normalized.startswith("/documents/"):
-        return True
-    if upper == "POST" and normalized.startswith("/documents/"):
-        return True
+    if normalized.startswith("/documents/"):
+        if upper in {"DELETE", "PATCH", "PUT"}:
+            return True
+        if upper == "POST":
+            return True
     return False
 
 

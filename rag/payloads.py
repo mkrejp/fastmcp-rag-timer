@@ -52,8 +52,11 @@ def knowledge_point_id_for_link(payload: Mapping[str, Any]) -> str | None:
     """Return the knowledge-collection point UUID matching a locality link.
 
     Prefer an explicit ``point_id`` on the link. Otherwise reconstruct the
-    ingest-time text-chunk UUID from ``doc_id`` + ``chunk_index``. Image
-    points use a different formula and are not reconstructed here.
+    ingest-time text-chunk UUID from ``doc_id`` + ``chunk_index``. After
+    in-place content replace, live chunk ids are generation-scoped and no
+    longer equal that formula; callers must fall back to a payload lookup
+    on ``doc_id`` + ``chunk_index``. Image points use a different formula
+    and are not reconstructed here.
     """
     explicit = payload.get("point_id")
     if explicit is not None and str(explicit).strip():

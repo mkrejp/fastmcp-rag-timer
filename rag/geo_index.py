@@ -193,6 +193,52 @@ def _retrieve_point(
     return found[0] if found else None
 
 
+def _as_chunk_index(value: object) -> int | None:
+    """Return ``chunk_index`` as int, or ``None`` when missing/invalid."""
+    if isinstance(value, bool) or value is None or value == "":
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _find_text_chunk_point(
+    qdrant: QdrantClient,
+    *,
+    collection_name: str,
+    doc_id: str,
+    chunk_index: int,
+) -> Any | None:
+    """Return the ``pdf_chunk`` point for ``doc_id`` + ``chunk_index``.
+
+    Tries ingest-time ``stable_point_id`` first, then payload match so
+    generation-scoped replacement ids still resolve.
+    """
+    wanted = int(chunk_index)
+    point_id = stable_point_id(doc_id, wanted)
+    point = _retrieve_point(qdrant, collection_name=collection_name, point_id=point_id)
+    if point is not None:
+        payload = point.payload or {}
+        found_index = _as_chunk_index(payload.get("chunk_index"))
+        if found_index is None or found_index == wanted:
+            return point
+    for candidate in _scroll_doc_points(
+        qdrant,
+        collection_name=collection_name,
+        doc_id=doc_id,
+        source_types=frozenset({"pdf_chunk"}),
+    ):
+        payload = candidate.payload or {}
+        if _as_chunk_index(payload.get("chunk_index")) == wanted:
+            return candidate
+    return None
+
+
 def _scroll_doc_points(
     qdrant: QdrantClient,
     *,
@@ -486,9 +532,11 @@ def refine_geo(
                 storage.write_meta(meta)
 
     if chunk_index_n is not None:
-        point_id = stable_point_id(trimmed_doc, int(chunk_index_n))
-        point = _retrieve_point(
-            qdrant, collection_name=collection_name, point_id=point_id
+        point = _find_text_chunk_point(
+            qdrant,
+            collection_name=collection_name,
+            doc_id=trimmed_doc,
+            chunk_index=int(chunk_index_n),
         )
         if point is None:
             raise GeoRefinedNotFoundError(
