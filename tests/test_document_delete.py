@@ -7,7 +7,12 @@ from typing import TYPE_CHECKING, Callable
 import pytest
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
-from rag.document_delete import DocumentNotFoundError, delete_document
+from rag.document_delete import (
+    DocumentLinkedError,
+    DocumentNotFoundError,
+    delete_document,
+)
+from rag.document_supersede import supersede_document
 from rag.ingest import ingest_bytes
 from rag.storage import RagStorage
 
@@ -108,3 +113,45 @@ def test_delete_document_invalid_id_raises(
             collection_name=COLLECTION,
             doc_id="missing-doc",
         )
+
+
+def test_delete_document_rejects_supersession_peers(
+    rag_storage: RagStorage,
+    qdrant_client: QdrantClient,
+    fake_embed: Callable[[str], list[float]],
+) -> None:
+    """DELETE raises ``DocumentLinkedError`` until the pair is unlinked."""
+    first = ingest_bytes(
+        storage=rag_storage,
+        qdrant=qdrant_client,
+        collection_name=COLLECTION,
+        filename="link-old.txt",
+        data=b"Linked old document.",
+        embed_fn=fake_embed,
+    )
+    second = ingest_bytes(
+        storage=rag_storage,
+        qdrant=qdrant_client,
+        collection_name=COLLECTION,
+        filename="link-new.txt",
+        data=b"Linked new document.",
+        embed_fn=fake_embed,
+    )
+    old_id = str(first["doc_id"])
+    new_id = str(second["doc_id"])
+    supersede_document(
+        storage=rag_storage,
+        qdrant=qdrant_client,
+        collection_name=COLLECTION,
+        old_doc_id=old_id,
+        new_doc_id=new_id,
+    )
+    with pytest.raises(DocumentLinkedError) as exc_info:
+        delete_document(
+            storage=rag_storage,
+            qdrant=qdrant_client,
+            collection_name=COLLECTION,
+            doc_id=old_id,
+        )
+    assert new_id in exc_info.value.linked_ids
+    assert rag_storage.read_meta(old_id) is not None

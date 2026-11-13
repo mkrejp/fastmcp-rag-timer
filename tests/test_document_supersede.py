@@ -796,3 +796,210 @@ def test_openapi_supersede_routes(client: TestClient) -> None:
     assert "SupersedeDocumentRequest" in schemas
     assert "SupersedeDocumentResponse" in schemas
     assert "UnsupersedeDocumentResponse" in schemas
+
+
+def test_supersede_rolls_back_when_second_write_fails(
+    rag_storage: RagStorage,
+    qdrant_client: QdrantClient,
+    fake_embed: Callable[[str], list[float]],
+) -> None:
+    """If the replacement write fails, the old document is restored."""
+    from rag import document_supersede as supersede_mod
+
+    old = ingest_bytes(
+        storage=rag_storage,
+        qdrant=qdrant_client,
+        collection_name=COLLECTION,
+        filename="rb-old.txt",
+        data=b"Rollback old fact.",
+        embed_fn=fake_embed,
+    )
+    new = ingest_bytes(
+        storage=rag_storage,
+        qdrant=qdrant_client,
+        collection_name=COLLECTION,
+        filename="rb-new.txt",
+        data=b"Rollback new fact.",
+        embed_fn=fake_embed,
+    )
+    old_id = str(old["doc_id"])
+    new_id = str(new["doc_id"])
+    real = supersede_mod._apply_doc_fields
+    calls = {"n": 0}
+
+    def wrapper(**kwargs: Any) -> tuple[int, int]:
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("simulated second write failure")
+        return real(**kwargs)
+
+    with patch.object(supersede_mod, "_apply_doc_fields", side_effect=wrapper):
+        with pytest.raises(RuntimeError, match="simulated second write"):
+            supersede_document(
+                storage=rag_storage,
+                qdrant=qdrant_client,
+                collection_name=COLLECTION,
+                old_doc_id=old_id,
+                new_doc_id=new_id,
+                correction_note="should not stick",
+            )
+    old_meta = rag_storage.read_meta(old_id)
+    new_meta = rag_storage.read_meta(new_id)
+    assert old_meta is not None
+    assert new_meta is not None
+    assert "superseded_by" not in old_meta.extra
+    assert "doc_status" not in old_meta.extra
+    assert "correction_note" not in old_meta.extra
+    assert "supersedes" not in new_meta.extra
+    for point in _scroll_doc(qdrant_client, old_id):
+        payload = point.payload or {}
+        assert "superseded_by" not in payload
+        assert "doc_status" not in payload
+    assert calls["n"] >= 3
+
+
+def test_unsupersede_rolls_back_when_second_write_fails(
+    rag_storage: RagStorage,
+    qdrant_client: QdrantClient,
+    fake_embed: Callable[[str], list[float]],
+) -> None:
+    """If the old-doc unlink write fails, the replacement supersedes list is restored."""
+    from rag import document_supersede as supersede_mod
+
+    old = ingest_bytes(
+        storage=rag_storage,
+        qdrant=qdrant_client,
+        collection_name=COLLECTION,
+        filename="urb-old.txt",
+        data=b"Unlink rollback old.",
+        embed_fn=fake_embed,
+    )
+    new = ingest_bytes(
+        storage=rag_storage,
+        qdrant=qdrant_client,
+        collection_name=COLLECTION,
+        filename="urb-new.txt",
+        data=b"Unlink rollback new.",
+        embed_fn=fake_embed,
+    )
+    old_id = str(old["doc_id"])
+    new_id = str(new["doc_id"])
+    supersede_document(
+        storage=rag_storage,
+        qdrant=qdrant_client,
+        collection_name=COLLECTION,
+        old_doc_id=old_id,
+        new_doc_id=new_id,
+    )
+    real = supersede_mod._apply_doc_fields
+    calls = {"n": 0}
+
+    def wrapper(**kwargs: Any) -> tuple[int, int]:
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("simulated unlink second write failure")
+        return real(**kwargs)
+
+    with patch.object(supersede_mod, "_apply_doc_fields", side_effect=wrapper):
+        with pytest.raises(RuntimeError, match="simulated unlink second write"):
+            unsupersede_document(
+                storage=rag_storage,
+                qdrant=qdrant_client,
+                collection_name=COLLECTION,
+                old_doc_id=old_id,
+            )
+    old_meta = rag_storage.read_meta(old_id)
+    new_meta = rag_storage.read_meta(new_id)
+    assert old_meta is not None
+    assert new_meta is not None
+    assert old_meta.extra.get("superseded_by") == new_id
+    assert old_meta.extra.get("doc_status") == "superseded"
+    assert new_meta.extra.get("supersedes") == [old_id]
+
+
+def test_hidden_replacement_is_400(client: TestClient) -> None:
+    """A superseded or retracted replacement cannot be the target of a new link."""
+    old_id = _upload(client, "hid-old.txt", b"Hidden replacement old.")
+    new_id = _upload(client, "hid-new.txt", b"Hidden replacement new.")
+    third_id = _upload(client, "hid-third.txt", b"Hidden replacement third.")
+    retracted = client.patch(
+        f"/documents/{new_id}/metadata",
+        json={"doc_status": "retracted", "correction_note": "withdrawn"},
+    )
+    assert retracted.status_code == 200
+    onto_retracted = client.post(
+        f"/documents/{old_id}/supersede",
+        json={"new_doc_id": new_id},
+    )
+    assert onto_retracted.status_code == 400
+    assert "active replacement" in onto_retracted.json()["detail"]
+    client.patch(
+        f"/documents/{new_id}/metadata",
+        json={"doc_status": None, "correction_note": None},
+    )
+    linked = client.post(
+        f"/documents/{old_id}/supersede",
+        json={"new_doc_id": new_id},
+    )
+    assert linked.status_code == 200
+    onto_superseded = client.post(
+        f"/documents/{third_id}/supersede",
+        json={"new_doc_id": old_id},
+    )
+    assert onto_superseded.status_code == 400
+    assert "active replacement" in onto_superseded.json()["detail"]
+
+
+def test_patch_cannot_clear_doc_status_while_linked(client: TestClient) -> None:
+    """PATCH null/active doc_status while superseded_by is set must use unsupersede."""
+    old_id = _upload(client, "clr-old.txt", b"Clear status old.")
+    new_id = _upload(client, "clr-new.txt", b"Clear status new.")
+    client.post(f"/documents/{old_id}/supersede", json={"new_doc_id": new_id})
+    for body in ({"doc_status": None}, {"doc_status": "active"}):
+        response = client.patch(f"/documents/{old_id}/metadata", json=body)
+        assert response.status_code == 400, body
+        assert "unsupersede" in response.json()["detail"]
+    fetched = client.get(f"/documents/{old_id}").json()
+    assert fetched["doc_status"] == "superseded"
+    assert fetched["superseded_by"] == new_id
+
+
+def test_unsupersede_keeps_retracted_doc_status(client: TestClient) -> None:
+    """Unlink deletes doc_status only when it is superseded."""
+    old_id = _upload(client, "ret-old.txt", b"Keep retracted old.")
+    new_id = _upload(client, "ret-new.txt", b"Keep retracted new.")
+    client.post(
+        f"/documents/{old_id}/supersede",
+        json={"new_doc_id": new_id, "correction_note": "later withdrawn"},
+    )
+    patched = client.patch(
+        f"/documents/{old_id}/metadata",
+        json={"doc_status": "retracted"},
+    )
+    assert patched.status_code == 200
+    unlinked = client.post(f"/documents/{old_id}/unsupersede")
+    assert unlinked.status_code == 200
+    fetched = client.get(f"/documents/{old_id}").json()
+    assert "superseded_by" not in fetched
+    assert fetched["doc_status"] == "retracted"
+    assert fetched["correction_note"] == "later withdrawn"
+    peer = client.get(f"/documents/{new_id}").json()
+    assert "supersedes" not in peer
+
+
+def test_delete_linked_document_returns_409(client: TestClient) -> None:
+    """DELETE of a linked document lists peer ids and leaves both docs."""
+    old_id = _upload(client, "del-link-old.txt", b"Linked delete old.")
+    new_id = _upload(client, "del-link-new.txt", b"Linked delete new.")
+    client.post(f"/documents/{old_id}/supersede", json={"new_doc_id": new_id})
+    blocked_old = client.delete(f"/documents/{old_id}")
+    assert blocked_old.status_code == 409
+    assert new_id in blocked_old.json()["detail"]["linked_ids"]
+    blocked_new = client.delete(f"/documents/{new_id}")
+    assert blocked_new.status_code == 409
+    assert old_id in blocked_new.json()["detail"]["linked_ids"]
+    assert client.get(f"/documents/{old_id}").status_code == 200
+    assert client.get(f"/documents/{new_id}").status_code == 200
+    client.post(f"/documents/{old_id}/unsupersede")
+    assert client.delete(f"/documents/{old_id}").status_code == 200
+    assert client.delete(f"/documents/{new_id}").status_code == 200
