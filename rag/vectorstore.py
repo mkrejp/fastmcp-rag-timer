@@ -381,6 +381,78 @@ def backfill_chunk_payload_fields(
     return {"scanned": scanned, "updated": updated}
 
 
+def _as_chunk_index(value: object) -> int | None:
+    """Return ``chunk_index`` as int, or ``None`` when missing/invalid."""
+    if isinstance(value, bool) or value is None or value == "":
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return None
+    return None
+
+
+def retrieve_knowledge_point_for_link(
+    client: QdrantClient,
+    payload: Mapping[str, Any],
+    *,
+    collection_name: str = COLLECTION_NAME,
+) -> Any | None:
+    """Resolve a locality link to a knowledge chunk point.
+
+    Tries ``point_id`` / ingest-time ``stable_point_id`` first, then
+    ``doc_id`` + ``chunk_index`` payload match so generation-scoped
+    replacement ids still resolve.
+    """
+    if not client.collection_exists(collection_name):
+        return None
+    point_id = knowledge_point_id_for_link(payload)
+    if point_id:
+        found = client.retrieve(
+            collection_name=collection_name,
+            ids=[point_id],
+            with_payload=True,
+            with_vectors=False,
+        )
+        if found:
+            return found[0]
+    doc_id = str(payload.get("doc_id") or "").strip()
+    wanted = _as_chunk_index(payload.get("chunk_index"))
+    if not doc_id or wanted is None:
+        return None
+    next_offset: Any = None
+    while True:
+        batch, next_offset = client.scroll(
+            collection_name=collection_name,
+            scroll_filter=Filter(
+                must=[
+                    FieldCondition(
+                        key="doc_id",
+                        match=MatchValue(value=doc_id),
+                    )
+                ]
+            ),
+            limit=64,
+            offset=next_offset,
+            with_payload=True,
+            with_vectors=False,
+        )
+        if not batch:
+            break
+        for point in batch:
+            item = point.payload or {}
+            if str(item.get("source_type") or "") != "pdf_chunk":
+                continue
+            if _as_chunk_index(item.get("chunk_index")) == wanted:
+                return point
+        if next_offset is None:
+            break
+    return None
+
+
 def denormalize_knowledge_localities(
     client: QdrantClient,
     payloads: Sequence[Mapping[str, Any]],
@@ -390,23 +462,19 @@ def denormalize_knowledge_localities(
     """Merge obec_id / cast_obce onto matching knowledge points via set_payload.
 
     Missing knowledge points are skipped. Vectors are never rewritten.
+    After content replace, ingest-time point ids may miss; lookup then
+    falls back to ``doc_id`` + ``chunk_index``.
     """
     if not payloads or not client.collection_exists(collection_name):
         return 0
     updated = 0
     for payload in payloads:
-        point_id = knowledge_point_id_for_link(payload)
-        if not point_id:
-            continue
-        found = client.retrieve(
-            collection_name=collection_name,
-            ids=[point_id],
-            with_payload=True,
-            with_vectors=False,
+        found_point = retrieve_knowledge_point_for_link(
+            client, payload, collection_name=collection_name
         )
-        if not found:
+        if found_point is None:
             continue
-        existing = dict(found[0].payload or {})
+        existing = dict(found_point.payload or {})
         obec_id = str(payload.get("obec_id") or "").strip()
         if not obec_id:
             continue
@@ -427,7 +495,7 @@ def denormalize_knowledge_localities(
         client.set_payload(
             collection_name=collection_name,
             payload=patch,
-            points=[found[0].id],
+            points=[found_point.id],
             wait=True,
         )
         updated += 1

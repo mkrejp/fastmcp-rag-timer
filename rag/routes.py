@@ -778,8 +778,10 @@ def replace_document_content_http(
 
     Keeps ``doc_id``. New chunk points are inserted first; old text-chunk
     points are deleted afterwards. On embed/upsert failure the new points
-    are removed and the live document is left unchanged. ``pdf_image`` /
-    ``pdf_figure`` points are kept. Same auth as ``POST /upload``.
+    are removed and the live document is left unchanged. If old-point
+    delete fails after commit, the response is still success with
+    ``cleanup_pending``. ``pdf_image`` / ``pdf_figure`` points and
+    ``locality_links`` rows are kept. Same auth as ``POST /upload``.
     """
     resolved_reason = _resolve_reason(body.reason, reason)
     do_dry_run = bool(body.dry_run or dry_run)

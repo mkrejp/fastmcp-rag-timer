@@ -25,6 +25,10 @@ All RAG server data lives under **`/data/rag`** (override with `RAG_DATA_ROOT`):
 
 On Railway, mount a volume at `/data`. The app creates `/data/rag` and `/data/accnt` at startup. Dockerfile does not declare `VOLUME`.
 
+`versions/{doc_id}/` lives only on that node's volume. Nodes `00001` and `00002` do
+**not** replicate version snapshots (or Qdrant) to each other. Include `versions/`
+in any backup or restore of `/data/rag`; there is no in-repo backup tooling.
+
 ## Configuration
 
 | Variable | Default | Purpose |
@@ -118,7 +122,7 @@ Embedding REST routes (multipart upload, chunked upload, PDF alias, images, dele
 - `GET /documents` — catalog (**no inbound auth**)
 - `GET /documents/{doc_id}` — metadata (**no inbound auth**)
 - `GET /documents/{doc_id}/text` — processed full text, no re-parse (**no inbound auth**)
-- `PUT /documents/{doc_id}/content` — replace indexed text in place (same `doc_id`), archive the previous version, re-chunk and re-embed; same auth as `DELETE`. Required `reason`; `dry_run=true` previews hashes/counts
+- `PUT /documents/{doc_id}/content` — replace indexed text in place (same `doc_id`), archive the previous version, re-chunk and re-embed; same auth as `DELETE`. Required `reason`; `dry_run=true` previews hashes/counts. Process-local `doc_lock` shared with metadata PATCH and DELETE (not cross-process / cross-node)
 - `GET /documents/{doc_id}/versions` — list archived versions (no full text by default; `include_text=true` adds it). Same auth as `PUT /documents/{doc_id}/content`
 - `POST /documents/{doc_id}/versions/{n}/restore` — restore version `n` through the same safe replace path (archives current first). Same auth; required `reason`
 - `PATCH /documents/{doc_id}` — update catalog metadata and matching Qdrant payloads in place (no re-embed; same auth as `DELETE`)
@@ -216,19 +220,32 @@ then the new text is chunked and embedded with the same ingest pipeline / embedd
 `POST /upload`. Qdrant has no transactions: **new `pdf_chunk` points are inserted first** (generation-
 scoped ids so they cannot overwrite the live points), processed files are updated, then the old
 text-chunk points are deleted. If embed or upsert fails, the new points are deleted, processed files
-are restored, the unused version snapshot is dropped, and the live document is unchanged.
+are restored, the unused version snapshot is dropped, and the live document is unchanged. If
+deleting the old points fails after the new generation is committed, the call still returns
+**200** with `cleanup_pending=true`, leftover ids/count, and a loud error log (retries first).
 
-Verification and document metadata (`verification[]`, `verification_status`, `reliability`, `tags`,
-`obec_kod`, `gps`, `qg_*`, …) are copied onto the new chunk points. Only `content_hash` and
-`updated_at` change. **`pdf_image` and `pdf_figure` points are kept** (same vectors and image files);
-their `content_hash` / `updated_at` (and figure `sha256`) are updated in place. PDF originals stay on
-disk; this endpoint replaces extracted/indexed text, not PDF bytes. Text and successfully parsed
-JSON originals are overwritten to match the new content.
+Document-level metadata from catalog `extra` (and payload keys identical across every old
+chunk) is copied onto the new points. Per-chunk keys that differ between old chunks are **not**
+smeared from the first chunk; their names are returned as `dropped_chunk_fields`. Only
+`content_hash` and `updated_at` are always rewritten. **`pdf_image` and `pdf_figure` points are
+kept** (same vectors and image files); their `content_hash` / `updated_at` (and figure `sha256`)
+are updated in place. **`locality_links` rows are not deleted**; the response includes
+`affected_locality_links`. Those links still point at ingest-time chunk UUIDs, so they need a
+later re-link. After replace, live chunk ids are `uuid5(doc_id:g{generation}:{chunk_index})` and
+no longer equal `stable_point_id(doc_id, chunk_index)`. PDF originals stay on disk; this endpoint
+replaces extracted/indexed text, not PDF bytes. Text and successfully parsed JSON originals are
+overwritten to match the new content.
+
+Replace, restore, `PATCH /documents/{doc_id}/metadata`, and `DELETE /documents/{doc_id}` share a
+**process-local** `doc_lock` (`rag/doc_locks.py`). It does not coordinate across processes or
+between nodes `00001`/`00002`. Version snapshots live only on the node volume and are not
+replicated.
 
 Required: same Bearer (or Google session) as `POST /upload` / `DELETE`, and a non-empty `reason`
-(JSON body or query param). `dry_run=true` returns old/new hashes, chunk counts, and `next_version`
-without writing. Identical content returns `{"status":"unchanged",...}` and does not create a
-version. Unknown `doc_id`: **404**. Missing reason: **400**. Missing/invalid token: **401**.
+(JSON body or query param). `dry_run=true` returns old/new hashes, chunk counts, `next_version`,
+`dropped_chunk_fields`, and `affected_locality_links` without writing. Identical content returns
+`{"status":"unchanged",...}` and does not create a version. Unknown `doc_id`: **404**. Missing
+reason: **400**. Missing/invalid token: **401**.
 
 ```bash
 export RAG_API_TOKEN=your-api-token
@@ -506,6 +523,7 @@ rag/
   geo_refined.py        # geo_refined schema, prefer-refined helpers
   geo_index.py          # refine_geo / refine_geo_batch / list_geo_refinements
   document_delete.py    # remove one document from disk + Qdrant
+  doc_locks.py          # process-local per-doc_id lock (sorted unique ids)
   document_replace.py   # in-place text replace + versions/{doc_id} snapshots
   geojson.py            # generic GeoJSON → RAG text
   remote.py             # fetch remote JSON (GitHub blob → raw, SSRF guards)

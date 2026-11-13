@@ -13,6 +13,14 @@ Qdrant has no multi-point transactions. Replacement therefore:
 On any failure before the old points are dropped, newly inserted points are
 deleted and the archived version snapshot is removed so the live document is
 unchanged. Image and figure points are never deleted by this path.
+
+``locality_links`` rows are counted (``affected_locality_links``) but never
+deleted. After replace, generation-scoped chunk ids no longer equal
+``stable_point_id(doc_id, chunk_index)``; callers must resolve by
+``doc_id`` + ``chunk_index`` payload. Per-chunk payload keys that differ
+across old points are not copied onto the new generation
+(``dropped_chunk_fields``). Concurrent replace / metadata PATCH / DELETE
+share process-local ``doc_lock`` (not cross-process or cross-node).
 """
 
 from __future__ import annotations
@@ -36,6 +44,8 @@ from qdrant_client.models import (
     PointStruct,
 )
 
+from rag.config import LOCALITY_LINKS_COLLECTION
+from rag.doc_locks import doc_lock
 from rag.document_delete import DocumentNotFoundError
 from rag.embeddings import get_ingest_embeddings
 from rag.ingest import content_sha256
@@ -58,6 +68,8 @@ TEXT_CHUNK_SOURCE = "pdf_chunk"
 IMAGE_SOURCE_TYPES = ("pdf_image", "pdf_figure")
 MAX_REASON_LEN = 2000
 _SCROLL_LIMIT = 64
+_OLD_DELETE_ATTEMPTS = 3
+_ALWAYS_OVERWRITE_KEYS = frozenset({"content_hash", "updated_at"})
 
 # Payload keys that belong to chunk identity / body, not document metadata.
 _CHUNK_BODY_KEYS = frozenset(
@@ -272,6 +284,156 @@ def _delete_point_ids(
     )
 
 
+def _remaining_point_ids(
+    qdrant: QdrantClient,
+    *,
+    collection_name: str,
+    point_ids: Sequence[int | str | uuid.UUID],
+) -> list[int | str | uuid.UUID]:
+    """Return the subset of ``point_ids`` that still exist in Qdrant."""
+    if not point_ids or not qdrant.collection_exists(collection_name):
+        return []
+    found = qdrant.retrieve(
+        collection_name=collection_name,
+        ids=list(point_ids),
+        with_payload=False,
+        with_vectors=False,
+    )
+    return _point_ids(list(found))
+
+
+def _delete_old_chunk_points(
+    qdrant: QdrantClient,
+    *,
+    collection_name: str,
+    doc_id: str,
+    point_ids: Sequence[int | str | uuid.UUID],
+) -> list[int | str | uuid.UUID]:
+    """Delete previous chunk ids, retrying, and return leftovers if any remain.
+
+    After new points are committed, leftover old ids must not fail the
+    replace. Callers report ``cleanup_pending`` instead of raising.
+    """
+    remaining = list(point_ids)
+    for attempt in range(1, _OLD_DELETE_ATTEMPTS + 1):
+        if not remaining:
+            return []
+        try:
+            _delete_point_ids(
+                qdrant, collection_name=collection_name, point_ids=remaining
+            )
+        except Exception:  # noqa: BLE001 - leftover cleanup is best-effort
+            logger.exception(
+                "Deleting replaced chunk points failed attempt=%s/%s "
+                "doc_id=%s leftover_count=%s leftover_ids=%s",
+                attempt,
+                _OLD_DELETE_ATTEMPTS,
+                doc_id,
+                len(remaining),
+                remaining,
+            )
+        remaining = _remaining_point_ids(
+            qdrant, collection_name=collection_name, point_ids=remaining
+        )
+        if not remaining:
+            return []
+    logger.error(
+        "Leftover old chunk points after replace doc_id=%s leftover_count=%s "
+        "leftover_ids=%s; new generation is live — retry DELETE of these "
+        "point ids or re-run replace",
+        doc_id,
+        len(remaining),
+        remaining,
+    )
+    return remaining
+
+
+def _count_locality_links(qdrant: QdrantClient, doc_id: str) -> int:
+    """Return how many ``locality_links`` rows reference ``doc_id``.
+
+    Does not create or delete the collection. Links are not rewritten on
+    replace; they need a later re-link against the new chunk generation.
+    """
+    if not qdrant.collection_exists(LOCALITY_LINKS_COLLECTION):
+        return 0
+    return int(
+        qdrant.count(
+            collection_name=LOCALITY_LINKS_COLLECTION,
+            count_filter=Filter(
+                must=[
+                    FieldCondition(
+                        key="doc_id",
+                        match=MatchValue(value=doc_id),
+                    )
+                ]
+            ),
+            exact=True,
+        ).count
+    )
+
+
+def _payload_values_equal(left: object, right: object) -> bool:
+    """Return whether two payload values compare equal after JSON round-trip."""
+    if left is right:
+        return True
+    try:
+        return json.dumps(left, sort_keys=True, default=str) == json.dumps(
+            right, sort_keys=True, default=str
+        )
+    except (TypeError, ValueError):
+        return left == right
+
+
+def _shared_chunk_fields(
+    existing_chunks: list[Any],
+) -> tuple[dict[str, Any], list[str]]:
+    """Split old chunk metadata into identical-across-chunks vs dropped keys.
+
+    Body identity keys and ``content_hash`` / ``updated_at`` are ignored.
+    Keys missing from any chunk, or whose values differ, are dropped.
+    """
+    skip = _CHUNK_BODY_KEYS | _ALWAYS_OVERWRITE_KEYS
+    maps: list[dict[str, Any]] = []
+    for point in existing_chunks:
+        payload = dict(point.payload or {})
+        maps.append({key: value for key, value in payload.items() if key not in skip})
+    if not maps:
+        return {}, []
+    keys: set[str] = set()
+    for item in maps:
+        keys.update(item)
+    shared: dict[str, Any] = {}
+    dropped: list[str] = []
+    for key in sorted(keys):
+        if any(key not in item for item in maps):
+            dropped.append(key)
+            continue
+        first = maps[0][key]
+        if all(_payload_values_equal(item[key], first) for item in maps[1:]):
+            if first is not None:
+                shared[key] = first
+        else:
+            dropped.append(key)
+    return shared, dropped
+
+
+def _side_effect_fields(
+    *,
+    dropped_chunk_fields: Sequence[str],
+    affected_locality_links: int,
+    leftover_old_ids: Sequence[int | str | uuid.UUID] = (),
+) -> dict[str, Any]:
+    """Return replace-response keys for dropped fields, links, and leftovers."""
+    leftover = [str(point_id) for point_id in leftover_old_ids]
+    return {
+        "dropped_chunk_fields": list(dropped_chunk_fields),
+        "affected_locality_links": int(affected_locality_links),
+        "cleanup_pending": bool(leftover),
+        "leftover_old_point_ids": leftover,
+        "leftover_old_point_count": len(leftover),
+    }
+
+
 def _versions_index_path(storage: RagStorage, doc_id: str) -> Path:
     """Return the per-document versions catalog path."""
     return storage.versions_doc_dir(doc_id) / "index.json"
@@ -431,19 +593,18 @@ def _preserved_payload(
     existing_chunks: list[Any],
     new_hash: str,
     updated_at: str,
-) -> dict[str, Any]:
-    """Copy verification/metadata fields onto replacement chunk payloads."""
+) -> tuple[dict[str, Any], list[str]]:
+    """Return document-level payload fields plus names of dropped per-chunk keys.
+
+    Catalog ``meta.extra`` is always applied. Additional keys are copied from
+    old chunks only when every old chunk has the same value. Differing
+    per-chunk fields are listed in ``dropped_chunk_fields`` and are not
+    smeared onto the new generation.
+    """
     fields = chunk_payload_fields(meta.extra)
-    if existing_chunks:
-        sample = dict(existing_chunks[0].payload or {})
-        for key, value in sample.items():
-            if key in _CHUNK_BODY_KEYS:
-                continue
-            if key not in fields and value is not None:
-                fields[key] = value
-        source_url = sample.get("source_url")
-        if source_url and "source_url" not in fields:
-            fields["source_url"] = source_url
+    shared, dropped = _shared_chunk_fields(existing_chunks)
+    for key, value in shared.items():
+        fields.setdefault(key, value)
     if meta.lat is not None:
         fields.setdefault("lat", meta.lat)
     if meta.lon is not None:
@@ -452,7 +613,7 @@ def _preserved_payload(
         fields.setdefault("geo_refined", dict(meta.geo_refined))
     fields["content_hash"] = new_hash
     fields["updated_at"] = updated_at
-    return fields
+    return fields, dropped
 
 
 def _image_payload_update(*, new_hash: str, updated_at: str) -> dict[str, Any]:
@@ -542,8 +703,36 @@ def replace_document_content(
 
     Same ingest embedding backend as upload (``embed_fn`` or
     ``get_ingest_embeddings``). Identical content is a no-op. ``dry_run``
-    reports hashes and counts without writing.
+    reports hashes and counts without writing. Holds the process-local
+    ``doc_lock`` for ``doc_id``.
     """
+    with doc_lock(doc_id):
+        return _replace_document_content(
+            storage=storage,
+            qdrant=qdrant,
+            collection_name=collection_name,
+            doc_id=doc_id,
+            content=content,
+            reason=reason,
+            author=author,
+            dry_run=dry_run,
+            embed_fn=embed_fn,
+        )
+
+
+def _replace_document_content(
+    *,
+    storage: RagStorage,
+    qdrant: QdrantClient,
+    collection_name: str,
+    doc_id: str,
+    content: str,
+    reason: str,
+    author: str = "bearer",
+    dry_run: bool = False,
+    embed_fn: EmbedFn | None = None,
+) -> dict[str, Any]:
+    """Replace indexed text while the caller holds ``doc_lock(doc_id)``."""
     meta = _load_document(storage, doc_id)
     reason_text = normalize_reason(reason)
     new_content = normalize_content(content)
@@ -568,6 +757,17 @@ def replace_document_content(
                 payload_filter=_source_type_filter(doc_id, source_type),
             )
         )
+    affected_links = _count_locality_links(qdrant, doc_id)
+    extra_payload, dropped_chunk_fields = _preserved_payload(
+        meta,
+        existing_chunks=old_chunks,
+        new_hash=new_hash,
+        updated_at="",
+    )
+    side = _side_effect_fields(
+        dropped_chunk_fields=dropped_chunk_fields,
+        affected_locality_links=affected_links,
+    )
 
     if old_hash == new_hash:
         logger.info("Content replace no-op doc_id=%s (identical hash)", doc_id)
@@ -578,6 +778,7 @@ def replace_document_content(
             "content_hash": old_hash,
             "chunk_count": len(old_chunks),
             "image_points_preserved": image_points,
+            **side,
         }
 
     if dry_run:
@@ -591,15 +792,12 @@ def replace_document_content(
             "old_chunk_count": len(old_chunks),
             "new_chunk_count": len(chunks),
             "image_points_preserved": image_points,
+            **side,
         }
 
     updated_at = utc_now_iso()
-    extra_payload = _preserved_payload(
-        meta,
-        existing_chunks=old_chunks,
-        new_hash=new_hash,
-        updated_at=updated_at,
-    )
+    extra_payload["content_hash"] = new_hash
+    extra_payload["updated_at"] = updated_at
     source_url = extra_payload.pop("source_url", None)
     previous_sha = meta.sha256
     previous_count = meta.chunk_count
@@ -679,7 +877,12 @@ def replace_document_content(
         raise
 
     old_ids = _point_ids(old_chunks)
-    _delete_point_ids(qdrant, collection_name=collection_name, point_ids=old_ids)
+    leftover_old_ids = _delete_old_chunk_points(
+        qdrant,
+        collection_name=collection_name,
+        doc_id=doc_id,
+        point_ids=old_ids,
+    )
     try:
         figures_updated = _set_payload_for_source(
             qdrant,
@@ -704,13 +907,17 @@ def replace_document_content(
         images_updated = 0
     logger.info(
         "Replaced document content doc_id=%s version=%s new_chunks=%s "
-        "old_chunks=%s images_updated=%s figures_updated=%s",
+        "old_chunks=%s leftover_old=%s images_updated=%s figures_updated=%s "
+        "affected_locality_links=%s dropped_chunk_fields=%s",
         doc_id,
         snapshot.version,
         len(chunks),
         len(old_ids),
+        len(leftover_old_ids),
         images_updated,
         figures_updated,
+        affected_links,
+        ",".join(dropped_chunk_fields) or "-",
     )
     return {
         "status": "replaced",
@@ -720,11 +927,16 @@ def replace_document_content(
         "content_hash": new_hash,
         "previous_content_hash": old_hash,
         "chunks_indexed": len(chunks),
-        "chunks_removed": len(old_ids),
+        "chunks_removed": len(old_ids) - len(leftover_old_ids),
         "image_points_preserved": image_points,
         "author": author,
         "reason": reason_text,
         "updated_at": updated_at,
+        **_side_effect_fields(
+            dropped_chunk_fields=dropped_chunk_fields,
+            affected_locality_links=affected_links,
+            leftover_old_ids=leftover_old_ids,
+        ),
     }
 
 
@@ -743,30 +955,33 @@ def restore_document_version(
     """Restore archived version ``n`` through the same safe replace path.
 
     Archives the live text as a new version before applying the restore.
+    Holds the process-local ``doc_lock`` for ``doc_id`` (re-entrant with
+    the inner replace).
     """
-    _load_document(storage, doc_id)
-    if version < 1:
-        raise DocumentReplaceError("version must be a positive integer")
-    record = read_version_record(storage, doc_id, version)
-    text = read_version_text(storage, doc_id, version)
-    restore_reason = normalize_reason(reason)
-    result = replace_document_content(
-        storage=storage,
-        qdrant=qdrant,
-        collection_name=collection_name,
-        doc_id=doc_id,
-        content=text,
-        reason=restore_reason,
-        author=author,
-        dry_run=dry_run,
-        embed_fn=embed_fn,
-    )
-    if result.get("status") == "unchanged":
+    with doc_lock(doc_id):
+        _load_document(storage, doc_id)
+        if version < 1:
+            raise DocumentReplaceError("version must be a positive integer")
+        record = read_version_record(storage, doc_id, version)
+        text = read_version_text(storage, doc_id, version)
+        restore_reason = normalize_reason(reason)
+        result = _replace_document_content(
+            storage=storage,
+            qdrant=qdrant,
+            collection_name=collection_name,
+            doc_id=doc_id,
+            content=text,
+            reason=restore_reason,
+            author=author,
+            dry_run=dry_run,
+            embed_fn=embed_fn,
+        )
+        if result.get("status") == "unchanged":
+            return result
+        if dry_run:
+            result["restore_version"] = version
+            result["restore_content_hash"] = record.content_hash
+            return result
+        result["status"] = "restored"
+        result["restored_version"] = version
         return result
-    if dry_run:
-        result["restore_version"] = version
-        result["restore_content_hash"] = record.content_hash
-        return result
-    result["status"] = "restored"
-    result["restored_version"] = version
-    return result
