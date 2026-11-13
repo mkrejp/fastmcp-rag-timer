@@ -708,29 +708,28 @@ def replace_document_content(
     """
     with doc_lock(doc_id):
         return _replace_document_content(
-            storage=storage,
-            qdrant=qdrant,
-            collection_name=collection_name,
-            doc_id=doc_id,
-            content=content,
-            reason=reason,
-            author=author,
-            dry_run=dry_run,
-            embed_fn=embed_fn,
+            storage,
+            qdrant,
+            collection_name,
+            doc_id,
+            content,
+            reason,
+            author,
+            dry_run,
+            embed_fn,
         )
 
 
 def _replace_document_content(
-    *,
     storage: RagStorage,
     qdrant: QdrantClient,
     collection_name: str,
     doc_id: str,
     content: str,
     reason: str,
-    author: str = "bearer",
-    dry_run: bool = False,
-    embed_fn: EmbedFn | None = None,
+    author: str,
+    dry_run: bool,
+    embed_fn: EmbedFn | None,
 ) -> dict[str, Any]:
     """Replace indexed text while the caller holds ``doc_lock(doc_id)``."""
     meta = _load_document(storage, doc_id)
@@ -966,15 +965,15 @@ def restore_document_version(
         text = read_version_text(storage, doc_id, version)
         restore_reason = normalize_reason(reason)
         result = _replace_document_content(
-            storage=storage,
-            qdrant=qdrant,
-            collection_name=collection_name,
-            doc_id=doc_id,
-            content=text,
-            reason=restore_reason,
-            author=author,
-            dry_run=dry_run,
-            embed_fn=embed_fn,
+            storage,
+            qdrant,
+            collection_name,
+            doc_id,
+            text,
+            restore_reason,
+            author,
+            dry_run,
+            embed_fn,
         )
         if result.get("status") == "unchanged":
             return result

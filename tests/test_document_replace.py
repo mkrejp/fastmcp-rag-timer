@@ -25,10 +25,7 @@ from rag.document_replace import (
 from rag.geo_index import refine_geo
 from rag.ingest import content_sha256, ingest_bytes, stable_point_id
 from rag.storage import RagStorage
-from rag.vectorstore import (
-    denormalize_knowledge_localities,
-    upsert_locality_links,
-)
+from rag.vectorstore import denormalize_knowledge_localities, upsert_locality_links
 from tests.conftest import AUTH_HEADERS, patched_embeddings
 from tests.fixtures.pdf_factory import build_image_rich_pdf
 
