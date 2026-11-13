@@ -7,17 +7,10 @@ from typing import Any, Mapping, Sequence
 from qdrant_client import QdrantClient
 from qdrant_client.models import FieldCondition, Filter, MatchValue, PointStruct
 
-from rag.config import (
-    FIGURE_INDEX_VERSION,
-    resolve_figure_batch_size,
-)
+from rag.config import FIGURE_INDEX_VERSION, resolve_figure_batch_size
 from rag.embeddings import get_ingest_embeddings
 from rag.figure_summary import FigureLlmBudget
-from rag.geo_refined import (
-    attach_preferred_geo,
-    matches_geo_filter,
-    validate_precision,
-)
+from rag.geo_refined import attach_preferred_geo, matches_geo_filter, validate_precision
 from rag.image_embed import embed_image_paths, image_embedding_enabled
 from rag.logging_setup import get_logger
 from rag.payloads import (
@@ -227,8 +220,6 @@ def index_pdf_figures(
     preserve_existing: bool = True,
 ) -> tuple[int, set[tuple[int, int]]]:
     """Run figure pipeline, store PNGs, upsert Qdrant; return count and skip keys."""
-    from rag.storage import ImageMeta
-
     existing = (
         _load_existing_figure_payloads(
             qdrant, collection_name=collection_name, doc_id=doc_id

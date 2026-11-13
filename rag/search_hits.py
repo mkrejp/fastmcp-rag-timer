@@ -68,76 +68,34 @@ def geo_header_suffix(
     return f" lat={geo['lat']} lon={geo['lon']} geo_source={geo['geo_source']}"
 
 
-def build_knowledge_hit(
+def _build_search_hit(
     storage: RagStorage,
     payload: dict[str, Any],
     *,
     score: float | None,
     text: str,
     image_url_fn: Callable[[str, str], str | None],
-    document_fallback: dict[str, Any] | None = None,
+    document_fallback: dict[str, Any] | None,
+    allowed_source_types: frozenset[str],
+    default_source_type: str,
 ) -> dict[str, Any]:
-    """Build one structured hit for ``search_domain_knowledge`` JSON output."""
+    """Build one structured search hit for JSON MCP output."""
     doc_id = str(payload.get("doc_id") or "")
-    image_id = payload.get("image_id")
-    image_id_str = str(image_id) if image_id else None
+    raw_image_id = payload.get("image_id")
+    image_id_str = str(raw_image_id) if raw_image_id else ""
     parent = payload.get("parent_document") or payload.get("source")
-    source_type = str(payload.get("source_type") or "pdf_chunk")
-    page_number = payload.get("page_number")
+    source_type = str(payload.get("source_type") or default_source_type)
     page_image_id = page_image_id_for_hit(
         storage,
         payload,
-        allowed_source_types=frozenset({"pdf_chunk", "pdf_figure"}),
+        allowed_source_types=allowed_source_types,
     )
     url = image_url_fn(doc_id, image_id_str) if doc_id and image_id_str else None
     hit: dict[str, Any] = {
         "doc_id": doc_id or None,
         "parent_document": parent,
         "source_type": source_type,
-        "page_number": page_number,
-        "page_image_id": page_image_id,
-        "image_id": image_id_str,
-        "url": url,
-        "score": score,
-        "content": text,
-    }
-    _attach_lifecycle_fields(hit, payload)
-    if source_type == "pdf_figure":
-        hit["verification_status"] = payload.get("verification_status")
-        hit["confidence"] = payload.get("confidence")
-        if payload.get("caption"):
-            hit["caption"] = payload.get("caption")
-    return attach_preferred_geo(
-        hit, fallback=geo_fallback_payload(payload, document_fallback)
-    )
-
-
-def build_image_search_hit(
-    storage: RagStorage,
-    payload: dict[str, Any],
-    *,
-    score: float | None,
-    text: str,
-    image_url_fn: Callable[[str, str], str | None],
-    document_fallback: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Build one structured hit for ``search_images`` JSON output."""
-    doc_id = str(payload.get("doc_id") or "")
-    image_id_str = str(payload.get("image_id") or "")
-    parent = payload.get("parent_document") or payload.get("source")
-    source_type = str(payload.get("source_type") or "")
-    page_number = payload.get("page_number")
-    page_image_id = page_image_id_for_hit(
-        storage,
-        payload,
-        allowed_source_types=frozenset({"pdf_image", "pdf_figure"}),
-    )
-    url = image_url_fn(doc_id, image_id_str) if doc_id and image_id_str else None
-    hit: dict[str, Any] = {
-        "doc_id": doc_id or None,
-        "parent_document": parent,
-        "source_type": source_type,
-        "page_number": page_number,
+        "page_number": payload.get("page_number"),
         "page_image_id": page_image_id,
         "image_id": image_id_str or None,
         "url": url,
@@ -153,3 +111,50 @@ def build_image_search_hit(
     return attach_preferred_geo(
         hit, fallback=geo_fallback_payload(payload, document_fallback)
     )
+
+
+def _hit_builder(
+    *,
+    allowed_source_types: frozenset[str],
+    default_source_type: str,
+) -> Callable[..., dict[str, Any]]:
+    """Return a search-hit builder closed over source-type defaults."""
+
+    def builder(
+        storage: RagStorage,
+        payload: dict[str, Any],
+        *,
+        score: float | None,
+        text: str,
+        image_url_fn: Callable[[str, str], str | None],
+        document_fallback: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return _build_search_hit(
+            storage,
+            payload,
+            score=score,
+            text=text,
+            image_url_fn=image_url_fn,
+            document_fallback=document_fallback,
+            allowed_source_types=allowed_source_types,
+            default_source_type=default_source_type,
+        )
+
+    return builder
+
+
+build_knowledge_hit = _hit_builder(
+    allowed_source_types=frozenset({"pdf_chunk", "pdf_figure"}),
+    default_source_type="pdf_chunk",
+)
+build_knowledge_hit.__doc__ = (
+    "Build one structured hit for ``search_domain_knowledge`` JSON output."
+)
+
+build_image_search_hit = _hit_builder(
+    allowed_source_types=frozenset({"pdf_image", "pdf_figure"}),
+    default_source_type="",
+)
+build_image_search_hit.__doc__ = (
+    "Build one structured hit for ``search_images`` JSON output."
+)

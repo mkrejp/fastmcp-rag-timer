@@ -14,6 +14,7 @@ from rag.verification_meta import (
     normalize_overeni_souhrn,
     normalize_verification_metadata,
     split_verification_deletes,
+    supersedes_ids,
     validate_merged_lifecycle_fields,
 )
 
@@ -251,3 +252,12 @@ def test_merged_lifecycle_invariants() -> None:
     assert is_hidden_doc_status("active") is False
     assert is_hidden_doc_status(None) is False
     assert is_hidden_doc_status("") is False
+
+
+def test_supersedes_ids_dedupes_and_rejects_bad_types() -> None:
+    """supersedes may be a string or list; other types are invalid."""
+    assert supersedes_ids(None) == []
+    assert supersedes_ids(["a", "a", " b "]) == ["a", "b"]
+    assert supersedes_ids("solo") == ["solo"]
+    with pytest.raises(DocumentMetadataError, match="list of doc_ids"):
+        supersedes_ids(123)

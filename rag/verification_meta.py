@@ -242,6 +242,24 @@ def validate_merged_lifecycle_fields(
         )
 
 
+def supersedes_ids(value: object) -> list[str]:
+    """Return de-duplicated document IDs stored in ``supersedes``."""
+    if value is None or value == "":
+        raw: list[object] = []
+    elif isinstance(value, str):
+        raw = [value]
+    elif isinstance(value, list):
+        raw = list(value)
+    else:
+        raise DocumentMetadataError("supersedes must be a list of doc_ids")
+    out: list[str] = []
+    for item in raw:
+        text = str(item).strip()
+        if text and text not in out:
+            out.append(text)
+    return out
+
+
 def is_hidden_doc_status(value: object) -> bool:
     """Return whether ``value`` should be excluded from search/list defaults.
 

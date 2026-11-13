@@ -99,7 +99,7 @@ including images without OCR. Payloads include `source_type`, `doc_id`, `parent_
 
 Toggling CLIP does not recreate the collection; re-ingest PDFs to backfill `image_vector`.
 
-**Delete:** `DELETE /documents/{doc_id}` (and `rag.document_delete.delete_document`) removes originals, processed files including `images/`, the catalog row, and all Qdrant points with matching `doc_id` (chunks and images). If another document still references this id via `superseded_by` / `supersedes`, DELETE returns **409** with `linked_ids` (unlink first).
+**Delete:** `DELETE /documents/{doc_id}` (and `rag.document_delete.delete_document`) removes originals, processed files including `images/`, the catalog row, and all Qdrant points with matching `doc_id` (chunks and images). If another document still references this ID via `superseded_by` / `supersedes`, DELETE returns **409** with `linked_ids` (unlink first).
 
 ## HTTP API
 
@@ -276,21 +276,21 @@ curl -sS -X PATCH \
 ### Supersede a document (`POST /documents/{doc_id}/supersede`)
 
 When a fact is replaced by a new upload, link the old document to the new one **atomically**. The
-path id is the old document. The body is `{"new_doc_id":"…","correction_note":"…"}` (`correction_note`
+path ID is the old document. The body is `{"new_doc_id":"…","correction_note":"…"}` (`correction_note`
 optional, truncated at 500 characters like other quote fields). The server sets:
 
 - old: `superseded_by=new_doc_id`, `doc_status=superseded`, optional `correction_note`
-- new: `supersedes` list containing the old id (append, no duplicates)
+- new: `supersedes` list containing the old ID (append, no duplicates)
 
 It does **not** change `new.doc_status`, auto-write other documents, re-embed, or delete points.
-Self-links, missing ids, cycles (`A→B→A` and longer), and a replacement that is itself
+Self-links, missing IDs, cycles (`A→B→A` and longer), and a replacement that is itself
 `superseded` / `retracted` return **400**. If the old document is
-already superseded by a different id, unlink first (**400**). Repeat of the same pair is idempotent.
+already superseded by a different ID, unlink first (**400**). Repeat of the same pair is idempotent.
 If the second document write fails, the first document is rolled back so the pair stays consistent.
-`GET /documents/{id}` shows `doc_status` (lifecycle) beside catalog ingest `status` (`ready`). Search
+`GET /documents/{doc_id}` shows `doc_status` (lifecycle) beside catalog ingest `status` (`ready`). Search
 (`search_domain_knowledge`, `search_images`, `list_image_records`, `list_geo_refinements`) omits
 `superseded` / `retracted` by default; pass `include_superseded=true` to include them. Direct GET by
-id and `get_document_text` keep working.
+ID and `get_document_text` keep working.
 
 ```bash
 curl -sS -X POST \
@@ -304,7 +304,7 @@ curl -sS -X POST \
   http://127.0.0.1:8080/documents/{old_doc_id}/unsupersede
 ```
 
-To retract without a replacement, `PATCH /documents/{id}/metadata` with
+To retract without a replacement, `PATCH /documents/{doc_id}/metadata` with
 `{"doc_status":"retracted","correction_note":"…"}`.
 
 ## MCP (AI clients)

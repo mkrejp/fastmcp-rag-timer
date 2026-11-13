@@ -8,10 +8,7 @@ from qdrant_client import QdrantClient
 
 from rag.doc_locks import doc_lock
 from rag.document_delete import DocumentNotFoundError
-from rag.document_patch import (
-    delete_payload_keys_for_doc,
-    write_verification_payload,
-)
+from rag.document_patch import delete_payload_keys_for_doc, write_verification_payload
 from rag.logging_setup import get_logger
 from rag.storage import DocumentMeta, RagStorage
 from rag.verification_meta import (
@@ -19,6 +16,7 @@ from rag.verification_meta import (
     DocumentMetadataError,
     is_hidden_doc_status,
     normalize_verification_metadata,
+    supersedes_ids,
 )
 
 logger = get_logger("rag.document_supersede")
@@ -36,24 +34,6 @@ def _load_document(storage: RagStorage, doc_id: str) -> DocumentMeta:
     if meta is None:
         raise DocumentNotFoundError(doc_id)
     return meta
-
-
-def _as_supersedes_list(value: object) -> list[str]:
-    """Return a de-duplicated list of doc ids from ``supersedes`` storage."""
-    if value is None or value == "":
-        raw: list[object] = []
-    elif isinstance(value, str):
-        raw = [value]
-    elif isinstance(value, list):
-        raw = list(value)
-    else:
-        raise DocumentMetadataError("supersedes must be a list of doc_ids")
-    out: list[str] = []
-    for item in raw:
-        text = str(item).strip()
-        if text and text not in out:
-            out.append(text)
-    return out
 
 
 def _superseded_by_chain(storage: RagStorage, start_id: str) -> list[str]:
@@ -293,7 +273,7 @@ def _supersede_document_locked(
         )
         old_fields.update(note_fields)
 
-    new_supersedes = _as_supersedes_list(new_meta.extra.get("supersedes"))
+    new_supersedes = supersedes_ids(new_meta.extra.get("supersedes"))
     if old_doc_id not in new_supersedes:
         new_supersedes.append(old_doc_id)
 
@@ -392,7 +372,7 @@ def _unsupersede_document_locked(
         if new_meta is not None:
             remaining = [
                 item
-                for item in _as_supersedes_list(new_meta.extra.get("supersedes"))
+                for item in supersedes_ids(new_meta.extra.get("supersedes"))
                 if item != old_doc_id
             ]
             if remaining:

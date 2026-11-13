@@ -10,6 +10,7 @@ from qdrant_client.models import FieldCondition, Filter, FilterSelector, MatchVa
 from rag.doc_locks import doc_lock
 from rag.logging_setup import get_logger
 from rag.storage import RagStorage
+from rag.verification_meta import DocumentMetadataError, supersedes_ids
 
 logger = get_logger("rag.document_delete")
 
@@ -37,31 +38,17 @@ class DocumentLinkedError(ValueError):
         )
 
 
-def _supersedes_ids(value: object) -> list[str]:
-    """Return de-duplicated doc ids stored in ``supersedes``."""
-    if value is None or value == "":
-        raw: list[object] = []
-    elif isinstance(value, str):
-        raw = [value]
-    elif isinstance(value, list):
-        raw = list(value)
-    else:
-        raw = []
-    out: list[str] = []
-    for item in raw:
-        text = str(item).strip()
-        if text and text not in out:
-            out.append(text)
-    return out
-
-
 def _peer_ids_from_extra(extra: Mapping[str, Any]) -> list[str]:
-    """Return ``superseded_by`` and ``supersedes`` ids from catalog extra."""
+    """Return ``superseded_by`` and ``supersedes`` IDs from catalog extra."""
     peers: list[str] = []
     superseded_by = str(extra.get("superseded_by") or "").strip()
     if superseded_by:
         peers.append(superseded_by)
-    for item in _supersedes_ids(extra.get("supersedes")):
+    try:
+        listed = supersedes_ids(extra.get("supersedes"))
+    except DocumentMetadataError:
+        listed = []
+    for item in listed:
         if item not in peers:
             peers.append(item)
     return peers
@@ -93,11 +80,7 @@ def collect_supersession_peers(storage: RagStorage, doc_id: str) -> list[str]:
         meta = storage.read_meta(other_id)
         if meta is None:
             continue
-        extra = meta.extra
-        if str(extra.get("superseded_by") or "").strip() == doc_id:
-            _add(other_id)
-            continue
-        if doc_id in _supersedes_ids(extra.get("supersedes")):
+        if doc_id in _peer_ids_from_extra(meta.extra):
             _add(other_id)
     return linked
 
