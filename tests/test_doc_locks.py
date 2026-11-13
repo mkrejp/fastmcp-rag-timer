@@ -33,3 +33,10 @@ def test_doc_lock_ignores_blank_and_duplicate_ids() -> None:
     with doc_lock("", "  ", "doc-a", "doc-a"):
         with doc_lock():
             pass
+
+
+def test_doc_lock_is_reentrant() -> None:
+    """Nested acquisition of the same doc ID must not deadlock."""
+    with doc_lock("same-doc"):
+        with doc_lock("same-doc", "other-doc"):
+            pass

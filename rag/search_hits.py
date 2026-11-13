@@ -14,6 +14,8 @@ _LIFECYCLE_HIT_KEYS = (
     "supersedes",
     "correction_note",
 )
+_KNOWLEDGE_SOURCE_TYPES = frozenset({"pdf_chunk", "pdf_figure"})
+_IMAGE_SOURCE_TYPES = frozenset({"pdf_image", "pdf_figure"})
 
 
 def _attach_lifecycle_fields(hit: dict[str, Any], payload: dict[str, Any]) -> None:
@@ -113,48 +115,25 @@ def _build_search_hit(
     )
 
 
-def _hit_builder(
-    *,
-    allowed_source_types: frozenset[str],
-    default_source_type: str,
-) -> Callable[..., dict[str, Any]]:
-    """Return a search-hit builder closed over source-type defaults."""
-
-    def builder(
-        storage: RagStorage,
-        payload: dict[str, Any],
-        *,
-        score: float | None,
-        text: str,
-        image_url_fn: Callable[[str, str], str | None],
-        document_fallback: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        return _build_search_hit(
-            storage,
-            payload,
-            score=score,
-            text=text,
-            image_url_fn=image_url_fn,
-            document_fallback=document_fallback,
-            allowed_source_types=allowed_source_types,
-            default_source_type=default_source_type,
-        )
-
-    return builder
+def build_knowledge_hit(
+    storage: RagStorage, payload: dict[str, Any], **kwargs: Any
+) -> dict[str, Any]:
+    """Build one structured hit for ``search_domain_knowledge`` JSON output."""
+    kwargs.update(
+        allowed_source_types=_KNOWLEDGE_SOURCE_TYPES,
+        default_source_type="pdf_chunk",
+    )
+    return _build_search_hit(storage, payload, **kwargs)
 
 
-build_knowledge_hit = _hit_builder(
-    allowed_source_types=frozenset({"pdf_chunk", "pdf_figure"}),
-    default_source_type="pdf_chunk",
-)
-build_knowledge_hit.__doc__ = (
-    "Build one structured hit for ``search_domain_knowledge`` JSON output."
-)
-
-build_image_search_hit = _hit_builder(
-    allowed_source_types=frozenset({"pdf_image", "pdf_figure"}),
-    default_source_type="",
-)
-build_image_search_hit.__doc__ = (
-    "Build one structured hit for ``search_images`` JSON output."
-)
+def build_image_search_hit(
+    storage: RagStorage, payload: dict[str, Any], **kwargs: Any
+) -> dict[str, Any]:
+    """Build one structured hit for ``search_images`` JSON output."""
+    return _build_search_hit(
+        storage,
+        payload,
+        allowed_source_types=_IMAGE_SOURCE_TYPES,
+        default_source_type="",
+        **kwargs,
+    )

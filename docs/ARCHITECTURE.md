@@ -197,7 +197,7 @@ missing `doc_status` counts as active). Direct `GET /documents/{doc_id}` and `ge
 return superseded/retracted documents. There is no HTTP reindex route. `rag.document_delete.delete_document` rejects
 with `DocumentLinkedError` when `superseded_by` / `supersedes` still reference the ID, otherwise deletes Qdrant
 points by `payload.doc_id` then calls `RagStorage.remove_document_files`. Concurrent supersede/unsupersede,
-`PATCH /metadata`, and DELETE take `rag.doc_locks.doc_lock(*doc_ids)` (sorted per-ID `threading.Lock`).
+`PATCH /metadata`, and DELETE take `rag.doc_locks.doc_lock(*doc_ids)` (sorted per-ID `threading.RLock`).
 `rag.document_patch.patch_document` updates catalog metadata and matching Qdrant payloads with
 `set_payload` only (no re-embedding). `patch_document_metadata` writes RAGloader verification
 fields the same way (chunks get full fields including `verification[]`; `pdf_figure` /
