@@ -164,6 +164,8 @@ def test_is_http_write_request_covers_mutating_routes() -> None:
     assert is_http_write_request("DELETE", "/documents/abc") is True
     assert is_http_write_request("PATCH", "/documents/abc") is True
     assert is_http_write_request("PATCH", "/documents/abc/metadata") is True
+    assert is_http_write_request("POST", "/documents/abc/supersede") is True
+    assert is_http_write_request("POST", "/documents/abc/unsupersede") is True
     assert is_http_write_request("GET", "/upload/abc") is False
     assert is_http_write_request("GET", "/health") is False
     assert is_http_write_request("GET", "/node-info") is False

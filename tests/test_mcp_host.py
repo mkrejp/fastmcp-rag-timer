@@ -41,6 +41,8 @@ def test_mcp_accepts_railway_host_with_token(client):
         "ingest_text",
         "update_document",
         "update_document_metadata",
+        "supersede_document",
+        "unsupersede_document",
         "search_domain_knowledge",
         "link_locality",
         "list_links",
@@ -103,6 +105,18 @@ def test_patch_document_metadata_requires_bearer(client):
     )
 
 
+def test_supersede_document_requires_bearer(client):
+    """POST /documents/{doc_id}/supersede should reject missing bearer tokens."""
+    assert (
+        client.post(
+            "/documents/not-a-real-doc/supersede",
+            json={"new_doc_id": "00000000-0000-0000-0000-000000000000"},
+        ).status_code
+        == 401
+    )
+    assert client.post("/documents/not-a-real-doc/unsupersede").status_code == 401
+
+
 def test_fail_closed_without_token(client, monkeypatch):
     monkeypatch.delenv("MCP_API_TOKEN", raising=False)
     monkeypatch.delenv("RAG_API_TOKEN", raising=False)
@@ -123,6 +137,13 @@ def test_fail_closed_without_token(client, monkeypatch):
     assert (
         client.patch(
             "/documents/not-a-real-doc/metadata", json={"reliability": 1}
+        ).status_code
+        == 503
+    )
+    assert (
+        client.post(
+            "/documents/not-a-real-doc/supersede",
+            json={"new_doc_id": "00000000-0000-0000-0000-000000000000"},
         ).status_code
         == 503
     )

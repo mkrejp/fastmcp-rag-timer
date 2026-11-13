@@ -147,6 +147,7 @@ def test_ensure_payload_indexes_creates_verification_filters() -> None:
     assert ("source_key", PayloadSchemaType.KEYWORD) in created
     assert ("verification_status", PayloadSchemaType.KEYWORD) in created
     assert ("reliability", PayloadSchemaType.INTEGER) in created
+    assert ("doc_status", PayloadSchemaType.KEYWORD) in created
     client.delete_collection.assert_not_called()
     client.upsert.assert_not_called()
     client.delete.assert_not_called()
