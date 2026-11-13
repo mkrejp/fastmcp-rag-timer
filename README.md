@@ -99,7 +99,7 @@ including images without OCR. Payloads include `source_type`, `doc_id`, `parent_
 
 Toggling CLIP does not recreate the collection; re-ingest PDFs to backfill `image_vector`.
 
-**Delete:** `DELETE /documents/{doc_id}` (and `rag.document_delete.delete_document`) removes originals, processed files including `images/`, the catalog row, and all Qdrant points with matching `doc_id` (chunks and images).
+**Delete:** `DELETE /documents/{doc_id}` (and `rag.document_delete.delete_document`) removes originals, processed files including `images/`, the catalog row, and all Qdrant points with matching `doc_id` (chunks and images). If another document still references this id via `superseded_by` / `supersedes`, DELETE returns **409** with `linked_ids` (unlink first).
 
 ## HTTP API
 
@@ -123,8 +123,8 @@ Embedding REST routes (multipart upload, chunked upload, PDF alias, images, dele
   (`active` / `superseded` / `retracted`); `superseded_by` / `supersedes` are rejected here
 - `POST /documents/{doc_id}/supersede` — atomically link this document as superseded by `new_doc_id`
   (sets both sides + `doc_status=superseded`; optional `correction_note`)
-- `POST /documents/{doc_id}/unsupersede` — atomically remove that link from both documents
-- `DELETE /documents/{doc_id}` — remove originals, processed files (including `images/`), catalog row, and Qdrant points
+- `POST /documents/{doc_id}/unsupersede` — atomically remove that link from both documents (`doc_status` is deleted only when it is `superseded`)
+- `DELETE /documents/{doc_id}` — remove originals, processed files (including `images/`), catalog row, and Qdrant points; **409** if supersession links remain
 - `GET /images/{doc_id}/{image_id}` — extracted PDF image bytes (same auth as `POST /upload`; `413` if larger than 50 MiB)
 - `GET /health` — liveness (`status`, `rag_data_root`, ingest/query embedding providers, `image_embedding_enabled`)
 - `GET /node-info` — public JSON: this instance (name, public URL, Railway service/region when present), catalog of nodes with Czech roles (`ZÁPIS` / `ČTENÍ` / `STOP`). No secrets
@@ -249,7 +249,8 @@ may be nulled only in the same request as `verification: null` (full verificatio
 the API returns **400**. `qg_trida`, `qg_flagy`, and `qg_verze` are plain deletes. `doc_status` and `correction_note` are
 also plain deletes, with invariants: `doc_status=superseded` requires an existing `superseded_by`
 link (only the supersede endpoint creates that link); `doc_status=retracted` requires a non-empty
-`correction_note`. `null` on any other field — for example `tags`, `obec_kod`, `gps_presnost`,
+`correction_note`; `doc_status: null` or `doc_status: active` while `superseded_by` is set is
+**400** (use unsupersede). `null` on any other field — for example `tags`, `obec_kod`, `gps_presnost`,
 `extrakce_model`, `fakt_ref`, `superseded_by`, `supersedes` — returns **400**. Direct writes of
 `superseded_by` / `supersedes` (including `null`) point at `POST /documents/{doc_id}/supersede` and
 `POST /documents/{doc_id}/unsupersede`. Successful responses list removals in `deleted_fields`
@@ -282,8 +283,10 @@ optional, truncated at 500 characters like other quote fields). The server sets:
 - new: `supersedes` list containing the old id (append, no duplicates)
 
 It does **not** change `new.doc_status`, auto-write other documents, re-embed, or delete points.
-Self-links, missing ids, and cycles (`A→B→A` and longer) return **400**. If the old document is
+Self-links, missing ids, cycles (`A→B→A` and longer), and a replacement that is itself
+`superseded` / `retracted` return **400**. If the old document is
 already superseded by a different id, unlink first (**400**). Repeat of the same pair is idempotent.
+If the second document write fails, the first document is rolled back so the pair stays consistent.
 `GET /documents/{id}` shows `doc_status` (lifecycle) beside catalog ingest `status` (`ready`). Search
 (`search_domain_knowledge`, `search_images`, `list_image_records`, `list_geo_refinements`) omits
 `superseded` / `retracted` by default; pass `include_superseded=true` to include them. Direct GET by

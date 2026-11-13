@@ -166,10 +166,10 @@ From `rag/routes.py`, `rag/app.py`, `rag/google_oauth.py`, and `rag/admin_routes
 | `GET` | `/documents/{doc_id}` | **None** | Metadata |
 | `GET` | `/documents/{doc_id}/text` | **None** | Processed full text from disk (no re-parse, no embedding call) |
 | `PATCH` | `/documents/{doc_id}` | same as `/upload` | In-place metadata edit (`filename`, `extra`). Catalog + Qdrant `set_payload` only. `200` updated; `400`/`404`; `401`/`503` |
-| `PATCH` | `/documents/{doc_id}/metadata` | same as `/upload` | Verification fields (`set_payload` / JSON `null` delete). Lifecycle field is `doc_status` (catalog ingest `status` stays `ready`). `superseded_by` / `supersedes` are **400** (use the supersede endpoints). `200` includes `updated_fields`, `deleted_fields`, `truncated`; `400`/`404`; `401`/`503` |
-| `POST` | `/documents/{doc_id}/supersede` | same as `/upload` | Atomic both-sides link: old `superseded_by` + `doc_status=superseded`, new `supersedes` list. Optional `correction_note` (truncated at 500). Cycles/self/overwrite **400**; missing new id **404**. No re-embed |
-| `POST` | `/documents/{doc_id}/unsupersede` | same as `/upload` | Atomic unlink: clear old `superseded_by`/`doc_status` and remove old from new `supersedes`. Leaves `correction_note` and verification fields. Idempotent |
-| `DELETE` | `/documents/{doc_id}` | same as `/upload` | Remove files (including `images/`), catalog row, and Qdrant points. `200` `{"status":"deleted","doc_id","filename","chunks_removed"}`; `404` if missing; `401`/`503` if unauthorized |
+| `PATCH` | `/documents/{doc_id}/metadata` | same as `/upload` | Verification fields (`set_payload` / JSON `null` delete). Lifecycle field is `doc_status` (catalog ingest `status` stays `ready`). `superseded_by` / `supersedes` are **400** (use the supersede endpoints). `doc_status` null/`active` while linked is **400**. `200` includes `updated_fields`, `deleted_fields`, `truncated`; `400`/`404`; `401`/`503` |
+| `POST` | `/documents/{doc_id}/supersede` | same as `/upload` | Atomic both-sides link: old `superseded_by` + `doc_status=superseded`, new `supersedes` list. Optional `correction_note` (truncated at 500). Cycles/self/overwrite/hidden replacement **400**; missing new id **404**. Second-write failure rolls back the first. No re-embed |
+| `POST` | `/documents/{doc_id}/unsupersede` | same as `/upload` | Atomic unlink: clear old `superseded_by` and remove old from new `supersedes`. Deletes `doc_status` only when it is `superseded` (keeps `retracted`). Leaves `correction_note` and verification. Idempotent |
+| `DELETE` | `/documents/{doc_id}` | same as `/upload` | Remove files (including `images/`), catalog row, and Qdrant points. `200` `{"status":"deleted","doc_id","filename","chunks_removed"}`; `409` `{message, linked_ids}` if supersession links remain; `404` if missing; `401`/`503` if unauthorized |
 | `GET` | `/images/{doc_id}/{image_id}` | same as `/upload` | Extracted PDF image bytes; `413` if larger than 50 MiB |
 | `GET` | `/` | None | Redirect to `/ui/` |
 | `GET` | `/ui/` | Google session | RAG console; redirects to `/auth/login` if unsigned-in, or `?error=not_configured` if OAuth env is missing |
@@ -189,8 +189,10 @@ There is **no REST search** endpoint. Similarity search is MCP-only (`search_dom
 `search_images`). Those tools, plus `list_image_records` and `list_geo_refinements`, omit
 `doc_status=superseded` / `retracted` by default (`include_superseded=true` includes them;
 missing `doc_status` counts as active). Direct `GET /documents/{id}` and `get_document_text` still
-return superseded/retracted documents. There is no HTTP reindex route. `rag.document_delete.delete_document` deletes Qdrant
-points by `payload.doc_id` then calls `RagStorage.remove_document_files`.
+return superseded/retracted documents. There is no HTTP reindex route. `rag.document_delete.delete_document` rejects
+with `DocumentLinkedError` when `superseded_by` / `supersedes` still reference the id, otherwise deletes Qdrant
+points by `payload.doc_id` then calls `RagStorage.remove_document_files`. Concurrent supersede/unsupersede,
+`PATCH /metadata`, and DELETE take `rag.doc_locks.doc_lock(*doc_ids)` (sorted per-id `threading.Lock`).
 `rag.document_patch.patch_document` updates catalog metadata and matching Qdrant payloads with
 `set_payload` only (no re-embedding). `patch_document_metadata` writes RAGloader verification
 fields the same way (chunks get full fields including `verification[]`; `pdf_figure` /
@@ -206,7 +208,8 @@ whitelist key (`DELETABLE_VERIFICATION_FIELDS` in `rag/verification_meta.py`) ru
 `source_key` and `content_hash` may be nulled only in the same body as `verification: null` (full
 verification rollback); otherwise **400**. `qg_trida` / `qg_flagy` / `qg_verze` / `doc_status` /
 `correction_note` are plain deletes (`doc_status=superseded` still requires `superseded_by`;
-`doc_status=retracted` requires `correction_note`). `superseded_by` / `supersedes` (set or `null`)
+`doc_status=retracted` requires `correction_note`; `doc_status` null/`active` while
+`superseded_by` is set is **400**, use unsupersede). `superseded_by` / `supersedes` (set or `null`)
 are **400** pointing at `POST /documents/{id}/supersede` and `POST /documents/{id}/unsupersede`.
 Null on any other field (including `tags`, `obec_kod`, `gps_presnost`, `extrakce_model`, `fakt_ref`)
 is **400**. Success responses
@@ -259,8 +262,9 @@ Tool behavior:
   on a whitelist key deletes it (`deleted_fields`). `superseded_by` / `supersedes` are rejected.
   Response JSON includes `truncated` field paths when values were clipped.
   Missing ID or invalid fields return an error string.
-- `supersede_document` / `unsupersede_document`: atomic both-sides link / unlink; no reverse-link
-  auto-write beyond the pair; no re-embed.
+- `supersede_document` / `unsupersede_document`: atomic both-sides link / unlink with rollback if
+  the second write fails; replacement must not be superseded/retracted; unsupersede keeps
+  `doc_status=retracted`; no reverse-link auto-write beyond the pair; no re-embed.
 - `search_domain_knowledge`: `get_query_embedding` (FastEmbed) → `search_similar` on `text_vector` with optional `obec_id` / `cast_obce` payload filter on denormalized `localities` / `cast_obce` arrays and a default `doc_status` must_not filter for superseded/retracted → format `Source:` / `Content:` blocks (OCR image hits included when they have text vectors); empty → `"No relevant facts found."`; exceptions → `"Error executing RAG search: ..."`
 - `search_images`: requires `IMAGE_EMBEDDING_ENABLED=true`; CLIP text tower → `image_vector`; `hybrid=true` RRF-merges CLIP hits with `pdf_image` text hits; same `doc_status` default exclusion
 - `link_locality` / `verify_link`: when `TRAILS_API_URL` and `TRAILS_API_TOKEN` are set, forward to TrailsAssemblage `POST /locality-links` and `PATCH /locality-links/{id}/verify`. Failures retry with backoff then land in `{RAG_DATA_ROOT}/trails_outbox.json`; MCP tools still succeed. Unset env leaves tools unchanged.
