@@ -119,7 +119,11 @@ Embedding REST routes (multipart upload, chunked upload, PDF alias, images, dele
 - `GET /documents/{doc_id}/text` — processed full text, no re-parse (**no inbound auth**)
 - `PATCH /documents/{doc_id}` — update catalog metadata and matching Qdrant payloads in place (no re-embed; same auth as `DELETE`)
 - `PATCH /documents/{doc_id}/metadata` — write or delete verification fields (`set_payload` / JSON
-  `null` on whitelist keys; no re-embed; same auth as `DELETE`)
+  `null` on whitelist keys; no re-embed; same auth as `DELETE`). Lifecycle field is `doc_status`
+  (`active` / `superseded` / `retracted`); `superseded_by` / `supersedes` are rejected here
+- `POST /documents/{doc_id}/supersede` — atomically link this document as superseded by `new_doc_id`
+  (sets both sides + `doc_status=superseded`; optional `correction_note`)
+- `POST /documents/{doc_id}/unsupersede` — atomically remove that link from both documents
 - `DELETE /documents/{doc_id}` — remove originals, processed files (including `images/`), catalog row, and Qdrant points
 - `GET /images/{doc_id}/{image_id}` — extracted PDF image bytes (same auth as `POST /upload`; `413` if larger than 50 MiB)
 - `GET /health` — liveness (`status`, `rag_data_root`, ingest/query embedding providers, `image_embedding_enabled`)
@@ -239,14 +243,19 @@ field path. Each `verification[]` item may include `method`, `compared_value`, `
 **Deleting fields with JSON `null`.** Only these keys accept `null` (defined in code as
 `DELETABLE_VERIFICATION_FIELDS`): `verification`, `verification_status`, `verified_by`,
 `verified_at`, `verified_source_url`, `verified_quote`, `reliability`, `source_axis`, `source_key`,
-`content_hash`, `overeni_souhrn`, `qg_trida`, `qg_flagy`, `qg_verze`. `source_key` and `content_hash`
+`content_hash`, `overeni_souhrn`, `qg_trida`, `qg_flagy`, `qg_verze`, `doc_status`,
+`correction_note`. `source_key` and `content_hash`
 may be nulled only in the same request as `verification: null` (full verification rollback); otherwise
-the API returns **400**. `qg_trida`, `qg_flagy`, and `qg_verze` are plain deletes. `null` on any other
-field — for example `tags`, `obec_kod`, `gps_presnost`, `extrakce_model`, `fakt_ref` — returns **400**.
-Successful responses list removals in `deleted_fields` alongside
-`updated_fields`, `points_updated`, and `figures_updated`. Operating convention (outside this repo):
-RAGloader logs each deletion to `rag-changes.jsonl` with action `metadata_unset` and the list of
-fields.
+the API returns **400**. `qg_trida`, `qg_flagy`, and `qg_verze` are plain deletes. `doc_status` and `correction_note` are
+also plain deletes, with invariants: `doc_status=superseded` requires an existing `superseded_by`
+link (only the supersede endpoint creates that link); `doc_status=retracted` requires a non-empty
+`correction_note`. `null` on any other field — for example `tags`, `obec_kod`, `gps_presnost`,
+`extrakce_model`, `fakt_ref`, `superseded_by`, `supersedes` — returns **400**. Direct writes of
+`superseded_by` / `supersedes` (including `null`) point at `POST /documents/{doc_id}/supersede` and
+`POST /documents/{doc_id}/unsupersede`. Successful responses list removals in `deleted_fields`
+alongside `updated_fields`, `points_updated`, and `figures_updated`. Operating convention (outside
+this repo): RAGloader logs each deletion to `rag-changes.jsonl` with action `metadata_unset` and the
+list of fields.
 
 ```bash
 curl -sS -X PATCH \
@@ -263,6 +272,38 @@ curl -sS -X PATCH \
 # → {"status":"updated","deleted_fields":["verified_by"],…}
 ```
 
+### Supersede a document (`POST /documents/{doc_id}/supersede`)
+
+When a fact is replaced by a new upload, link the old document to the new one **atomically**. The
+path id is the old document. The body is `{"new_doc_id":"…","correction_note":"…"}` (`correction_note`
+optional, truncated at 500 characters like other quote fields). The server sets:
+
+- old: `superseded_by=new_doc_id`, `doc_status=superseded`, optional `correction_note`
+- new: `supersedes` list containing the old id (append, no duplicates)
+
+It does **not** change `new.doc_status`, auto-write other documents, re-embed, or delete points.
+Self-links, missing ids, and cycles (`A→B→A` and longer) return **400**. If the old document is
+already superseded by a different id, unlink first (**400**). Repeat of the same pair is idempotent.
+`GET /documents/{id}` shows `doc_status` (lifecycle) beside catalog ingest `status` (`ready`). Search
+(`search_domain_knowledge`, `search_images`, `list_image_records`, `list_geo_refinements`) omits
+`superseded` / `retracted` by default; pass `include_superseded=true` to include them. Direct GET by
+id and `get_document_text` keep working.
+
+```bash
+curl -sS -X POST \
+  -H "Authorization: Bearer $RAG_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"new_doc_id":"NEW_DOC_ID","correction_note":"year was 1920, not 1923"}' \
+  http://127.0.0.1:8080/documents/{old_doc_id}/supersede
+
+curl -sS -X POST \
+  -H "Authorization: Bearer $RAG_API_TOKEN" \
+  http://127.0.0.1:8080/documents/{old_doc_id}/unsupersede
+```
+
+To retract without a replacement, `PATCH /documents/{id}/metadata` with
+`{"doc_status":"retracted","correction_note":"…"}`.
+
 ## MCP (AI clients)
 
 Streamable HTTP MCP is mounted at **`/mcp`** (`stateless_http=True`, `streamable_http_path="/"` so the endpoint is `/mcp`, not `/mcp/mcp`). The mount is wrapped with bearer auth and an ASGI helper that finishes SSE responses on process shutdown. Tools:
@@ -276,9 +317,11 @@ Streamable HTTP MCP is mounted at **`/mcp`** (`stateless_http=True`, `streamable
 - `get_page_highlights` (`doc_id`, `page`, `query`) — JSON boxes `{page_width, page_height, highlights:[{x0,y0,x1,y1,text,method}]}` (normalized 0–1)
 - `ingest_text`
 - `update_document` (`doc_id`, optional `filename`, optional `extra`) — patch catalog + Qdrant payloads, no re-embed
-- `update_document_metadata` (`doc_id`, optional `metadata`) — patch verification payload fields (`null` deletes whitelist keys), no re-embed
-- `search_domain_knowledge` (text `text_vector` only; optional `obec_id` / `cast_obce` payload filter; PDF hits add `page_image_id`; optional `format=json`)
-- `search_images` (CLIP `image_vector`; optional `hybrid=true`; PDF hits add `page_image_id`; optional `format=json`; optional `precision` / `needs_refinement` filters on `geo_refined`)
+- `update_document_metadata` (`doc_id`, optional `metadata`) — patch verification payload fields (`null` deletes whitelist keys), no re-embed. Rejects `superseded_by` / `supersedes`
+- `supersede_document` (`old_doc_id`, `new_doc_id`, optional `correction_note`) — atomic both-sides link + `doc_status=superseded`
+- `unsupersede_document` (`old_doc_id`) — atomic unlink
+- `search_domain_knowledge` (text `text_vector` only; optional `obec_id` / `cast_obce` payload filter; PDF hits add `page_image_id`; optional `format=json`; optional `include_superseded=true`)
+- `search_images` (CLIP `image_vector`; optional `hybrid=true`; PDF hits add `page_image_id`; optional `format=json`; optional `precision` / `needs_refinement` filters on `geo_refined`; optional `include_superseded=true`)
 - `link_locality` (upsert document-municipality links into payload-only `locality_links`; forwards to Trails when configured; no embeddings)
 - `list_links` (filter `doc_id` / `obec_id` / `status` / `ambiguous` / `locality_level` / `cast_obce`, paginate with `limit` / `offset`)
 - `verify_link` (set `verification_status` / verifier / notes on an existing locality_links point; forwards to Trails when configured)
@@ -286,7 +329,8 @@ Streamable HTTP MCP is mounted at **`/mcp`** (`stateless_http=True`, `streamable
 - `sync_links_to_trails` (idempotent backfill of `locality_links` to TrailsAssemblage; `dry_run` option)
 - `refine_geo` (`doc_id`, optional `chunk_index` / `image_id`, `geo_refined`, `dry_run=true`) — store refined GPS **beside** original `lat`/`lon` (never overwritten); writes append `geo_refined_history` and are idempotent
 - `refine_geo_batch` (`items: [{doc_id, chunk_index?, image_id?, geo_refined}]`, `dry_run=true`) — same guarantees, per-item `ok` / `would_change` / `changed` / `error`; max **200** items per call
-- `list_geo_refinements` (`filter` or individual `precision` / `status` / `confidence_level` / `needs_refinement` / `verified` / `doc_id`, paginated)
+- `list_image_records` (optional `doc_id` / verification `status` / geo filters; optional `include_superseded=true`)
+- `list_geo_refinements` (`filter` or individual `precision` / `status` / `confidence_level` / `needs_refinement` / `verified` / `doc_id`, paginated; optional `include_superseded=true`)
 
 No MCP resources or prompts. `/mcp` requires bearer auth (see below). There is no stdio MCP entrypoint.
 
