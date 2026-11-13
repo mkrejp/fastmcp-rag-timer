@@ -1,0 +1,57 @@
+name: Pytest
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install Tesseract
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            tesseract-ocr \
+            tesseract-ocr-ces \
+            tesseract-ocr-eng
+
+      - name: Install Python dependencies
+        env:
+          UV_SYSTEM_PYTHON: "1"
+        run: >
+          uv pip install --system
+          fastapi
+          uvicorn
+          "mcp[cli]<2"
+          pypdf
+          pymupdf
+          pillow
+          pytesseract
+          "qdrant-client>=1.12,<2"
+          requests
+          python-multipart
+          itsdangerous
+          fastembed
+          pytest
+          pytest-mock
+
+      - name: Run tests
+        env:
+          RAG_SKIP_DEFAULT_APP: "1"
+        run: pytest -q

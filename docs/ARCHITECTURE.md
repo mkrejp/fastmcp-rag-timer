@@ -20,7 +20,7 @@ The service is a single-process Python application that:
 `README.md`, `docs/embedding-provider.md`, `static/`, and `tests/`.
 `pyproject.toml` lists runtime dependencies (including `fastembed`, `pymupdf`, `pillow`, `pytesseract`).
 There is no `requirements.txt`, lockfile, compose file, or platform config (for example `railway.toml`).
-CI lives under `.github/workflows/` (Super Linter and Docker image build; pytest is not run in CI).
+CI lives under `.github/workflows/` (Super Linter, pytest on Python 3.11, and Docker image build).
 
 Statements below are taken from those files unless labeled **Assumption**.
 
@@ -551,7 +551,7 @@ Current gaps (not a history of old bugs):
 5. **Catalog, fulltext, `/upload-media`, `/health`, `/node-info`, and OpenAPI have no inbound auth.** Multipart `POST /upload` has no size quota in code.
 6. **`/upload-media`** stores files but does not index them or add them to `index.json`.
 7. **No HTTP reindex** — delete a `doc_id` then re-upload to replace an obsolete file.
-8. **CI does not run pytest**; Super Linter and Docker image build only. No lockfile; most Docker deps unpinned.
+8. **No lockfile**; most Docker deps unpinned. CI runs Super Linter, pytest (Python 3.11), and the Docker image build.
 9. **No Docker HEALTHCHECK** despite `curl` and `/health`.
 10. **Novita ingest is one HTTP call per text string**, with no batch `input` array, retries, or 429 handling. FastEmbed ingest batches locally. Query never uses Novita.
 11. Recreating a Qdrant collection on schema mismatch **drops existing vectors**.
