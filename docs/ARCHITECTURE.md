@@ -7,17 +7,18 @@ This document describes **fastmcp-rag-timer** as implemented in this repository.
 The service is a single-process Python application that:
 
 - Accepts PDF, TXT, Markdown, and JSON/GeoJSON over HTTP (FastAPI), including multipart upload, chunked upload with server-side reassembly, remote GeoJSON by URL via bearer-authenticated `POST /ingest-json`, and optional plain-text ingest over MCP.
-- Persists originals, processed fulltext/chunks/images, and chunked-upload staging under a data root (default `/data/rag`).
+- Persists originals, processed fulltext/chunks/images, content-version snapshots, and chunked-upload staging under a data root (default `/data/rag`).
 - Embeds ingest text with Novita `baai/bge-m3` or local FastEmbed `BAAI/bge-m3` (`EMBEDDING_PROVIDER_INGEST`), and embeds **every search query** with local FastEmbed only.
 - Indexes named vectors in an embedded Qdrant collection (`text_vector` 1024, `image_vector` 512).
 - Exposes catalog/text HTTP APIs, a Google-authenticated console, Streamable HTTP MCP tools (including similarity search), and per-day accounting under `/data/accnt`.
 
 **Sources of truth:** `main.py`, `rag/` (`app.py`, `config.py`, `embeddings.py`,
 `image_embed.py`, `ingest.py`, `document_delete.py`, `document_patch.py`,
-`document_supersede.py`, `verification_meta.py`, `mcp_tools.py`, `processing.py`,
-`routes.py`, `admin_routes.py`, `google_oauth.py`, `chunked_upload.py`,
-`asgi_shutdown.py`, `storage.py`, `vectorstore.py`, `auth.py`), `Dockerfile`,
-`README.md`, `docs/embedding-provider.md`, `static/`, and `tests/`.
+`document_replace.py`, `document_supersede.py`, `verification_meta.py`,
+`mcp_tools.py`, `processing.py`, `routes.py`, `admin_routes.py`,
+`google_oauth.py`, `chunked_upload.py`, `asgi_shutdown.py`, `storage.py`,
+`vectorstore.py`, `auth.py`), `Dockerfile`, `README.md`,
+`docs/embedding-provider.md`, `static/`, and `tests/`.
 `pyproject.toml` lists runtime dependencies (including `fastembed`, `pymupdf`, `pillow`, `pytesseract`).
 There is no `requirements.txt`, lockfile, compose file, or platform config (for example `railway.toml`).
 CI lives under `.github/workflows/` (Super Linter, pytest on Python 3.11, and Docker image build).
@@ -76,6 +77,7 @@ rag/
   geo_refined.py        # geo_refined Pydantic schema and prefer-refined helpers
   geo_index.py          # refine_geo / refine_geo_batch persistence
   document_delete.py    # remove one document from disk + Qdrant
+  document_replace.py   # in-place text replace + versions/{doc_id} snapshots
   vectorstore.py        # local Qdrant open/create named vectors
   accounting.py         # /data/accnt rollups
   logging_setup.py      # rag logger + ring buffer
@@ -90,7 +92,7 @@ static/                 # RAG console
 | RAG console | `static/` + `google_oauth.py` + `admin_routes.py` | Google-gated UI at `/ui/`; admin JSON under `/api/admin`. |
 | `get_ingest_embeddings()` / `get_query_embedding()` | `rag/embeddings.py` | Ingest: Novita `baai/bge-m3` or FastEmbed `BAAI/bge-m3`. Query: FastEmbed only. Startup calls `validate_embedding_configuration()`. |
 | CLIP `embed_image_paths` / `embed_image_query` | `rag/image_embed.py` | Optional `image_vector` (512-dim) when `IMAGE_EMBEDDING_ENABLED=true`. |
-| `RagStorage` | `rag/storage.py` | Filesystem catalog under `RAG_DATA_ROOT`. |
+| `RagStorage` | `rag/storage.py` | Filesystem catalog under `RAG_DATA_ROOT` (originals, processed, versions, Qdrant path). |
 | `ChunkedUploadStore` | `rag/chunked_upload.py` | Staging under `{RAG_DATA_ROOT}/uploads`. |
 | Embedded Qdrant | `rag/vectorstore.py` | `QdrantClient(path=storage.qdrant_dir)`, collection `client_domain_knowledge`, cosine, named vectors `text_vector` (1024) and `image_vector` (512). |
 | Uvicorn | `main.py` `__main__` and Docker `CMD` | `host=HOST` (`0.0.0.0`), `port=PORT` (`os.getenv("PORT", "8080")`), `proxy_headers=True`, `timeout_graceful_shutdown=15`. |
@@ -109,6 +111,7 @@ flowchart TB
     tools["rag.mcp_tools"]
     ingest["rag.ingest"]
     deleteDoc["rag.document_delete"]
+    replaceDoc["rag.document_replace"]
     chunks["rag.chunked_upload"]
     proc["rag.processing"]
     embed["rag.embeddings"]
@@ -123,7 +126,10 @@ flowchart TB
     mcp --> tools
     routes --> ingest
     routes --> deleteDoc
+    routes --> replaceDoc
     routes --> chunks
+    replaceDoc --> storage
+    replaceDoc --> qdrant
     deleteDoc --> storage
     deleteDoc --> qdrant
     tools --> ingest
@@ -170,11 +176,14 @@ From `rag/routes.py`, `rag/app.py`, `rag/google_oauth.py`, and `rag/admin_routes
 | `GET` | `/documents` | **None** | Catalog from `index.json` |
 | `GET` | `/documents/{doc_id}` | **None** | Metadata |
 | `GET` | `/documents/{doc_id}/text` | **None** | Processed full text from disk (no re-parse, no embedding call) |
+| `PUT` | `/documents/{doc_id}/content` | same as `/upload` | Replace indexed text in place (same `doc_id`), archive previous version, re-chunk/re-embed. Required `reason`. `dry_run` previews. Identical content is a no-op. `200` / `400` / `404`; `401`/`503` |
+| `GET` | `/documents/{doc_id}/versions` | same as `/upload` | List archived versions (no full text unless `include_text=true`). `200` / `404`; `401`/`503` |
+| `POST` | `/documents/{doc_id}/versions/{n}/restore` | same as `/upload` | Restore version `n` via the same safe replace path (archives current first). Required `reason`. `200` / `400` / `404`; `401`/`503` |
 | `PATCH` | `/documents/{doc_id}` | same as `/upload` | In-place metadata edit (`filename`, `extra`). Catalog + Qdrant `set_payload` only. `200` updated; `400`/`404`; `401`/`503` |
 | `PATCH` | `/documents/{doc_id}/metadata` | same as `/upload` | Verification fields (`set_payload` / JSON `null` delete). Lifecycle field is `doc_status` (catalog ingest `status` stays `ready`). Link fields are **400**. `doc_status` null/`active` while linked is **400**. `200` includes `updated_fields`, `deleted_fields`, `truncated`; `400`/`404`; `401`/`503` |
 | `POST` | `/documents/{doc_id}/supersede` | same as `/upload` | Atomic both-sides link: old `superseded_by` + `doc_status=superseded`, new `supersedes` list. Optional `correction_note` (truncated at 500). Cycles/self/overwrite/hidden replacement **400**; missing new ID **404**. Second-write failure rolls back the first. No re-embed |
 | `POST` | `/documents/{doc_id}/unsupersede` | same as `/upload` | Atomic unlink: clear old `superseded_by` and remove old from new `supersedes`. Deletes `doc_status` only when it is `superseded` (keeps `retracted`). Leaves `correction_note` and verification. Idempotent |
-| `DELETE` | `/documents/{doc_id}` | same as `/upload` | Remove files (including `images/`), catalog row, and Qdrant points. `200` `{"status":"deleted","doc_id","filename","chunks_removed"}`; `409` `{message, linked_ids}` if supersession links remain; `404` if missing; `401`/`503` if unauthorized |
+| `DELETE` | `/documents/{doc_id}` | same as `/upload` | Remove files (including `images/` and `versions/{doc_id}/`), catalog row, and Qdrant points. `200` `{"status":"deleted","doc_id","filename","chunks_removed"}`; `409` `{message, linked_ids}` if supersession links remain; `404` if missing; `401`/`503` if unauthorized |
 | `GET` | `/images/{doc_id}/{image_id}` | same as `/upload` | Extracted PDF image bytes; `413` if larger than 50 MiB |
 | `GET` | `/` | None | Redirect to `/ui/` |
 | `GET` | `/ui/` | Google session | RAG console; redirects to `/auth/login` if unsigned-in, or `?error=not_configured` if OAuth env is missing |
@@ -194,10 +203,18 @@ There is **no REST search** endpoint. Similarity search is MCP-only (`search_dom
 `search_images`). Those tools, plus `list_image_records` and `list_geo_refinements`, omit
 `doc_status=superseded` / `retracted` by default (`include_superseded=true` includes them;
 missing `doc_status` counts as active). Direct `GET /documents/{doc_id}` and `get_document_text` still
-return superseded/retracted documents. There is no HTTP reindex route. `rag.document_delete.delete_document` rejects
-with `DocumentLinkedError` when `superseded_by` / `supersedes` still reference the ID, otherwise deletes Qdrant
-points by `payload.doc_id` then calls `RagStorage.remove_document_files`. Concurrent supersede/unsupersede,
-`PATCH /metadata`, and DELETE take `rag.doc_locks.doc_lock(*doc_ids)` (sorted per-ID `threading.RLock`).
+return superseded/retracted documents. There is no HTTP reindex route. In-place text replace is
+`PUT /documents/{doc_id}/content` (not a full PDF re-extract).
+`rag.document_delete.delete_document` rejects with `DocumentLinkedError` when
+`superseded_by` / `supersedes` still reference the ID, otherwise deletes Qdrant
+points by `payload.doc_id` then calls `RagStorage.remove_document_files` (including
+`versions/{doc_id}/`). Concurrent supersede/unsupersede, `PATCH /metadata`, DELETE, and
+content replace/restore take `rag.doc_locks.doc_lock(*doc_ids)` (sorted per-ID
+`threading.RLock`).
+`rag.document_replace.replace_document_content` archives processed fulltext under
+`{RAG_DATA_ROOT}/versions/{doc_id}/`, inserts new `pdf_chunk` points, then deletes the old
+text-chunk points (rollback deletes the new points on embed/upsert failure). `pdf_image` /
+`pdf_figure` points are preserved. `restore_document_version` uses the same path.
 `rag.document_patch.patch_document` updates catalog metadata and matching Qdrant payloads with
 `set_payload` only (no re-embedding). `patch_document_metadata` writes RAGloader verification
 fields the same way (chunks get full fields including `verification[]`; `pdf_figure` /
@@ -309,6 +326,22 @@ Supported types (`rag/processing.py`): `.pdf`; `.txt`, `.md`, `.markdown`, `.tex
 
 Chunking: page segments are concatenated until over `DEFAULT_CHUNK_SIZE` (1000 characters); oversize segments are sliced at 1000 chars. No overlap, no token counting. Each chunk stores the page index of the segment currently being accumulated. Empty extractable text yields zero chunks and no upsert (HTTP still `status: Success`).
 
+### In-place content replace
+
+`rag.document_replace.replace_document_content` (HTTP `PUT /documents/{doc_id}/content` and restore):
+
+1. Reject unknown `doc_id` (404) and empty `reason` / `content` (400).
+2. Re-chunk the new UTF-8 text with the same `process_document` / `DEFAULT_CHUNK_SIZE` path. PDFs are processed as `.txt` so restore of extracted fulltext does not need valid PDF bytes. JSON/GeoJSON is parsed when valid.
+3. Identical processed-text SHA-256 returns `status: unchanged` (no version, no writes).
+4. `dry_run=true` returns old/new hashes, chunk counts, and `next_version` without writing.
+5. Archive current fulltext under `{RAG_DATA_ROOT}/versions/{doc_id}/vNNNN/` (`manifest.json` + `fulltext.txt`) and append `versions/{doc_id}/index.json`.
+6. Embed with `get_ingest_embeddings` (same ingest backend as upload). Insert new `pdf_chunk` points with ids `uuid5(NAMESPACE_URL, f"{doc_id}:g{generation}:{chunk_index}")`.
+7. Write processed fulltext/chunks/meta (`content_hash` + `updated_at`). Overwrite text/JSON originals; leave PDF originals and `images/` in place.
+8. Delete the previous text-chunk point ids. `pdf_image` / `pdf_figure` points stay; `content_hash` and `updated_at` (figure `sha256` too) are `set_payload`'d.
+9. On embed/upsert/processed-write failure: delete the new point ids, restore previous processed files, drop the unused version snapshot.
+
+`POST /documents/{doc_id}/versions/{n}/restore` archives the live text first, then runs this path with the saved fulltext. Version authorship is the Google session email when present, otherwise `bearer`.
+
 `POST /upload-media` assigns a new `doc_id`, saves the original, and returns path + ID. It does not call `ingest_bytes` and does not add a catalog row.
 
 Chunked upload (`POST /upload/init` … `complete`) stages parts under `{RAG_DATA_ROOT}/uploads/{upload_id}/`, verifies the client-supplied whole-file SHA-256 on complete, then calls the same `ingest_bytes` path.
@@ -369,7 +402,7 @@ Startup (`python main.py` or Docker `CMD`):
 1. Unless `RAG_SKIP_DEFAULT_APP=1`, `main.py` calls `create_app()`.
 2. `validate_embedding_configuration()` (query provider must be FastEmbed).
 3. Resolve `RAG_DATA_ROOT` (default `/data/rag`; Dockerfile sets the same) and `ACCNT_DATA_ROOT`.
-4. `RagStorage.ensure_layout()` creates `originals/`, `processed/`, `qdrant/`, and empty `index.json`. `ChunkedUploadStore.ensure_layout()` creates `uploads/`.
+4. `RagStorage.ensure_layout()` creates `originals/`, `processed/`, `qdrant/`, `versions/`, and empty `index.json`. `ChunkedUploadStore.ensure_layout()` creates `uploads/`.
 5. Open embedded Qdrant; create or recreate the named-vector collection if needed.
 6. Build FastMCP with DNS-rebinding Host allow-list, register tools, `mcp.streamable_http_app()`.
 7. FastAPI lifespan enters the MCP app’s lifespan; on exit it closes Qdrant.
@@ -517,7 +550,7 @@ Local run and pytest install lines: [README.md](../README.md#local-run).
 
 | Topic | What the code does |
 | --- | --- |
-| HTTP auth | `POST /ingest-json` requires Bearer `RAG_API_TOKEN` (503 if unset). `/upload`, images, and `PATCH`/`DELETE /documents/{doc_id}` use MCP/RAG bearer or a Google session. Catalog, `/health`, `/node-info` have **no** inbound auth. `RAG_ENFORCE_NODE_ROLE` can 403 writes on ČTENÍ/STOP. |
+| HTTP auth | `POST /ingest-json` requires Bearer `RAG_API_TOKEN` (503 if unset). `/upload`, images, `PATCH`/`DELETE /documents/{doc_id}`, `PUT /documents/{doc_id}/content`, and version list/restore use MCP/RAG bearer or a Google session. Catalog, `/health`, `/node-info` have **no inbound auth**. `RAG_ENFORCE_NODE_ROLE` can 403 writes on ČTENÍ/STOP. |
 | MCP auth | Bearer on every `/mcp` request (`McpBearerAuth`). Host allow-list via FastMCP `TransportSecuritySettings` (`MCP_ALLOWED_HOSTS`). |
 | Console auth | `/ui/` and `/api/admin/*` require Google OAuth (`GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET`) and optional email/domain allow-lists. Cookie session via `SESSION_SECRET`. |
 | Secrets | Embedding key from `BGE_M3_NOVITA_API_KEY`, then `NOVITA_API_KEY`, `OPENAI_TOKEN`, `OPENAI_API_KEY`; sent as `Authorization: Bearer` to Novita. Inbound tokens compared with `hmac.compare_digest`. Not read from a file or vault. |
@@ -550,7 +583,7 @@ Current gaps (not a history of old bugs):
 4. **No generator LLM** — retrieval only; no answer synthesis.
 5. **Catalog, fulltext, `/upload-media`, `/health`, `/node-info`, and OpenAPI have no inbound auth.** Multipart `POST /upload` has no size quota in code.
 6. **`/upload-media`** stores files but does not index them or add them to `index.json`.
-7. **No HTTP reindex** — delete a `doc_id` then re-upload to replace an obsolete file.
+7. **No HTTP reindex** of PDF bytes — `PUT /documents/{doc_id}/content` replaces indexed text only (no image/figure re-extract). To replace a PDF file entirely, delete then re-upload.
 8. **No lockfile**; most Docker deps unpinned. CI runs Super Linter, pytest (Python 3.11), and the Docker image build.
 9. **No Docker HEALTHCHECK** despite `curl` and `/health`.
 10. **Novita ingest is one HTTP call per text string**, with no batch `input` array, retries, or 429 handling. FastEmbed ingest batches locally. Query never uses Novita.

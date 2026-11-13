@@ -9,7 +9,7 @@ import shutil
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, cast
 
 _IMAGE_ID_RE = re.compile(r"^[a-f0-9]{16}$")
 _DOC_ID_RE = re.compile(
@@ -116,7 +116,9 @@ def _optional_float(value: object) -> float | None:
     """Return ``value`` as float, or ``None`` when unset."""
     if value is None or value == "":
         return None
-    return float(value)
+    if isinstance(value, (int, float, str)):
+        return float(value)
+    return float(cast(Any, value))
 
 
 def _optional_geo_object(value: object) -> dict[str, Any] | None:
@@ -288,6 +290,7 @@ class RagStorage:
         self.originals_dir = self.root / "originals"
         self.processed_dir = self.root / "processed"
         self.qdrant_dir = self.root / "qdrant"
+        self.versions_dir = self.root / "versions"
         self.index_path = self.root / "index.json"
         self.trails_outbox_path = self.root / "trails_outbox.json"
 
@@ -298,6 +301,7 @@ class RagStorage:
             self.originals_dir,
             self.processed_dir,
             self.qdrant_dir,
+            self.versions_dir,
         ):
             path.mkdir(parents=True, exist_ok=True)
         if not self.index_path.exists():
@@ -310,6 +314,10 @@ class RagStorage:
     def processed_doc_dir(self, doc_id: str) -> Path:
         """Return the processed artifacts directory for ``doc_id``."""
         return self.processed_dir / doc_id
+
+    def versions_doc_dir(self, doc_id: str) -> Path:
+        """Return the on-disk version history directory for ``doc_id``."""
+        return self.versions_dir / doc_id
 
     def images_dir(self, doc_id: str) -> Path:
         """Return the extracted images directory for ``doc_id``."""
@@ -623,7 +631,11 @@ class RagStorage:
 
         Processed cleanup includes the extracted ``images/`` directory.
         """
-        for path in (self.original_dir(doc_id), self.processed_doc_dir(doc_id)):
+        for path in (
+            self.original_dir(doc_id),
+            self.processed_doc_dir(doc_id),
+            self.versions_doc_dir(doc_id),
+        ):
             if path.exists():
                 shutil.rmtree(path)
         entries = [e for e in self.list_documents() if e.get("doc_id") != doc_id]
