@@ -628,7 +628,8 @@ def register_mcp_tools(
         """Atomically mark ``old_doc_id`` as superseded by ``new_doc_id``.
 
         Sets both sides of the link (``old.superseded_by`` and
-        ``new.supersedes``) and ``old.doc_status=superseded``. Does not
+        ``new.supersedes``) and ``old.doc_status=superseded``. The
+        replacement must not itself be superseded or retracted. Does not
         re-embed or auto-write other documents. Same bearer as other writes.
         """
 
@@ -662,8 +663,9 @@ def register_mcp_tools(
     def unsupersede_document(old_doc_id: str) -> str:
         """Atomically remove a supersession link from ``old_doc_id``.
 
-        Clears ``superseded_by`` / ``doc_status`` on the old document and
-        removes it from the replacement's ``supersedes`` list. Verification
+        Clears ``superseded_by`` on the old document and removes it from
+        the replacement's ``supersedes`` list. Deletes ``doc_status`` only
+        when it is ``superseded`` (keeps ``retracted``). Verification
         fields are left intact.
         """
 

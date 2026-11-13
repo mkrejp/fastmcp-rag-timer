@@ -30,7 +30,11 @@ from rag.chunked_upload import (
     UploadNotFoundError,
 )
 from rag.config import COLLECTION_NAME
-from rag.document_delete import DocumentNotFoundError, delete_document
+from rag.document_delete import (
+    DocumentLinkedError,
+    DocumentNotFoundError,
+    delete_document,
+)
 from rag.document_patch import (
     DocumentPatchError,
     patch_document,
@@ -781,8 +785,9 @@ def supersede_document_http(
 def unsupersede_document_http(doc_id: str, request: Request) -> dict[str, Any]:
     """Atomically remove the supersession link from ``doc_id``.
 
-    Clears ``superseded_by`` and ``doc_status`` on the old document and
-    removes it from the replacement's ``supersedes`` list. Same auth as PATCH.
+    Clears ``superseded_by`` on the old document and removes it from the
+    replacement's ``supersedes`` list. Deletes ``doc_status`` only when it
+    is ``superseded``. Same auth as PATCH.
     """
     try:
         result = unsupersede_document(
@@ -854,6 +859,8 @@ def delete_document_http(doc_id: str, request: Request) -> dict[str, Any]:
 
     Requires ``Authorization: Bearer`` matching ``MCP_API_TOKEN`` or
     ``RAG_API_TOKEN``, or a signed-in Google session (same as ``POST /upload``).
+    Returns **409** when another document still references this id via
+    ``superseded_by`` / ``supersedes`` (unlink first).
     """
     try:
         result = delete_document(
@@ -865,6 +872,12 @@ def delete_document_http(doc_id: str, request: Request) -> dict[str, Any]:
     except DocumentNotFoundError:
         _record_http(route="documents_delete", ok=False, error="not found")
         raise HTTPException(status_code=404, detail="Document not found") from None
+    except DocumentLinkedError as exc:
+        _record_http(route="documents_delete", ok=False, error=str(exc))
+        raise HTTPException(
+            status_code=409,
+            detail={"message": str(exc), "linked_ids": exc.linked_ids},
+        ) from exc
     except Exception as exc:  # noqa: BLE001 - surface delete failures to clients
         _record_http(route="documents_delete", ok=False, error=str(exc))
         raise HTTPException(status_code=500, detail=f"Delete failed: {exc}") from exc

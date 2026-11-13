@@ -10,6 +10,7 @@ from qdrant_client import QdrantClient
 from qdrant_client.models import FieldCondition, Filter, FilterSelector, MatchValue
 
 from rag.config import LOCALITY_LINKS_COLLECTION
+from rag.doc_locks import doc_lock
 from rag.document_delete import DocumentNotFoundError
 from rag.logging_setup import get_logger
 from rag.processing import guess_mime, is_supported_filename
@@ -480,6 +481,25 @@ def patch_document_metadata(
     Does not change ``doc_id``, re-embed, or delete points. Empty bodies
     apply ``reliability=1``.
     """
+    with doc_lock(doc_id):
+        return _patch_document_metadata_locked(
+            storage=storage,
+            qdrant=qdrant,
+            collection_name=collection_name,
+            doc_id=doc_id,
+            metadata=metadata,
+        )
+
+
+def _patch_document_metadata_locked(
+    *,
+    storage: RagStorage,
+    qdrant: QdrantClient,
+    collection_name: str,
+    doc_id: str,
+    metadata: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Apply a metadata patch while ``doc_lock(doc_id)`` is held."""
     meta = _load_document(storage, doc_id)
     remaining, deleted = split_verification_deletes(metadata)
     apply_defaults = not metadata
