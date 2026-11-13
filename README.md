@@ -218,11 +218,11 @@ Replace the indexed text of an existing document **without changing `doc_id`**. 
 processed fulltext is archived under `{RAG_DATA_ROOT}/versions/{doc_id}/vNNNN/` (manifest + text),
 then the new text is chunked and embedded with the same ingest pipeline / embedding model as
 `POST /upload`. Qdrant has no transactions: **new `pdf_chunk` points are inserted first** (generation-
-scoped ids so they cannot overwrite the live points), processed files are updated, then the old
+scoped IDs so they cannot overwrite the live points), processed files are updated, then the old
 text-chunk points are deleted. If embed or upsert fails, the new points are deleted, processed files
 are restored, the unused version snapshot is dropped, and the live document is unchanged. If
 deleting the old points fails after the new generation is committed, the call still returns
-**200** with `cleanup_pending=true`, leftover ids/count, and a loud error log (retries first).
+**200** with `cleanup_pending=true`, leftover IDs/count, and a loud error log (retries first).
 
 Document-level metadata from catalog `extra` (and payload keys identical across every old
 chunk) is copied onto the new points. Per-chunk keys that differ between old chunks are **not**
@@ -231,7 +231,7 @@ smeared from the first chunk; their names are returned as `dropped_chunk_fields`
 kept** (same vectors and image files); their `content_hash` / `updated_at` (and figure `sha256`)
 are updated in place. **`locality_links` rows are not deleted**; the response includes
 `affected_locality_links`. Those links still point at ingest-time chunk UUIDs, so they need a
-later re-link. After replace, live chunk ids are `uuid5(doc_id:g{generation}:{chunk_index})` and
+later re-link. After replace, live chunk IDs are `uuid5(doc_id:g{generation}:{chunk_index})` and
 no longer equal `stable_point_id(doc_id, chunk_index)`. PDF originals stay on disk; this endpoint
 replaces extracted/indexed text, not PDF bytes. Text and successfully parsed JSON originals are
 overwritten to match the new content.
@@ -523,7 +523,7 @@ rag/
   geo_refined.py        # geo_refined schema, prefer-refined helpers
   geo_index.py          # refine_geo / refine_geo_batch / list_geo_refinements
   document_delete.py    # remove one document from disk + Qdrant
-  doc_locks.py          # process-local per-doc_id lock (sorted unique ids)
+  doc_locks.py          # process-local per-doc_id lock (sorted unique IDs)
   document_replace.py   # in-place text replace + versions/{doc_id} snapshots
   geojson.py            # generic GeoJSON → RAG text
   remote.py             # fetch remote JSON (GitHub blob → raw, SSRF guards)

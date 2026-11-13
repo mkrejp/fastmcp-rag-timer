@@ -77,7 +77,7 @@ rag/
   geo_refined.py        # geo_refined Pydantic schema and prefer-refined helpers
   geo_index.py          # refine_geo / refine_geo_batch persistence
   document_delete.py    # remove one document from disk + Qdrant
-  doc_locks.py          # process-local per-doc_id lock (sorted unique ids)
+  doc_locks.py          # process-local per-doc_id lock (sorted unique IDs)
   document_replace.py   # in-place text replace + versions/{doc_id} snapshots
   vectorstore.py        # local Qdrant open/create named vectors
   accounting.py         # /data/accnt rollups
@@ -215,7 +215,7 @@ content replace/restore take `rag.doc_locks.doc_lock(*doc_ids)` (sorted per-ID
 `rag.document_replace.replace_document_content` archives processed fulltext under
 `{RAG_DATA_ROOT}/versions/{doc_id}/`, inserts new `pdf_chunk` points, then deletes the old
 text-chunk points (rollback deletes the new points on embed/upsert failure). Leftover old
-ids after commit return `cleanup_pending` instead of 500. `pdf_image` / `pdf_figure` points
+IDs after commit return `cleanup_pending` instead of 500. `pdf_image` / `pdf_figure` points
 and `locality_links` rows are preserved (`affected_locality_links`; re-link needed).
 `restore_document_version` uses the same path. Version snapshots are **not** replicated
 between RAG nodes. `doc_lock(*doc_ids)` in `rag/doc_locks.py` serializes replace, restore,
@@ -340,10 +340,10 @@ Chunking: page segments are concatenated until over `DEFAULT_CHUNK_SIZE` (1000 c
 3. Identical processed-text SHA-256 returns `status: unchanged` (no version, no writes).
 4. `dry_run=true` returns old/new hashes, chunk counts, `next_version`, `dropped_chunk_fields`, and `affected_locality_links` without writing.
 5. Archive current fulltext under `{RAG_DATA_ROOT}/versions/{doc_id}/vNNNN/` (`manifest.json` + `fulltext.txt`) and append `versions/{doc_id}/index.json`. Snapshots live only on this node's `{RAG_DATA_ROOT}` volume (not copied to the peer node).
-6. Embed with `get_ingest_embeddings` (same ingest backend as upload). Insert new `pdf_chunk` points with ids `uuid5(NAMESPACE_URL, f"{doc_id}:g{generation}:{chunk_index}")`. These ids are **not** `stable_point_id(doc_id, chunk_index)`; geo refine and locality denormalize fall back to payload `doc_id` + `chunk_index`.
+6. Embed with `get_ingest_embeddings` (same ingest backend as upload). Insert new `pdf_chunk` points with IDs `uuid5(NAMESPACE_URL, f"{doc_id}:g{generation}:{chunk_index}")`. These IDs are **not** `stable_point_id(doc_id, chunk_index)`; geo refine and locality denormalize fall back to payload `doc_id` + `chunk_index`.
 7. Write processed fulltext/chunks/meta (`content_hash` + `updated_at`). Overwrite text/JSON originals; leave PDF originals and `images/` in place.
-8. Delete the previous text-chunk point ids (retry, then `cleanup_pending` + leftover ids on failure). `pdf_image` / `pdf_figure` points stay; `content_hash` and `updated_at` (figure `sha256` too) are `set_payload`'d. `locality_links` are counted, not deleted.
-9. On embed/upsert/processed-write failure: delete the new point ids, restore previous processed files, drop the unused version snapshot.
+8. Delete the previous text-chunk point IDs (retry, then `cleanup_pending` + leftover IDs on failure). `pdf_image` / `pdf_figure` points stay; `content_hash` and `updated_at` (figure `sha256` too) are `set_payload`'d. `locality_links` are counted, not deleted.
+9. On embed/upsert/processed-write failure: delete the new point IDs, restore previous processed files, drop the unused version snapshot.
 10. Payload preservation: catalog `meta.extra` plus keys identical on every old chunk. Differing per-chunk keys are listed as `dropped_chunk_fields` and are not copied from the first chunk.
 11. Holds `doc_lock(doc_id)` (process-local, shared with `PATCH /documents/{doc_id}/metadata` and `DELETE /documents/{doc_id}`).
 
