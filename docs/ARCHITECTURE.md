@@ -12,7 +12,12 @@ The service is a single-process Python application that:
 - Indexes named vectors in an embedded Qdrant collection (`text_vector` 1024, `image_vector` 512).
 - Exposes catalog/text HTTP APIs, a Google-authenticated console, Streamable HTTP MCP tools (including similarity search), and per-day accounting under `/data/accnt`.
 
-**Sources of truth:** `main.py`, `rag/` (`app.py`, `config.py`, `embeddings.py`, `image_embed.py`, `ingest.py`, `document_delete.py`, `mcp_tools.py`, `processing.py`, `routes.py`, `admin_routes.py`, `google_oauth.py`, `chunked_upload.py`, `asgi_shutdown.py`, `storage.py`, `vectorstore.py`, `auth.py`), `Dockerfile`, `README.md`, `docs/embedding-provider.md`, `static/`, and `tests/`.
+**Sources of truth:** `main.py`, `rag/` (`app.py`, `config.py`, `embeddings.py`,
+`image_embed.py`, `ingest.py`, `document_delete.py`, `document_patch.py`,
+`document_supersede.py`, `verification_meta.py`, `mcp_tools.py`, `processing.py`,
+`routes.py`, `admin_routes.py`, `google_oauth.py`, `chunked_upload.py`,
+`asgi_shutdown.py`, `storage.py`, `vectorstore.py`, `auth.py`), `Dockerfile`,
+`README.md`, `docs/embedding-provider.md`, `static/`, and `tests/`.
 `pyproject.toml` lists runtime dependencies (including `fastembed`, `pymupdf`, `pillow`, `pytesseract`).
 There is no `requirements.txt`, lockfile, compose file, or platform config (for example `railway.toml`).
 CI lives under `.github/workflows/` (Super Linter and Docker image build; pytest is not run in CI).
@@ -166,8 +171,10 @@ From `rag/routes.py`, `rag/app.py`, `rag/google_oauth.py`, and `rag/admin_routes
 | `GET` | `/documents/{doc_id}` | **None** | Metadata |
 | `GET` | `/documents/{doc_id}/text` | **None** | Processed full text from disk (no re-parse, no embedding call) |
 | `PATCH` | `/documents/{doc_id}` | same as `/upload` | In-place metadata edit (`filename`, `extra`). Catalog + Qdrant `set_payload` only. `200` updated; `400`/`404`; `401`/`503` |
-| `PATCH` | `/documents/{doc_id}/metadata` | same as `/upload` | Verification fields (`set_payload` / JSON `null` delete). `doc_id`, text, and embeddings unchanged; Qdrant points are not deleted. `200` includes `updated_fields`, `deleted_fields`, `truncated`; `400`/`404`; `401`/`503` |
-| `DELETE` | `/documents/{doc_id}` | same as `/upload` | Remove files (including `images/`), catalog row, and Qdrant points. `200` `{"status":"deleted","doc_id","filename","chunks_removed"}`; `404` if missing; `401`/`503` if unauthorized |
+| `PATCH` | `/documents/{doc_id}/metadata` | same as `/upload` | Verification fields (`set_payload` / JSON `null` delete). Lifecycle field is `doc_status` (catalog ingest `status` stays `ready`). Link fields are **400**. `doc_status` null/`active` while linked is **400**. `200` includes `updated_fields`, `deleted_fields`, `truncated`; `400`/`404`; `401`/`503` |
+| `POST` | `/documents/{doc_id}/supersede` | same as `/upload` | Atomic both-sides link: old `superseded_by` + `doc_status=superseded`, new `supersedes` list. Optional `correction_note` (truncated at 500). Cycles/self/overwrite/hidden replacement **400**; missing new ID **404**. Second-write failure rolls back the first. No re-embed |
+| `POST` | `/documents/{doc_id}/unsupersede` | same as `/upload` | Atomic unlink: clear old `superseded_by` and remove old from new `supersedes`. Deletes `doc_status` only when it is `superseded` (keeps `retracted`). Leaves `correction_note` and verification. Idempotent |
+| `DELETE` | `/documents/{doc_id}` | same as `/upload` | Remove files (including `images/`), catalog row, and Qdrant points. `200` `{"status":"deleted","doc_id","filename","chunks_removed"}`; `409` `{message, linked_ids}` if supersession links remain; `404` if missing; `401`/`503` if unauthorized |
 | `GET` | `/images/{doc_id}/{image_id}` | same as `/upload` | Extracted PDF image bytes; `413` if larger than 50 MiB |
 | `GET` | `/` | None | Redirect to `/ui/` |
 | `GET` | `/ui/` | Google session | RAG console; redirects to `/auth/login` if unsigned-in, or `?error=not_configured` if OAuth env is missing |
@@ -184,8 +191,13 @@ From `rag/routes.py`, `rag/app.py`, `rag/google_oauth.py`, and `rag/admin_routes
 Chunked-upload errors: `400` validation, `404` unknown session, `409` chunk conflict, `410` expired.
 
 There is **no REST search** endpoint. Similarity search is MCP-only (`search_domain_knowledge`,
-`search_images`). There is no HTTP reindex route. `rag.document_delete.delete_document` deletes Qdrant
-points by `payload.doc_id` then calls `RagStorage.remove_document_files`.
+`search_images`). Those tools, plus `list_image_records` and `list_geo_refinements`, omit
+`doc_status=superseded` / `retracted` by default (`include_superseded=true` includes them;
+missing `doc_status` counts as active). Direct `GET /documents/{doc_id}` and `get_document_text` still
+return superseded/retracted documents. There is no HTTP reindex route. `rag.document_delete.delete_document` rejects
+with `DocumentLinkedError` when `superseded_by` / `supersedes` still reference the ID, otherwise deletes Qdrant
+points by `payload.doc_id` then calls `RagStorage.remove_document_files`. Concurrent supersede/unsupersede,
+`PATCH /metadata`, and DELETE take `rag.doc_locks.doc_lock(*doc_ids)` (sorted per-ID `threading.RLock`).
 `rag.document_patch.patch_document` updates catalog metadata and matching Qdrant payloads with
 `set_payload` only (no re-embedding). `patch_document_metadata` writes RAGloader verification
 fields the same way (chunks get full fields including `verification[]`; `pdf_figure` /
@@ -197,9 +209,13 @@ whitelist key (`DELETABLE_VERIFICATION_FIELDS` in `rag/verification_meta.py`) ru
 `delete_payload` on all points for that `doc_id` and `pop`s the key from catalog `extra`. Whitelist:
 `verification`, `verification_status`, `verified_by`, `verified_at`, `verified_source_url`,
 `verified_quote`, `reliability`, `source_axis`, `source_key`, `content_hash`, `overeni_souhrn`,
-`qg_trida`, `qg_flagy`, `qg_verze`.
+`qg_trida`, `qg_flagy`, `qg_verze`, `doc_status`, `correction_note`.
 `source_key` and `content_hash` may be nulled only in the same body as `verification: null` (full
-verification rollback); otherwise **400**. `qg_trida` / `qg_flagy` / `qg_verze` are plain deletes.
+verification rollback); otherwise **400**. `qg_trida` / `qg_flagy` / `qg_verze` / `doc_status` /
+`correction_note` are plain deletes (`doc_status=superseded` still requires `superseded_by`;
+`doc_status=retracted` requires `correction_note`; `doc_status` null/`active` while
+`superseded_by` is set is **400**, use unsupersede). `superseded_by` / `supersedes` (set or `null`)
+are **400** pointing at `POST /documents/{doc_id}/supersede` and `POST /documents/{doc_id}/unsupersede`.
 Null on any other field (including `tags`, `obec_kod`, `gps_presnost`, `extrakce_model`, `fakt_ref`)
 is **400**. Success responses
 include `deleted_fields`; vectors and `doc_id` are untouched. Same Bearer MCP/RAG or Google session
@@ -227,6 +243,8 @@ From `rag/mcp_tools.py`, registered in `create_app()` and served at **`/mcp`** (
 | Tool | `ingest_text(filename: str, content: str) -> str` | Yes |
 | Tool | `update_document(doc_id, filename="", extra=None)` | Yes |
 | Tool | `update_document_metadata(doc_id, metadata=None)` | Yes |
+| Tool | `supersede_document(old_doc_id, new_doc_id, correction_note="")` | Yes |
+| Tool | `unsupersede_document(old_doc_id)` | Yes |
 | Tool | `search_domain_knowledge(query: str, limit: int = 3, obec_id: str = "", cast_obce: str = "") -> str` | Yes |
 | Tool | `search_images(query: str, limit: int = 5, hybrid: bool = False) -> str` | Yes |
 | Tool | `sync_links_to_trails(dry_run: bool = False) -> str` | Yes |
@@ -245,11 +263,20 @@ Tool behavior:
 - `ingest_text`: if the filename is not a supported suffix, appends `.txt`; calls `ingest_bytes`; returns JSON or `"Error ingesting text: ..."`
 - `update_document`: calls `patch_document`; empty `filename` leaves the name unchanged; `extra` merges custom keys (`null` removes). Missing ID or invalid fields return `"Error update_document: ..."`
 - `update_document_metadata`: calls `patch_document_metadata`; writes `reliability` /
-  `verification[]` / `qg_verze` / `overeni_souhrn`. JSON `null` on a whitelist key deletes it
-  (`deleted_fields`). Response JSON includes `truncated` field paths when values were clipped.
+  `verification[]` / `qg_verze` / `overeni_souhrn` / `doc_status` / `correction_note`. JSON `null`
+  on a whitelist key deletes it (`deleted_fields`). `superseded_by` / `supersedes` are rejected.
+  Response JSON includes `truncated` field paths when values were clipped.
   Missing ID or invalid fields return an error string.
-- `search_domain_knowledge`: `get_query_embedding` (FastEmbed) → `search_similar` on `text_vector` with optional `obec_id` / `cast_obce` payload filter on denormalized `localities` / `cast_obce` arrays → format `Source:` / `Content:` blocks (OCR image hits included when they have text vectors); empty → `"No relevant facts found."`; exceptions → `"Error executing RAG search: ..."`
-- `search_images`: requires `IMAGE_EMBEDDING_ENABLED=true`; CLIP text tower → `image_vector`; `hybrid=true` RRF-merges CLIP hits with `pdf_image` text hits
+- `supersede_document` / `unsupersede_document`: atomic both-sides link / unlink with rollback if
+  the second write fails; replacement must not be superseded/retracted; unsupersede keeps
+  `doc_status=retracted`; no reverse-link auto-write beyond the pair; no re-embed.
+- `search_domain_knowledge`: `get_query_embedding` (FastEmbed) → `search_similar` on
+  `text_vector` with optional `obec_id` / `cast_obce` payload filter on denormalized
+  `localities` / `cast_obce` arrays and a default `doc_status` must_not filter for
+  superseded/retracted → format `Source:` / `Content:` blocks (OCR image hits included
+  when they have text vectors); empty → `"No relevant facts found."`; exceptions →
+  `"Error executing RAG search: ..."`
+- `search_images`: requires `IMAGE_EMBEDDING_ENABLED=true`; CLIP text tower → `image_vector`; `hybrid=true` RRF-merges CLIP hits with `pdf_image` text hits; same `doc_status` default exclusion
 - `link_locality` / `verify_link`: when `TRAILS_API_URL` and `TRAILS_API_TOKEN` are set, forward to TrailsAssemblage `POST /locality-links` and `PATCH /locality-links/{id}/verify`. Failures retry with backoff then land in `{RAG_DATA_ROOT}/trails_outbox.json`; MCP tools still succeed. Unset env leaves tools unchanged.
 - `sync_links_to_trails`: idempotent backfill of all `locality_links` points; `dry_run` counts without HTTP.
 - `refine_geo`: validates a `geo_refined` object (Pydantic) and `set_payload`s it onto document metadata and/or Qdrant image/chunk points. Never writes original `lat`/`lon`. `dry_run=true` (default) returns old vs new. Repeat writes of the same object are idempotent; a changed object is appended to `geo_refined_history`. Same `/mcp` bearer as `link_locality`. Not forwarded to Trails.
@@ -305,7 +332,7 @@ See [Embedding connectivity](./CONNECTIVITY.md#embedding-connectivity) and [Embe
 - Collection name (hardcoded): `client_domain_knowledge`.
 - Named vectors: `text_vector` (1024, cosine) and `image_vector` (512, cosine). Payload indexes on
   `source_type`, `doc_id`, `chunk_sha256`, `localities`, `cast_obce`, `image_id`, `source_key`
-  (keyword), `verification_status` (keyword), `reliability` (integer), and nested
+  (keyword), `verification_status` (keyword), `doc_status` (keyword), `reliability` (integer), and nested
   `geo_refined.{precision,status,confidence_level,needs_refinement,verified}`. Indexes are created
   idempotently at collection init (skip if the field already exists; no re-embed, no deletes). New
   ingests store empty `localities` / `cast_obce` arrays and `chunk_sha256` (hash of chunk text).
@@ -321,7 +348,7 @@ See [Embedding connectivity](./CONNECTIVITY.md#embedding-connectivity) and [Embe
 
 ### Retrieval
 
-- `search_domain_knowledge`: FastEmbed query → cosine search on `text_vector` with `limit` (default 3).
+- `search_domain_knowledge`: FastEmbed query → cosine search on `text_vector` with `limit` (default 3). Default Qdrant `must_not` on `doc_status` in `{superseded, retracted}`; `include_superseded=true` disables it.
   Optional `obec_id` / `cast_obce` filters on payload arrays. Hits may be PDF chunks or OCR image
   points. Citations use `parent_document`/`source`, `source_type`, `doc_id`, optional `page_number` /
   `image_id` / URL. When coordinates exist, JSON hits include preferred `lat`/`lon`, `geo_source`

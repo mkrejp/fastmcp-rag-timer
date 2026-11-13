@@ -56,6 +56,8 @@ MCP_TOOL_DOCS = {
     "ingest_text": "Ingest plain-text or markdown via MCP.",
     "update_document": "Patch document filename/extra metadata without re-embedding.",
     "update_document_metadata": "Patch verification payload fields without re-embedding.",
+    "supersede_document": "Atomically link an old document as superseded by a new one.",
+    "unsupersede_document": "Atomically remove a supersession link from both documents.",
     "search_domain_knowledge": "Query RAG facts; optional obec_id/cast_obce filter.",
     "search_images": "Search PDF images by CLIP visual similarity (optional hybrid).",
     "link_locality": "Upsert document-municipality links into locality_links (no embeddings).",

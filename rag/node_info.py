@@ -48,6 +48,8 @@ MCP_WRITE_TOOLS = frozenset(
         "ingest_text",
         "update_document",
         "update_document_metadata",
+        "supersede_document",
+        "unsupersede_document",
         "link_locality",
         "verify_link",
         "sync_links_to_trails",
@@ -548,6 +550,8 @@ def is_http_write_request(method: str, path: str) -> bool:
     if upper == "DELETE" and normalized.startswith("/documents/"):
         return True
     if upper == "PATCH" and normalized.startswith("/documents/"):
+        return True
+    if upper == "POST" and normalized.startswith("/documents/"):
         return True
     return False
 

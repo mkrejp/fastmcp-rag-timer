@@ -5,13 +5,17 @@ from __future__ import annotations
 import pytest
 
 from rag.verification_meta import (
+    MAX_CORRECTION_NOTE_LEN,
     MAX_OVERENI_SOUHRN_LEN,
     MAX_QUOTE_LEN,
     DocumentMetadataError,
     figure_payload_fields,
+    is_hidden_doc_status,
     normalize_overeni_souhrn,
     normalize_verification_metadata,
     split_verification_deletes,
+    supersedes_ids,
+    validate_merged_lifecycle_fields,
 )
 
 
@@ -156,6 +160,18 @@ def test_split_deletes_whitelist_and_rollback_rule() -> None:
         with pytest.raises(DocumentMetadataError, match=field):
             split_verification_deletes({field: None})
 
+    remaining, deleted = split_verification_deletes(
+        {"doc_status": None, "correction_note": None, "reliability": 2}
+    )
+    assert remaining == {"reliability": 2}
+    assert deleted == ["doc_status", "correction_note"]
+    with pytest.raises(DocumentMetadataError, match="supersede"):
+        split_verification_deletes({"superseded_by": None})
+    with pytest.raises(DocumentMetadataError, match="supersede"):
+        split_verification_deletes({"supersedes": None})
+    with pytest.raises(DocumentMetadataError, match="doc_status"):
+        split_verification_deletes({"status": None})
+
 
 def test_figure_payload_omits_colliding_keys() -> None:
     """Figures must not receive document verification[] or status."""
@@ -173,3 +189,75 @@ def test_figure_payload_omits_colliding_keys() -> None:
     assert figure["overeni_souhrn"] == "nejisté"
     assert "verification" not in figure
     assert "verification_status" not in figure
+
+
+def test_lifecycle_fields_are_figure_safe() -> None:
+    """doc_status and correction_note should be written onto figure points."""
+    out, truncated = normalize_verification_metadata(
+        {
+            "doc_status": "retracted",
+            "correction_note": "wrong year",
+            "reliability": 2,
+        }
+    )
+    assert truncated == []
+    figure = figure_payload_fields(out)
+    assert figure["doc_status"] == "retracted"
+    assert figure["correction_note"] == "wrong year"
+
+
+def test_correction_note_is_truncated() -> None:
+    """correction_note longer than 500 chars should clip and report truncated."""
+    long_note = "n" * (MAX_CORRECTION_NOTE_LEN + 9)
+    out, truncated = normalize_verification_metadata({"correction_note": long_note})
+    assert out["correction_note"] == "n" * MAX_CORRECTION_NOTE_LEN
+    assert truncated == ["correction_note"]
+
+
+def test_doc_status_enum_and_status_alias_rejected() -> None:
+    """Only active|superseded|retracted are valid; status is not the field."""
+    out, truncated = normalize_verification_metadata({"doc_status": "active"})
+    assert out["doc_status"] == "active"
+    assert truncated == []
+    with pytest.raises(DocumentMetadataError, match="doc_status"):
+        normalize_verification_metadata({"doc_status": "archived"})
+    with pytest.raises(DocumentMetadataError, match="doc_status"):
+        normalize_verification_metadata({"status": "superseded"})
+    with pytest.raises(DocumentMetadataError, match="supersede"):
+        normalize_verification_metadata({"superseded_by": "abc"})
+
+
+def test_merged_lifecycle_invariants() -> None:
+    """superseded needs a link; retracted needs a note; hidden statuses work."""
+    validate_merged_lifecycle_fields(
+        {"doc_status": "superseded", "superseded_by": "doc-b"}
+    )
+    validate_merged_lifecycle_fields(
+        {"doc_status": "retracted", "correction_note": "bad year"}
+    )
+    with pytest.raises(DocumentMetadataError, match="superseded_by"):
+        validate_merged_lifecycle_fields({"doc_status": "superseded"})
+    with pytest.raises(DocumentMetadataError, match="correction_note"):
+        validate_merged_lifecycle_fields({"doc_status": "retracted"})
+    with pytest.raises(DocumentMetadataError, match="unsupersede"):
+        validate_merged_lifecycle_fields(
+            {"doc_status": "active", "superseded_by": "doc-b"}
+        )
+    with pytest.raises(DocumentMetadataError, match="unsupersede"):
+        validate_merged_lifecycle_fields(
+            {"superseded_by": "doc-b"}, deleted=["doc_status"]
+        )
+    assert is_hidden_doc_status("superseded") is True
+    assert is_hidden_doc_status("retracted") is True
+    assert is_hidden_doc_status("active") is False
+    assert is_hidden_doc_status(None) is False
+    assert is_hidden_doc_status("") is False
+
+
+def test_supersedes_ids_dedupes_and_rejects_bad_types() -> None:
+    """supersedes may be a string or list; other types are invalid."""
+    assert supersedes_ids(None) == []
+    assert supersedes_ids(["a", "a", " b "]) == ["a", "b"]
+    assert supersedes_ids("solo") == ["solo"]
+    with pytest.raises(DocumentMetadataError, match="list of doc_ids"):
+        supersedes_ids(123)

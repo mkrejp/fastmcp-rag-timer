@@ -10,6 +10,7 @@ from qdrant_client import QdrantClient
 from qdrant_client.models import FieldCondition, Filter, FilterSelector, MatchValue
 
 from rag.config import LOCALITY_LINKS_COLLECTION
+from rag.doc_locks import doc_lock
 from rag.document_delete import DocumentNotFoundError
 from rag.logging_setup import get_logger
 from rag.processing import guess_mime, is_supported_filename
@@ -21,6 +22,7 @@ from rag.verification_meta import (
     figure_payload_fields,
     normalize_verification_metadata,
     split_verification_deletes,
+    validate_merged_lifecycle_fields,
 )
 
 logger = get_logger("rag.document_patch")
@@ -68,6 +70,10 @@ _RESERVED_EXTRA_KEYS = (
         "source_type",
         "source_url",
         "status",
+        "doc_status",
+        "superseded_by",
+        "supersedes",
+        "correction_note",
         "text",
         "uploaded_at",
         "vectors",
@@ -225,6 +231,22 @@ def _delete_payload_for_doc(
         wait=True,
     )
     return matched
+
+
+def delete_payload_keys_for_doc(
+    qdrant: QdrantClient,
+    *,
+    collection_name: str,
+    doc_id: str,
+    keys: list[str],
+) -> int:
+    """Delete payload keys on every knowledge point for ``doc_id``."""
+    return _delete_payload_for_doc(
+        qdrant,
+        collection_name=collection_name,
+        doc_id=doc_id,
+        keys=keys,
+    )
 
 
 def write_verification_payload(
@@ -459,6 +481,25 @@ def patch_document_metadata(
     Does not change ``doc_id``, re-embed, or delete points. Empty bodies
     apply ``reliability=1``.
     """
+    with doc_lock(doc_id):
+        return _patch_document_metadata_locked(
+            storage=storage,
+            qdrant=qdrant,
+            collection_name=collection_name,
+            doc_id=doc_id,
+            metadata=metadata,
+        )
+
+
+def _patch_document_metadata_locked(
+    *,
+    storage: RagStorage,
+    qdrant: QdrantClient,
+    collection_name: str,
+    doc_id: str,
+    metadata: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Apply a metadata patch while ``doc_lock(doc_id)`` is held."""
     meta = _load_document(storage, doc_id)
     remaining, deleted = split_verification_deletes(metadata)
     apply_defaults = not metadata
@@ -479,6 +520,7 @@ def patch_document_metadata(
     merged_extra.update(fields)
     for key in deleted:
         merged_extra.pop(key, None)
+    validate_merged_lifecycle_fields(merged_extra, deleted=deleted)
     meta.extra = merged_extra
     storage.write_meta(meta)
 

@@ -8,13 +8,29 @@ Document ``verification_status`` (six Czech values) is not written onto
 
 from __future__ import annotations
 
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping, Sequence
 
 DEFAULT_RELIABILITY = 1
 DEFAULT_VERIFICATION_STATUS = "nejiste"
 MAX_QUOTE_LEN = 500
 MAX_OVERENI_SOUHRN_LEN = 300
+MAX_CORRECTION_NOTE_LEN = 500
 MAX_VERIFICATION_ITEMS = 20
+DOC_STATUS_VALUES = frozenset({"active", "superseded", "retracted"})
+HIDDEN_DOC_STATUSES = frozenset({"superseded", "retracted"})
+LIFECYCLE_LINK_FIELDS = frozenset({"superseded_by", "supersedes"})
+LIFECYCLE_PATCH_FIELDS = frozenset({"doc_status", "correction_note"})
+SUPERSEDE_ENDPOINT = "POST /documents/{doc_id}/supersede"
+UNSUPERSEDE_ENDPOINT = "POST /documents/{doc_id}/unsupersede"
+LIFECYCLE_LINK_PATCH_MESSAGE = (
+    "superseded_by and supersedes cannot be set or deleted via "
+    "PATCH /documents/{doc_id}/metadata; use "
+    f"{SUPERSEDE_ENDPOINT} or {UNSUPERSEDE_ENDPOINT}"
+)
+STATUS_ALIAS_MESSAGE = (
+    "unknown metadata fields: status (document lifecycle is doc_status; "
+    "catalog status is the ingest state)"
+)
 
 VERIFICATION_RESULTS = frozenset(
     {
@@ -103,6 +119,7 @@ _FLAT_STRING_ENUMS: dict[str, frozenset[str]] = {
     "druh_textu": DRUH_TEXTU_VALUES,
     "overeni": OVERENI_VALUES,
     "qg_trida": QG_TRIDA_VALUES,
+    "doc_status": DOC_STATUS_VALUES,
 }
 _FLAT_STRINGS = frozenset(
     {
@@ -120,6 +137,7 @@ _FLAT_STRINGS = frozenset(
         "gps_presnost",
         "fakt_ref",
         "overeni_souhrn",
+        "correction_note",
     }
 )
 _QG_LIST_OR_STRING = frozenset({"qg_duvody", "qg_flagy"})
@@ -141,6 +159,7 @@ FLAT_PAYLOAD_KEYS = (
         "verification",
         "gps_presnost_m",
         "gps_stav",
+        "doc_status",
     }
 )
 FIGURE_EXCLUDED_KEYS = frozenset(
@@ -170,6 +189,8 @@ DELETABLE_VERIFICATION_FIELDS = frozenset(
         "qg_trida",
         "qg_flagy",
         "qg_verze",
+        "doc_status",
+        "correction_note",
     }
 )
 # Only allowed as null in the same request as ``verification: null``.
@@ -178,6 +199,82 @@ ROLLBACK_ONLY_DELETE_FIELDS = frozenset({"source_key", "content_hash"})
 
 class DocumentMetadataError(ValueError):
     """Raised when verification metadata is missing, unknown, or invalid."""
+
+
+def validate_merged_lifecycle_fields(
+    merged: Mapping[str, Any],
+    *,
+    deleted: Sequence[str] | None = None,
+) -> None:
+    """Reject lifecycle combinations that would be internally inconsistent.
+
+    ``doc_status=superseded`` requires ``superseded_by`` (set only via the
+    supersede endpoint). ``doc_status=retracted`` requires a non-empty
+    ``correction_note``. Clearing ``doc_status`` while a supersession link
+    remains must go through unlink.
+    """
+    removed = {str(name) for name in (deleted or [])}
+    status = merged.get("doc_status")
+    note = merged.get("correction_note")
+    superseded_by = str(merged.get("superseded_by") or "").strip()
+    if status == "superseded" and not superseded_by:
+        raise DocumentMetadataError(
+            "doc_status=superseded requires superseded_by; " f"use {SUPERSEDE_ENDPOINT}"
+        )
+    if status == "retracted":
+        if not (isinstance(note, str) and note.strip()):
+            raise DocumentMetadataError(
+                "doc_status=retracted requires a non-empty correction_note"
+            )
+    if status == "active" and superseded_by:
+        raise DocumentMetadataError(
+            "cannot set doc_status=active while superseded_by is set; "
+            f"use {UNSUPERSEDE_ENDPOINT}"
+        )
+    if "doc_status" in removed and superseded_by:
+        raise DocumentMetadataError(
+            "cannot clear doc_status while superseded_by is set; "
+            f"use {UNSUPERSEDE_ENDPOINT}"
+        )
+    if "correction_note" in removed and status == "retracted":
+        raise DocumentMetadataError(
+            "cannot clear correction_note while doc_status=retracted"
+        )
+
+
+def supersedes_ids(value: object) -> list[str]:
+    """Return de-duplicated document IDs stored in ``supersedes``."""
+    if value is None or value == "":
+        raw: list[object] = []
+    elif isinstance(value, str):
+        raw = [value]
+    elif isinstance(value, list):
+        raw = list(value)
+    else:
+        raise DocumentMetadataError("supersedes must be a list of doc_ids")
+    out: list[str] = []
+    for item in raw:
+        text = str(item).strip()
+        if text and text not in out:
+            out.append(text)
+    return out
+
+
+def is_hidden_doc_status(value: object) -> bool:
+    """Return whether ``value`` should be excluded from search/list defaults.
+
+    Missing, empty, and ``active`` count as visible. ``superseded`` and
+    ``retracted`` are hidden unless the caller passes ``include_superseded``.
+    """
+    text = str(value or "").strip()
+    return text in HIDDEN_DOC_STATUSES
+
+
+def _reject_lifecycle_link_fields(keys: Iterable[object]) -> None:
+    """Reject direct writes of ``superseded_by`` / ``supersedes``."""
+    found = [str(key) for key in keys if str(key) in LIFECYCLE_LINK_FIELDS]
+    if found:
+        raise DocumentMetadataError(LIFECYCLE_LINK_PATCH_MESSAGE)
 
 
 def _jsonable(value: object, *, path: str) -> None:
@@ -453,6 +550,9 @@ def split_verification_deletes(
         return {}, []
     if not isinstance(raw, Mapping):
         raise DocumentMetadataError("metadata must be an object")
+    if "status" in raw:
+        raise DocumentMetadataError(STATUS_ALIAS_MESSAGE)
+    _reject_lifecycle_link_fields(raw.keys())
     verification_rollback = "verification" in raw and raw["verification"] is None
     remaining: dict[str, Any] = {}
     deleted: list[str] = []
@@ -489,6 +589,10 @@ def normalize_verification_metadata(
         if not isinstance(raw, Mapping):
             raise DocumentMetadataError("metadata must be an object")
         data = dict(raw)
+
+    if "status" in data:
+        raise DocumentMetadataError(STATUS_ALIAS_MESSAGE)
+    _reject_lifecycle_link_fields(data.keys())
 
     if "source" in data:
         axis = data.pop("source")
@@ -546,6 +650,15 @@ def normalize_verification_metadata(
             continue
         if key == "overeni_souhrn":
             out[key] = normalize_overeni_souhrn(value, truncated=truncated)
+            continue
+        if key == "correction_note":
+            text = _require_str(value, path=key, allow_empty=True)
+            out[key] = _clip(
+                text.strip(),
+                MAX_CORRECTION_NOTE_LEN,
+                path=key,
+                truncated=truncated,
+            )
             continue
         if key == "verified_quote":
             out[key] = _normalize_quote(value, path=key, truncated=truncated)

@@ -18,6 +18,8 @@ from rag.document_patch import (
     patch_document,
     patch_document_metadata,
 )
+from rag.document_supersede import supersede_document as apply_supersede_document
+from rag.document_supersede import unsupersede_document as apply_unsupersede_document
 from rag.embeddings import get_query_embedding
 from rag.figure_index import image_record_stats as aggregate_image_record_stats
 from rag.figure_index import list_figure_payloads_for_doc
@@ -582,10 +584,12 @@ def register_mcp_tools(
         """Patch verification payload fields without re-upload or re-embedding.
 
         Writes flat RAGloader fields (``reliability``, ``verification[]``,
-        ``qg_verze``, ``overeni_souhrn``, …) via ``set_payload`` onto matching
-        chunks. JSON ``null`` on a whitelist key deletes that payload key
-        (``deleted_fields``). Clipped fields are listed in ``truncated``.
-        Does not change ``doc_id``. Same bearer auth as other MCP write tools.
+        ``qg_verze``, ``overeni_souhrn``, ``doc_status``, ``correction_note``,
+        …) via ``set_payload`` onto matching chunks. JSON ``null`` on a
+        whitelist key deletes that payload key (``deleted_fields``).
+        ``superseded_by`` / ``supersedes`` are rejected; use
+        ``supersede_document`` / ``unsupersede_document``. Clipped fields
+        are listed in ``truncated``. Does not change ``doc_id``.
         """
 
         def _body() -> str:
@@ -616,6 +620,79 @@ def register_mcp_tools(
         )
 
     @mcp.tool()
+    def supersede_document(
+        old_doc_id: str,
+        new_doc_id: str,
+        correction_note: str = "",
+    ) -> str:
+        """Atomically mark ``old_doc_id`` as superseded by ``new_doc_id``.
+
+        Sets both sides of the link (``old.superseded_by`` and
+        ``new.supersedes``) and ``old.doc_status=superseded``. The
+        replacement must not itself be superseded or retracted. Does not
+        re-embed or auto-write other documents. Same bearer as other writes.
+        """
+
+        def _body() -> str:
+            try:
+                note: str | None = correction_note if correction_note.strip() else None
+                result = apply_supersede_document(
+                    storage=storage,
+                    qdrant=qdrant,
+                    collection_name=collection_name,
+                    old_doc_id=old_doc_id,
+                    new_doc_id=new_doc_id,
+                    correction_note=note,
+                )
+                return json.dumps(result, ensure_ascii=False)
+            except DocumentNotFoundError as exc:
+                return f"Error supersede_document: {exc}"
+            except (DocumentPatchError, DocumentMetadataError) as exc:
+                return f"Error supersede_document: {exc}"
+            except Exception as exc:  # noqa: BLE001 - return tool-visible error text
+                return f"Error supersede_document: {exc}"
+
+        return _run_mcp_tool(
+            "supersede_document",
+            request_chars=len(old_doc_id) + len(new_doc_id) + len(correction_note),
+            source=None,
+            fn=_body,
+        )
+
+    @mcp.tool()
+    def unsupersede_document(old_doc_id: str) -> str:
+        """Atomically remove a supersession link from ``old_doc_id``.
+
+        Clears ``superseded_by`` on the old document and removes it from
+        the replacement's ``supersedes`` list. Deletes ``doc_status`` only
+        when it is ``superseded`` (keeps ``retracted``). Verification
+        fields are left intact.
+        """
+
+        def _body() -> str:
+            try:
+                result = apply_unsupersede_document(
+                    storage=storage,
+                    qdrant=qdrant,
+                    collection_name=collection_name,
+                    old_doc_id=old_doc_id,
+                )
+                return json.dumps(result, ensure_ascii=False)
+            except DocumentNotFoundError as exc:
+                return f"Error unsupersede_document: {exc}"
+            except (DocumentPatchError, DocumentMetadataError) as exc:
+                return f"Error unsupersede_document: {exc}"
+            except Exception as exc:  # noqa: BLE001 - return tool-visible error text
+                return f"Error unsupersede_document: {exc}"
+
+        return _run_mcp_tool(
+            "unsupersede_document",
+            request_chars=len(old_doc_id),
+            source=None,
+            fn=_body,
+        )
+
+    @mcp.tool()
     def search_domain_knowledge(
         query: str,
         limit: int = 3,
@@ -625,6 +702,7 @@ def register_mcp_tools(
         only_verified: bool = False,
         min_status: str = "",
         format: str = "text",
+        include_superseded: bool = False,
     ) -> str:
         """Query local RAG vector storage for contextual facts.
 
@@ -632,8 +710,10 @@ def register_mcp_tools(
         ``localities`` / ``cast_obce`` payload arrays contain those values.
         ``only_verified`` / ``min_status`` apply to ``pdf_figure`` hits;
         ``rejected`` figures are always omitted. Empty strings omit filters.
-        ``format=text`` (default) returns legacy Source/Content blocks;
-        ``format=json`` returns structured hits including ``page_image_id``.
+        Superseded and retracted documents are omitted unless
+        ``include_superseded`` is true. ``format=text`` (default) returns
+        legacy Source/Content blocks; ``format=json`` returns structured
+        hits including ``page_image_id``.
         """
 
         def _body() -> str:
@@ -658,6 +738,7 @@ def register_mcp_tools(
                     collection_name=collection_name,
                     vector_name=TEXT_VECTOR_NAME,
                     query_filter=locality_filter,
+                    include_superseded=include_superseded,
                 )
                 logger.info("MCP search returned %s hits", len(results))
                 want_json = format.strip().lower() == "json"
@@ -768,11 +849,14 @@ def register_mcp_tools(
         precision: str = "",
         needs_refinement: bool | None = None,
         format: str = "text",
+        include_superseded: bool = False,
     ) -> str:
         """Search PDF images and figures by CLIP with optional text hybrid.
 
         Optional ``precision`` (municipality|cast_obce|street|building) and
         ``needs_refinement`` filter hits that have ``geo_refined`` metadata.
+        Superseded and retracted documents are omitted unless
+        ``include_superseded`` is true.
         """
 
         def _body() -> str:
@@ -790,6 +874,7 @@ def register_mcp_tools(
                     limit=limit * 4,
                     collection_name=collection_name,
                     vector_name=IMAGE_VECTOR_NAME,
+                    include_superseded=include_superseded,
                 )
                 if hybrid:
                     text_vector = get_query_embedding(query)
@@ -799,6 +884,7 @@ def register_mcp_tools(
                         limit=limit * 4,
                         collection_name=collection_name,
                         vector_name=TEXT_VECTOR_NAME,
+                        include_superseded=include_superseded,
                     )
                     filter_image = [
                         hit
@@ -1115,11 +1201,14 @@ def register_mcp_tools(
         precision: str = "",
         needs_refinement: bool | None = None,
         limit: int = 50,
+        include_superseded: bool = False,
     ) -> str:
         """List ``pdf_figure`` records with optional doc_id and status filters.
 
         Optional ``precision`` and ``needs_refinement`` filter on ``geo_refined``.
         Coordinates prefer ``geo_refined`` when present (``geo_source``).
+        Superseded and retracted documents are omitted unless
+        ``include_superseded`` is true.
         """
 
         def _body() -> str:
@@ -1132,6 +1221,7 @@ def register_mcp_tools(
                     precision=precision.strip() or None,
                     needs_refinement=needs_refinement,
                     limit=limit,
+                    include_superseded=include_superseded,
                 )
                 return json.dumps(result, ensure_ascii=False)
             except ImageRecordPayloadError as exc:
@@ -1234,12 +1324,15 @@ def register_mcp_tools(
         doc_id: str = "",
         limit: int = 50,
         offset: int = 0,
+        include_superseded: bool = False,
     ) -> str:
         """List stored ``geo_refined`` records with filters and pagination.
 
         ``filter`` may include precision, status, confidence_level,
-        needs_refinement, verified, doc_id, limit, and offset. Individual
-        arguments are used when the filter omits them. Does not call embeddings.
+        needs_refinement, verified, doc_id, limit, offset, and
+        include_superseded. Individual arguments are used when the filter
+        omits them. Does not call embeddings. Superseded and retracted
+        documents are omitted unless ``include_superseded`` is true.
         """
 
         def _body() -> str:
@@ -1257,6 +1350,7 @@ def register_mcp_tools(
                     doc_id=doc_id.strip() or None,
                     limit=limit,
                     offset=offset,
+                    include_superseded=include_superseded,
                 )
                 return json.dumps(result, ensure_ascii=False)
             except GeoRefinedPayloadError as exc:

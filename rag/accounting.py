@@ -21,6 +21,8 @@ MCP_TOOLS = (
     "ingest_text",
     "update_document",
     "update_document_metadata",
+    "supersede_document",
+    "unsupersede_document",
     "search_domain_knowledge",
     "search_images",
     "link_locality",
@@ -42,6 +44,8 @@ HTTP_ROUTES = (
     "documents_text",
     "documents_patch",
     "documents_metadata_patch",
+    "documents_supersede",
+    "documents_unsupersede",
     "documents_delete",
     "health",
 )

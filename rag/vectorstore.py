@@ -78,6 +78,7 @@ KNOWLEDGE_PAYLOAD_INDEXES: tuple[tuple[str, PayloadSchemaType], ...] = (
     ("geo_refined.confidence_level", PayloadSchemaType.KEYWORD),
     ("geo_refined.needs_refinement", PayloadSchemaType.BOOL),
     ("geo_refined.verified", PayloadSchemaType.BOOL),
+    ("doc_status", PayloadSchemaType.KEYWORD),
 )
 DEFAULT_TOP_OBCE = 20
 
@@ -447,6 +448,50 @@ def knowledge_locality_filter(
     if not must:
         return None
     return Filter(must=must)
+
+
+def document_lifecycle_filter(*, include_superseded: bool = False) -> Filter | None:
+    """Exclude ``doc_status`` superseded/retracted points unless opted in.
+
+    Points without ``doc_status`` are treated as active and remain visible.
+    """
+    if include_superseded:
+        return None
+    return Filter(
+        must_not=[
+            FieldCondition(key="doc_status", match=MatchValue(value="superseded")),
+            FieldCondition(key="doc_status", match=MatchValue(value="retracted")),
+        ]
+    )
+
+
+def _condition_list(value: object) -> list[Any]:
+    """Normalize a Qdrant filter clause to a list of conditions."""
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return list(value)
+    return [value]
+
+
+def merge_query_filters(*filters: Filter | None) -> Filter | None:
+    """AND ``must`` / ``must_not`` / ``should`` clauses from ``filters``."""
+    must: list[Any] = []
+    must_not: list[Any] = []
+    should: list[Any] = []
+    for flt in filters:
+        if flt is None:
+            continue
+        must.extend(_condition_list(flt.must))
+        must_not.extend(_condition_list(flt.must_not))
+        should.extend(_condition_list(flt.should))
+    if not must and not must_not and not should:
+        return None
+    return Filter(
+        must=must or None,
+        must_not=must_not or None,
+        should=should or None,
+    )
 
 
 def _locality_point_vector(
@@ -855,15 +900,24 @@ def search_similar(
     collection_name: str = COLLECTION_NAME,
     vector_name: str = TEXT_VECTOR_NAME,
     query_filter: Filter | None = None,
+    include_superseded: bool = False,
 ) -> list[ScoredPoint]:
-    """Return nearest points for ``query_vector`` on ``vector_name``."""
+    """Return nearest points for ``query_vector`` on ``vector_name``.
+
+    By default excludes points whose ``doc_status`` is ``superseded`` or
+    ``retracted``. Missing ``doc_status`` counts as active. Pass
+    ``include_superseded=True`` to return them.
+    """
     response = client.query_points(
         collection_name=collection_name,
         query=list(query_vector),
         using=vector_name,
         limit=limit,
         with_payload=True,
-        query_filter=query_filter,
+        query_filter=merge_query_filters(
+            query_filter,
+            document_lifecycle_filter(include_superseded=include_superseded),
+        ),
     )
     return list(response.points)
 

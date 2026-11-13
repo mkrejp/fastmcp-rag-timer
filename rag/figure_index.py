@@ -7,19 +7,12 @@ from typing import Any, Mapping, Sequence
 from qdrant_client import QdrantClient
 from qdrant_client.models import FieldCondition, Filter, MatchValue, PointStruct
 
-from rag.config import (
-    FIGURE_INDEX_VERSION,
-    resolve_figure_batch_size,
-)
+from rag.config import FIGURE_INDEX_VERSION, resolve_figure_batch_size
 from rag.embeddings import get_ingest_embeddings
 from rag.figure_summary import FigureLlmBudget
+from rag.geo_refined import attach_preferred_geo, matches_geo_filter, validate_precision
 from rag.image_embed import embed_image_paths, image_embedding_enabled
 from rag.logging_setup import get_logger
-from rag.geo_refined import (
-    attach_preferred_geo,
-    matches_geo_filter,
-    validate_precision,
-)
 from rag.payloads import (
     ImageRecordNotFoundError,
     ImageRecordPayloadError,
@@ -28,7 +21,11 @@ from rag.payloads import (
 )
 from rag.pdf_figures import BuiltFigure, iterate_figure_records
 from rag.storage import RagStorage
-from rag.vectorstore import build_named_vector
+from rag.vectorstore import (
+    build_named_vector,
+    document_lifecycle_filter,
+    merge_query_filters,
+)
 
 logger = get_logger("rag.figure_index")
 
@@ -223,8 +220,6 @@ def index_pdf_figures(
     preserve_existing: bool = True,
 ) -> tuple[int, set[tuple[int, int]]]:
     """Run figure pipeline, store PNGs, upsert Qdrant; return count and skip keys."""
-    from rag.storage import ImageMeta
-
     existing = (
         _load_existing_figure_payloads(
             qdrant, collection_name=collection_name, doc_id=doc_id
@@ -425,17 +420,25 @@ def list_image_records(
     precision: str | None = None,
     needs_refinement: bool | None = None,
     limit: int = 50,
+    include_superseded: bool = False,
 ) -> dict[str, Any]:
-    """List pdf_figure payloads with optional filters."""
+    """List pdf_figure payloads with optional filters.
+
+    Superseded and retracted documents are omitted unless
+    ``include_superseded`` is true. Missing ``doc_status`` counts as active.
+    """
     precision_n = None
     if precision:
         try:
             precision_n = validate_precision(precision)
         except Exception as exc:  # noqa: BLE001
             raise ImageRecordPayloadError(str(exc)) from exc
-    scroll_filter = _figure_filter(
-        doc_id=doc_id,
-        verification_status=status or None,
+    scroll_filter = merge_query_filters(
+        _figure_filter(
+            doc_id=doc_id,
+            verification_status=status or None,
+        ),
+        document_lifecycle_filter(include_superseded=include_superseded),
     )
     fetch_limit = min(max(limit, 1), 200)
     if precision_n is not None or needs_refinement is not None:
@@ -528,12 +531,5 @@ def knowledge_figure_verification_filter(
 
 
 def merge_knowledge_filters(*filters: Filter | None) -> Filter | None:
-    """Combine filters by AND-ing their ``must`` clauses."""
-    must: list[FieldCondition] = []
-    for flt in filters:
-        if flt is None:
-            continue
-        must.extend(flt.must or [])
-    if not must:
-        return None
-    return Filter(must=must)
+    """Combine filters by AND-ing their ``must`` and ``must_not`` clauses."""
+    return merge_query_filters(*filters)
