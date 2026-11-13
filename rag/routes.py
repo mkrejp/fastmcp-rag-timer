@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from typing import Any
+from typing import Any, NoReturn
 
 from fastapi import (
     APIRouter,
@@ -36,6 +36,7 @@ from rag.document_patch import (
     patch_document,
     patch_document_metadata,
 )
+from rag.document_supersede import supersede_document, unsupersede_document
 from rag.embeddings import embedding_provider_status, validate_embedding_configuration
 from rag.image_delivery import resolve_image_delivery
 from rag.image_embed import image_embedding_enabled
@@ -160,6 +161,56 @@ class PatchDocumentMetadataResponse(BaseModel):
         ),
     )
     meta: dict[str, Any]
+
+
+class SupersedeDocumentRequest(BaseModel):
+    """Body for ``POST /documents/{doc_id}/supersede``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    new_doc_id: str = Field(..., min_length=1, max_length=64)
+    correction_note: str | None = Field(
+        default=None,
+        description=(
+            "Optional reason for the replacement. Longer than 500 characters "
+            "is truncated and listed in ``truncated``."
+        ),
+    )
+
+
+class SupersedeDocumentResponse(BaseModel):
+    """Success body for ``POST /documents/{doc_id}/supersede``."""
+
+    status: str = Field(..., description="Always ``updated`` on success.")
+    old_doc_id: str
+    new_doc_id: str
+    doc_status: str
+    superseded_by: str
+    supersedes: list[str]
+    correction_note: str | None = None
+    truncated: list[str] = Field(default_factory=list)
+    old_points_updated: int
+    old_figures_updated: int
+    new_points_updated: int
+    new_figures_updated: int
+    old: dict[str, Any]
+    new: dict[str, Any]
+
+
+class UnsupersedeDocumentResponse(BaseModel):
+    """Success body for ``POST /documents/{doc_id}/unsupersede``."""
+
+    status: str = Field(..., description="Always ``updated`` on success.")
+    old_doc_id: str
+    new_doc_id: str | None = None
+    unlinked: bool
+    truncated: list[str] = Field(default_factory=list)
+    old_points_updated: int
+    old_figures_updated: int
+    new_points_updated: int
+    new_figures_updated: int
+    old: dict[str, Any]
+    new: dict[str, Any] | None = None
 
 
 class PatchDocumentResponse(BaseModel):
@@ -649,6 +700,9 @@ def patch_document_metadata_http(
     Requires the same auth as ``DELETE /documents/{doc_id}``. Non-null
     fields use ``set_payload``. JSON ``null`` on a whitelist key uses
     ``delete_payload`` (no re-embed, no point deletes, ``doc_id`` unchanged).
+    ``superseded_by`` / ``supersedes`` are rejected; use
+    ``POST /documents/{doc_id}/supersede`` or
+    ``POST /documents/{doc_id}/unsupersede``.
     """
     metadata = body or {}
     try:
@@ -669,6 +723,86 @@ def patch_document_metadata_http(
         _record_http(route="documents_metadata_patch", ok=False, error=str(exc))
         raise HTTPException(status_code=500, detail=f"Patch failed: {exc}") from exc
     _record_http(route="documents_metadata_patch", ok=True)
+    return result
+
+
+def _supersede_http_error(exc: DocumentNotFoundError, *, path_doc_id: str) -> NoReturn:
+    """Raise 404 for a missing path id or referenced replacement document."""
+    if exc.doc_id == path_doc_id:
+        raise HTTPException(status_code=404, detail="Document not found") from None
+    raise HTTPException(
+        status_code=404,
+        detail=f"new_doc_id not found: {exc.doc_id}",
+    ) from None
+
+
+@router.post(
+    "/documents/{doc_id}/supersede",
+    response_model=SupersedeDocumentResponse,
+    dependencies=[Depends(require_embed_access)],
+)
+def supersede_document_http(
+    doc_id: str,
+    request: Request,
+    body: SupersedeDocumentRequest,
+) -> dict[str, Any]:
+    """Atomically link ``doc_id`` as superseded by ``body.new_doc_id``.
+
+    Writes both sides of the pair and sets ``doc_status=superseded`` on the
+    old document. Does not re-embed or delete points. Same auth as PATCH.
+    """
+    try:
+        result = supersede_document(
+            storage=_storage(request),
+            qdrant=_qdrant(request),
+            collection_name=COLLECTION_NAME,
+            old_doc_id=doc_id,
+            new_doc_id=body.new_doc_id,
+            correction_note=body.correction_note,
+        )
+    except DocumentNotFoundError as exc:
+        _record_http(route="documents_supersede", ok=False, error="not found")
+        _supersede_http_error(exc, path_doc_id=doc_id)
+    except (DocumentPatchError, DocumentMetadataError) as exc:
+        _record_http(route="documents_supersede", ok=False, error=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 - surface patch failures to clients
+        _record_http(route="documents_supersede", ok=False, error=str(exc))
+        raise HTTPException(status_code=500, detail=f"Supersede failed: {exc}") from exc
+    _record_http(route="documents_supersede", ok=True)
+    return result
+
+
+@router.post(
+    "/documents/{doc_id}/unsupersede",
+    response_model=UnsupersedeDocumentResponse,
+    dependencies=[Depends(require_embed_access)],
+)
+def unsupersede_document_http(doc_id: str, request: Request) -> dict[str, Any]:
+    """Atomically remove the supersession link from ``doc_id``.
+
+    Clears ``superseded_by`` and ``doc_status`` on the old document and
+    removes it from the replacement's ``supersedes`` list. Same auth as PATCH.
+    """
+    try:
+        result = unsupersede_document(
+            storage=_storage(request),
+            qdrant=_qdrant(request),
+            collection_name=COLLECTION_NAME,
+            old_doc_id=doc_id,
+        )
+    except DocumentNotFoundError:
+        _record_http(route="documents_unsupersede", ok=False, error="not found")
+        raise HTTPException(status_code=404, detail="Document not found") from None
+    except (DocumentPatchError, DocumentMetadataError) as exc:
+        _record_http(route="documents_unsupersede", ok=False, error=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 - surface patch failures to clients
+        _record_http(route="documents_unsupersede", ok=False, error=str(exc))
+        raise HTTPException(
+            status_code=500, detail=f"Unsupersede failed: {exc}"
+        ) from exc
+    _record_http(route="documents_unsupersede", ok=True)
     return result
 
 

@@ -8,6 +8,20 @@ from rag.geo_refined import attach_preferred_geo, preferred_geo
 from rag.page_ids import page_image_id_from_payload_page
 from rag.storage import RagStorage
 
+_LIFECYCLE_HIT_KEYS = (
+    "doc_status",
+    "superseded_by",
+    "supersedes",
+    "correction_note",
+)
+
+
+def _attach_lifecycle_fields(hit: dict[str, Any], payload: dict[str, Any]) -> None:
+    """Copy document lifecycle fields onto a search hit when present."""
+    for key in _LIFECYCLE_HIT_KEYS:
+        if key in payload and payload[key] not in (None, ""):
+            hit[key] = payload[key]
+
 
 def page_image_id_for_hit(
     storage: RagStorage,
@@ -75,11 +89,7 @@ def build_knowledge_hit(
         payload,
         allowed_source_types=frozenset({"pdf_chunk", "pdf_figure"}),
     )
-    url = (
-        image_url_fn(doc_id, image_id_str)
-        if doc_id and image_id_str
-        else None
-    )
+    url = image_url_fn(doc_id, image_id_str) if doc_id and image_id_str else None
     hit: dict[str, Any] = {
         "doc_id": doc_id or None,
         "parent_document": parent,
@@ -91,6 +101,7 @@ def build_knowledge_hit(
         "score": score,
         "content": text,
     }
+    _attach_lifecycle_fields(hit, payload)
     if source_type == "pdf_figure":
         hit["verification_status"] = payload.get("verification_status")
         hit["confidence"] = payload.get("confidence")
@@ -133,6 +144,7 @@ def build_image_search_hit(
         "score": score,
         "content": text,
     }
+    _attach_lifecycle_fields(hit, payload)
     if source_type == "pdf_figure":
         hit["verification_status"] = payload.get("verification_status")
         hit["confidence"] = payload.get("confidence")

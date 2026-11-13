@@ -21,6 +21,7 @@ from rag.verification_meta import (
     figure_payload_fields,
     normalize_verification_metadata,
     split_verification_deletes,
+    validate_merged_lifecycle_fields,
 )
 
 logger = get_logger("rag.document_patch")
@@ -68,6 +69,10 @@ _RESERVED_EXTRA_KEYS = (
         "source_type",
         "source_url",
         "status",
+        "doc_status",
+        "superseded_by",
+        "supersedes",
+        "correction_note",
         "text",
         "uploaded_at",
         "vectors",
@@ -225,6 +230,22 @@ def _delete_payload_for_doc(
         wait=True,
     )
     return matched
+
+
+def delete_payload_keys_for_doc(
+    qdrant: QdrantClient,
+    *,
+    collection_name: str,
+    doc_id: str,
+    keys: list[str],
+) -> int:
+    """Delete payload keys on every knowledge point for ``doc_id``."""
+    return _delete_payload_for_doc(
+        qdrant,
+        collection_name=collection_name,
+        doc_id=doc_id,
+        keys=keys,
+    )
 
 
 def write_verification_payload(
@@ -479,6 +500,7 @@ def patch_document_metadata(
     merged_extra.update(fields)
     for key in deleted:
         merged_extra.pop(key, None)
+    validate_merged_lifecycle_fields(merged_extra, deleted=deleted)
     meta.extra = merged_extra
     storage.write_meta(meta)
 

@@ -11,6 +11,7 @@ from typing import Any, Mapping
 
 from qdrant_client import QdrantClient
 from qdrant_client.models import FieldCondition, Filter, MatchValue
+
 from rag.config import COLLECTION_NAME
 from rag.geo_refined import (
     ORIGINAL_COORD_KEYS,
@@ -32,6 +33,7 @@ from rag.geo_refined import (
 from rag.ingest import stable_image_point_id, stable_point_id
 from rag.logging_setup import get_logger
 from rag.storage import ImageMeta, RagStorage
+from rag.verification_meta import is_hidden_doc_status
 
 logger = get_logger("rag.geo_index")
 
@@ -768,8 +770,13 @@ def list_geo_refinements(
     doc_id: str | None = None,
     limit: int = DEFAULT_GEO_LIST_LIMIT,
     offset: int = 0,
+    include_superseded: bool = False,
 ) -> dict[str, Any]:
-    """List stored ``geo_refined`` records with optional filters and pagination."""
+    """List stored ``geo_refined`` records with optional filters and pagination.
+
+    Superseded and retracted documents are omitted unless
+    ``include_superseded`` is true.
+    """
     merged = coerce_filter_argument(filters)
     precision_n = validate_precision(
         str(merged.get("precision") or precision or "") or None
@@ -791,6 +798,16 @@ def list_geo_refinements(
         field="verified",
     )
     doc_n = str(merged.get("doc_id") or doc_id or "").strip() or None
+    if "include_superseded" in merged:
+        include_flag = merged.get("include_superseded")
+        if isinstance(include_flag, bool):
+            include_superseded = include_flag
+        elif isinstance(include_flag, str):
+            include_superseded = include_flag.strip().lower() in {
+                "1",
+                "true",
+                "yes",
+            }
     try:
         limit_n = int(merged.get("limit", limit))
     except (TypeError, ValueError) as exc:
@@ -821,6 +838,10 @@ def list_geo_refinements(
                 break
             for point in batch:
                 payload = dict(point.payload or {})
+                if not include_superseded and is_hidden_doc_status(
+                    payload.get("doc_status")
+                ):
+                    continue
                 if not matches_geo_filter(
                     payload,
                     precision=precision_n,
@@ -874,6 +895,10 @@ def list_geo_refinements(
             meta_payload = meta.to_dict()
         meta_payload["doc_id"] = catalog_doc
         meta_payload["source_type"] = "document"
+        if not include_superseded and is_hidden_doc_status(
+            meta_payload.get("doc_status")
+        ):
+            continue
         if not matches_geo_filter(
             meta_payload,
             precision=precision_n,
