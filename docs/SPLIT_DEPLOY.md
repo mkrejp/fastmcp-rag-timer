@@ -118,19 +118,54 @@ Practical sequence:
    `scripts/rag-apply-release.sh --release-dir /path/to/release --rag-root "$RAG_DATA_ROOT"` → start reader again.
 4. Optional on writer: `--mark-published` after a successful apply.
 
-**Railway volume ops caveat (2026-11-18):**
+**Railway volume limits (verified 2026-11-18):**
 
-- `railway run` injects env only and **does not** mount the service volume.
-- `railway ssh` needs a **running** container.
-- Volumes are **1:1** with a service (no sharing).
-- Stopping via UI “Remove” / `railway down` keeps the volume billed (~$0.15/GB/mo);
-  how to mount a **stopped** service’s volume for scripts is not clearly documented.
-- Practical pattern: temporarily run a hold command that mounts `/data` **without**
-  opening Qdrant (e.g. `sleep infinity` / custom entrypoint), `railway ssh`, run
-  publish/apply with `RAG_SKIP_DEFAULT_APP=1`, then restore the normal start command.
-- Confirm plan volume size (≥ ~39 GB used; Hobby default 5 GB is too small).
+- Hobby volume max is **5 GB** — a ~39 GB tree needs **Pro** (default 50 GB, resize up to 1 TB).
+- Volume storage bills ~$0.15/GB/mo even when the service is stopped.
+- One volume ↔ one service; replicas cannot use volumes.
+- Does **not** work for `/data` scripts: `railway run` (local env only), pre-deploy,
+  `railway ssh` / `railway volume files` against a **stopped** deployment.
 
-First-time seed (or disaster recovery): stop source → **rsync/copy entire** `/data/rag` (including `qdrant/`) onto the reader volume → start reader only. Prefer that over `--force-baseline` JSONL for ~39 GB trees.
+**Preferred ops recipe: temporary `sleep infinity` + `railway ssh`**
+
+1. Clear / disable the HTTP healthcheck first (`sleep` never returns 2xx; default
+   healthcheck timeout is 300 s). Ensure `railway.json` does not pin
+   `deploy.startCommand` / `healthcheckPath` (config-as-code overrides the UI).
+2. Set Custom Start Command to `sleep infinity` (UI Settings, or
+   `railway environment edit --service-config <svc> deploy.startCommand "sleep infinity"`)
+   and redeploy. There is no `RAILWAY_START_COMMAND` env var.
+3. `railway ssh --service <svc> -- <cmd>` with `RAG_SKIP_DEFAULT_APP=1` for
+   publish/apply (Qdrant unlocked because the HTTP app is not running).
+4. Restore the normal start command + healthcheck and redeploy.
+5. For the cold ingester, finish with `railway down --service <ingester> --yes`
+   (volume stays attached and billed).
+
+Caveat: volume services take cutover downtime on every deploy, so the **warm reader
+is down for the whole sleep window**. Keep that window short.
+
+**Alternatives (ranked):**
+
+| Rank | Approach | When |
+| --- | --- | --- |
+| 2 | One-shot start command = the script; restart policy not Always | Ingester publish when inputs already on `/data` |
+| 3 | Cron service (`railway cron run`) with volume | Not on the warm reader |
+| 4 | Detach/attach volume to a temporary ops service | Same region; original service loses the volume |
+| 5 | Backups/restore | Recovery only; manual backup cap is 50% of volume size |
+
+**Suggested publish/apply runbook (deltas):**
+
+1. Put **both** services on `sleep infinity` (healthchecks cleared) so volumes mount
+   and Qdrant locks are free.
+2. On ingester: run `rag-publish.py --stage-blobs --stage-qdrant`.
+3. Copy the release dir to the reader (`scp` via `ssh.railway.com`, or
+   `railway volume files` download/upload through local disk).
+4. On reader: run `rag-apply-release.sh`.
+5. Restore reader start command + healthcheck → redeploy (warm again).
+6. `railway down` the ingester (cold).
+
+First-time seed (or disaster recovery): stop source → copy entire `/data/rag`
+(including `qdrant/`) onto the reader volume → start reader only.
+Prefer that over `--force-baseline` JSONL for ~39 GB trees.
 
 ### (c) Reader survival across restarts
 

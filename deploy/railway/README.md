@@ -29,12 +29,25 @@ Ingester:
 - `APP_MODE=ingester`
 - `EMBEDDING_PROVIDER_INGEST=novita`
 
-Volumes are **not** shared across Railway services (1 volume : 1 service).
-`railway run` does **not** mount volumes. For publish/apply, free the embedded
-Qdrant lock (app must not hold `path=`), then run
-`scripts/rag-publish.py --stage-blobs --stage-qdrant` and
-`scripts/rag-apply-release.sh` via `railway ssh` into a container that still
-mounts `/data` (e.g. temporary `sleep infinity` entrypoint) or another documented
-volume-access path. Transport release dirs with object store / `scp` — not app
-Bearer tokens. Baseline seed: stop processes and rsync `/data/rag` (snapshots
-are unavailable in local/embedded mode).
+## Volumes and publish/apply
+
+Volumes are **1:1** with a service (no sharing; replicas cannot use volumes).
+Hobby max is **5 GB** — a ~39 GB RAG tree needs **Pro** (~50 GB+). Storage bills
+~$0.15/GB/mo even when the service is stopped.
+
+`railway run` does **not** mount volumes. `railway ssh` and `railway volume files`
+require a **running** deployment.
+
+To free the embedded Qdrant lock while keeping `/data` mounted:
+
+1. Disable the HTTP healthcheck (`sleep` never returns 2xx).
+2. Set start command to `sleep infinity`, redeploy.
+3. `railway ssh --service <svc> -- …` with `RAG_SKIP_DEFAULT_APP=1` for
+   `scripts/rag-publish.py --stage-blobs --stage-qdrant` or
+   `scripts/rag-apply-release.sh`.
+4. Restore start command + healthcheck; `railway down` the cold ingester.
+
+The warm reader is down for that sleep window (volume deploy cutover). Copy release
+dirs with `scp` via `ssh.railway.com` or `railway volume files` — not app Bearer
+tokens. Baseline seed: copy `/data/rag` after processes are stopped (embedded
+snapshots are unavailable). Full runbook: `docs/SPLIT_DEPLOY.md`.
