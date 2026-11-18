@@ -85,7 +85,11 @@ def test_build_and_push_empty_diff_on_catalog_parity(
 
     client = MagicMock()
     client.get_watermark.return_value = {"release_id": "rel-parent"}
-    client.get_catalog.return_value = writer_fp
+    client.fetch_catalog.return_value = (writer_fp, {})
+    monkeypatch.setattr(
+        "rag.publish.diff_push.locality_links_catalog_fingerprint",
+        lambda _q: {},
+    )
 
     result = build_and_push(storage, qdrant=MagicMock(), client=client)
     assert result["pushed"] is False
@@ -118,7 +122,11 @@ def test_build_and_push_ignores_index_json_only_manifest(
 
     client = MagicMock()
     client.get_watermark.return_value = {"release_id": "rel-parent"}
-    client.get_catalog.return_value = {"doc": "fp"}
+    client.fetch_catalog.return_value = ({"doc": "fp"}, {})
+    monkeypatch.setattr(
+        "rag.publish.diff_push.locality_links_catalog_fingerprint",
+        lambda _q: {},
+    )
 
     monkeypatch.setattr(
         "rag.publish.diff_push.build_file_diff",

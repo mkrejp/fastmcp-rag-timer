@@ -8,6 +8,7 @@ named vector is nulled. Point ids in this project are UUID strings (uuid5).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
 from pathlib import Path
@@ -31,6 +32,7 @@ from rag.logging_setup import get_logger
 from rag.vectorstore import (
     IMAGE_VECTOR_NAME,
     TEXT_VECTOR_NAME,
+    _iter_locality_link_points,
     _locality_point_vector,
     ensure_locality_links_collection,
     ensure_payload_indexes,
@@ -155,7 +157,10 @@ def export_points_for_docs(
             continue
         for collection_name in collections:
             for point in scroll_points_for_doc(
-                client, collection_name=collection_name, doc_id=doc_id
+                client,
+                collection_name=collection_name,
+                doc_id=doc_id,
+                with_vectors=collection_name != LOCALITY_LINKS_COLLECTION,
             ):
                 record = serialize_point_record(collection_name, point)
                 records.append(record)
@@ -164,6 +169,40 @@ def export_points_for_docs(
                     seen.add(pid)
                     point_ids.append(pid)
     return records, point_ids
+
+
+def locality_links_catalog_fingerprint(client: QdrantClient) -> dict[str, str]:
+    """Return ``doc_id →`` fingerprint of that document's ``locality_links``.
+
+    Scrolls the payload-only collection once (no embedding vectors) and hashes
+    a canonical ``[{id, payload}, ...]`` per ``doc_id``. Safe for large
+    knowledge collections: only link payloads are loaded.
+    """
+    ensure_locality_links_collection(client)
+    by_doc: dict[str, list[dict[str, Any]]] = {}
+    for point in _iter_locality_link_points(client):
+        payload = point.payload if isinstance(point.payload, Mapping) else {}
+        doc_id = str(payload.get("doc_id") or "").strip()
+        if not doc_id:
+            continue
+        by_doc.setdefault(doc_id, []).append(
+            {
+                "id": str(point.id),
+                "payload": dict(payload),
+            }
+        )
+    out: dict[str, str] = {}
+    for doc_id, items in by_doc.items():
+        items.sort(key=lambda row: str(row["id"]))
+        canonical = json.dumps(
+            items,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+        out[doc_id] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return out
 
 
 def write_points_jsonl(path: Path | str, records: Iterable[Mapping[str, Any]]) -> int:
@@ -326,6 +365,7 @@ def apply_qdrant_release_with_client(
     *,
     upsert_doc_ids: Sequence[str],
     delete_doc_ids: Sequence[str],
+    locality_link_doc_ids: Sequence[str] = (),
     points_jsonl: Path | str | None = None,
     records: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
@@ -333,6 +373,10 @@ def apply_qdrant_release_with_client(
 
     Does **not** close ``client`` (safe for the live reader process). Prefer this
     over :func:`apply_qdrant_release` whenever a Qdrant handle is already held.
+
+    Catalog upserts/deletes purge **both** knowledge and locality collections.
+    ``locality_link_doc_ids`` (link-only sync) purge **only** ``locality_links``
+    so knowledge vectors are not reloaded for a link change.
     """
     loaded: Sequence[Mapping[str, Any]]
     if records is not None:
@@ -341,22 +385,51 @@ def apply_qdrant_release_with_client(
         loaded = read_points_jsonl(points_jsonl)
     else:
         loaded = ()
-    touch_ids = sorted(
+    full_ids = sorted(
         {str(d) for d in list(upsert_doc_ids) + list(delete_doc_ids) if d}
     )
-    deleted = delete_points_for_docs(client, touch_ids)
+    full_set = set(full_ids)
+    link_only = sorted(
+        {str(d) for d in locality_link_doc_ids if d and str(d) not in full_set}
+    )
+    deleted = delete_points_for_docs(client, full_ids)
+    if link_only:
+        deleted += delete_points_for_docs(
+            client,
+            link_only,
+            collections=(LOCALITY_LINKS_COLLECTION,),
+        )
     written = upsert_point_records(client, loaded) if loaded else 0
+    # Re-denormalize obec lists onto knowledge payloads from applied links
+    # without re-shipping embedding vectors.
+    link_payloads = [
+        dict(rec.get("payload") or {})
+        for rec in loaded
+        if str(rec.get("collection") or "") == LOCALITY_LINKS_COLLECTION
+        and isinstance(rec.get("payload"), Mapping)
+    ]
+    chunks_updated = 0
+    if link_payloads:
+        from rag.vectorstore import denormalize_knowledge_localities
+
+        chunks_updated = denormalize_knowledge_localities(client, link_payloads)
+    touch_count = len(full_set | set(link_only))
     logger.info(
-        "Qdrant sync (in-process) docs=%s points_deleted=%s points_upserted=%s",
-        len(touch_ids),
+        "Qdrant sync (in-process) docs=%s link_only=%s points_deleted=%s "
+        "points_upserted=%s chunks_denorm=%s",
+        len(full_ids),
+        len(link_only),
         deleted,
         written,
+        chunks_updated,
     )
     return {
-        "docs_touched": len(touch_ids),
+        "docs_touched": touch_count,
         "points_deleted": deleted,
         "points_upserted": written,
         "records_in_bundle": len(loaded),
+        "locality_link_docs": len(link_only),
+        "chunks_denormalized": chunks_updated,
     }
 
 
@@ -365,6 +438,7 @@ def apply_qdrant_release(
     *,
     upsert_doc_ids: Sequence[str],
     delete_doc_ids: Sequence[str],
+    locality_link_doc_ids: Sequence[str] = (),
     points_jsonl: Path | str | None,
     client: QdrantClient | None = None,
 ) -> dict[str, Any]:
@@ -382,6 +456,7 @@ def apply_qdrant_release(
             client,
             upsert_doc_ids=upsert_doc_ids,
             delete_doc_ids=delete_doc_ids,
+            locality_link_doc_ids=locality_link_doc_ids,
             points_jsonl=points_jsonl,
         )
     owned = open_qdrant_for_sync(qdrant_dir)
@@ -390,6 +465,7 @@ def apply_qdrant_release(
             owned,
             upsert_doc_ids=upsert_doc_ids,
             delete_doc_ids=delete_doc_ids,
+            locality_link_doc_ids=locality_link_doc_ids,
             points_jsonl=points_jsonl,
         )
         logger.info(

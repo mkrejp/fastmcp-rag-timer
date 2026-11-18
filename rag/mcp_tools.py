@@ -95,6 +95,23 @@ def _safe_trails_forward(
         return {"enabled": True, "ok": False, "error": str(exc)[:300]}
 
 
+def _safe_sync_push_after_links(
+    storage: RagStorage,
+    qdrant: QdrantClient,
+) -> dict[str, Any] | None:
+    """Best-effort live diff push after locality_links mutation (MCP).
+
+    Mirrors REST ``_maybe_attach_sync_push``. Never raises into the tool path.
+    """
+    try:
+        from rag.publish.diff_push import maybe_push_after_ingest
+
+        return maybe_push_after_ingest(storage, qdrant)
+    except Exception:  # noqa: BLE001 - never fail MCP writes on sync hook
+        logger.warning("Post-link_locality sync hook crashed", exc_info=True)
+        return {"pushed": False, "error": "sync_hook_crashed"}
+
+
 MAX_MCP_IMAGE_BYTES = 5 * 1024 * 1024
 RRF_K = 60
 
@@ -1249,6 +1266,9 @@ def register_mcp_tools(
                     list(result.get("ids") or []),
                     outbox_path=storage.trails_outbox_path,
                 )
+                sync_result = _safe_sync_push_after_links(storage, qdrant)
+                if sync_result is not None:
+                    result["sync_push"] = sync_result
                 return json.dumps(result, ensure_ascii=False)
             except LocalityLinkPayloadError as exc:
                 return f"Error link_locality: {exc}"
@@ -1343,6 +1363,9 @@ def register_mcp_tools(
                     [trails_id],
                     outbox_path=storage.trails_outbox_path,
                 )
+                sync_result = _safe_sync_push_after_links(storage, qdrant)
+                if sync_result is not None:
+                    result["sync_push"] = sync_result
                 return json.dumps(result, ensure_ascii=False)
             except LocalityLinkPayloadError as exc:
                 return f"Error verify_link: {exc}"

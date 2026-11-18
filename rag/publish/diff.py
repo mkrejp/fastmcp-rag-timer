@@ -143,15 +143,21 @@ def build_file_diff(
     *,
     parent_release_id: str | None,
     reader_catalog: Mapping[str, str] | None = None,
+    reader_locality_catalog: Mapping[str, str] | None = None,
+    writer_locality_catalog: Mapping[str, str] | None = None,
     writer_host: str | None = None,
     force_baseline: bool = False,
 ) -> ReleaseManifest:
-    """Build a file+catalog diff against ``reader_catalog`` (doc_id→fingerprint).
+    """Build a file+catalog (+ optional locality_links) diff.
 
     When ``reader_catalog`` is empty/None or ``force_baseline`` is true, every
     publishable file is listed (baseline). Otherwise only docs whose catalog
     fingerprint changed (or are new/deleted) contribute file paths under that
     doc — including metadata-only changes.
+
+    ``locality_link_doc_ids_upserted`` lists docs whose ``locality_links``
+    fingerprint differs. Link-only docs do **not** re-list file blobs (memory
+    safe): the push path exports payload-only points for those docs.
     """
     root = Path(storage.root)
     writer_fp = catalog_fingerprint(storage)
@@ -164,6 +170,19 @@ def build_file_diff(
         if baseline or reader_fp.get(doc_id) != digest
     )
     deleted = sorted(doc_id for doc_id in reader_fp if doc_id not in writer_fp)
+
+    writer_links = dict(writer_locality_catalog or {})
+    reader_links = dict(reader_locality_catalog or {})
+    link_docs = sorted(
+        {
+            *(
+                doc_id
+                for doc_id, digest in writer_links.items()
+                if baseline or reader_links.get(doc_id) != digest
+            ),
+            *(doc_id for doc_id in reader_links if doc_id not in writer_links),
+        }
+    )
 
     files_added: list[FileChange] = []
     files_deleted: list[str] = []
@@ -216,6 +235,7 @@ def build_file_diff(
         files_deleted=files_deleted,
         catalog_doc_ids_upserted=upserted,
         catalog_doc_ids_deleted=deleted,
+        locality_link_doc_ids_upserted=link_docs,
         full_baseline=baseline,
     )
 
@@ -239,6 +259,7 @@ def summarize_diff(manifest: ReleaseManifest) -> dict[str, Any]:
         "files_deleted": len(manifest.files_deleted),
         "docs_upserted": len(manifest.catalog_doc_ids_upserted),
         "docs_deleted": len(manifest.catalog_doc_ids_deleted),
+        "locality_link_docs": len(manifest.locality_link_doc_ids_upserted),
         "qdrant_points_upserted": len(manifest.qdrant_point_ids_upserted),
         "qdrant_points_deleted": len(manifest.qdrant_point_ids_deleted),
         "bytes_added": bytes_out,
