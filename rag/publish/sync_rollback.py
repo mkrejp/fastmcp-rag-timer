@@ -11,10 +11,11 @@ from __future__ import annotations
 import json
 import shutil
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from qdrant_client import QdrantClient
 
+from rag.config import LOCALITY_LINKS_COLLECTION
 from rag.logging_setup import get_logger
 from rag.publish.qdrant_sync import (
     POINTS_REL_PATH,
@@ -44,11 +45,15 @@ def snapshot_touched_docs(
     client: QdrantClient,
     release_id: str,
     doc_ids: Sequence[str],
+    link_only_doc_ids: Sequence[str] = (),
 ) -> Path:
     """Snapshot files, points, and ``release.json`` before a sync apply.
 
     Empty ``doc_ids`` still writes a meta marker (and watermark snapshot) so
     commit can record that no document trees needed copying.
+
+    ``link_only_doc_ids`` snapshot **only** ``locality_links`` points (no
+    knowledge vectors / no file trees) so link-only pushes stay memory-light.
     """
     root = Path(rag_root)
     dest = rollback_root(root, release_id)
@@ -59,6 +64,9 @@ def snapshot_touched_docs(
     files_root.mkdir(parents=True, exist_ok=True)
 
     unique = sorted({str(d) for d in doc_ids if d})
+    link_only = sorted(
+        {str(d) for d in link_only_doc_ids if d and str(d) not in set(unique)}
+    )
     copied_paths: list[str] = []
     for doc_id in unique:
         for prefix in ("originals", "processed", "versions"):
@@ -87,12 +95,21 @@ def snapshot_touched_docs(
         shutil.copy2(release_src, dest / RELEASE_STATE_NAME)
 
     records, point_ids = export_points_for_docs(client, unique)
+    if link_only:
+        link_records, link_ids = export_points_for_docs(
+            client,
+            link_only,
+            collections=(LOCALITY_LINKS_COLLECTION,),
+        )
+        records.extend(link_records)
+        point_ids.extend(link_ids)
     write_points_jsonl(dest / POINTS_REL_PATH, records)
 
     meta = {
         "release_id": release_id,
         "created_at": utc_now_iso(),
         "doc_ids": unique,
+        "link_only_doc_ids": link_only,
         "files_copied": copied_paths,
         "point_ids": point_ids,
         "points_count": len(records),
@@ -137,6 +154,7 @@ def restore_rollback(
         raise FileNotFoundError(f"no rollback snapshot for release {release_id}")
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
     doc_ids = [str(d) for d in (meta.get("doc_ids") or [])]
+    link_only_ids = [str(d) for d in (meta.get("link_only_doc_ids") or [])]
     files_root = snap / "files"
 
     # Remove current trees then restore from snapshot.
@@ -163,8 +181,25 @@ def restore_rollback(
     records: list[dict[str, Any]] = []
     if points_path.is_file():
         records = read_points_jsonl(points_path)
+    # Full catalog docs: purge both collections. Link-only: locality_links only.
     deleted = delete_points_for_docs(client, doc_ids) if doc_ids else 0
+    if link_only_ids:
+        deleted += delete_points_for_docs(
+            client,
+            link_only_ids,
+            collections=(LOCALITY_LINKS_COLLECTION,),
+        )
     written = upsert_point_records(client, records) if records else 0
+    link_payloads = [
+        dict(rec.get("payload") or {})
+        for rec in records
+        if str(rec.get("collection") or "") == LOCALITY_LINKS_COLLECTION
+        and isinstance(rec.get("payload"), Mapping)
+    ]
+    if link_payloads:
+        from rag.vectorstore import denormalize_knowledge_localities
+
+        denormalize_knowledge_localities(client, link_payloads)
 
     # Restore pre-commit watermark (or clear it if the snapshot had none).
     release_dest = root / RELEASE_STATE_NAME
@@ -187,6 +222,7 @@ def restore_rollback(
     result = {
         "release_id": release_id,
         "docs_restored": len(doc_ids),
+        "link_only_docs_restored": len(link_only_ids),
         "points_deleted": deleted,
         "points_upserted": written,
         "restored_at": utc_now_iso(),

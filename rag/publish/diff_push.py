@@ -17,6 +17,7 @@ from urllib.parse import urlencode, urljoin
 from qdrant_client import QdrantClient
 
 from rag.config import (
+    LOCALITY_LINKS_COLLECTION,
     resolve_sync_token,
     resolve_sync_url,
     sync_nightly_offline,
@@ -25,7 +26,10 @@ from rag.config import (
 from rag.logging_setup import get_logger
 from rag.publish.diff import build_file_diff, catalog_fingerprint, summarize_diff
 from rag.publish.manifest import ReleaseManifest
-from rag.publish.qdrant_sync import export_points_for_docs
+from rag.publish.qdrant_sync import (
+    export_points_for_docs,
+    locality_links_catalog_fingerprint,
+)
 from rag.publish.release_state import write_release_state
 from rag.publish.sync_chunk import PackedChunk, pack_blob_chunks, pack_points_chunks
 from rag.storage import RagStorage
@@ -120,7 +124,12 @@ class DiffPushClient:
         )
 
     def get_catalog(self) -> dict[str, str]:
-        """GET /sync/v1/catalog → doc_id→sha256 map."""
+        """GET /sync/v1/catalog → doc_id→fingerprint map (documents only)."""
+        docs, _links = self.fetch_catalog()
+        return docs
+
+    def fetch_catalog(self) -> tuple[dict[str, str], dict[str, str]]:
+        """GET /sync/v1/catalog → ``(documents, locality_links)`` fingerprints."""
         body = _request_json(
             "GET",
             self._url("sync/v1/catalog"),
@@ -128,7 +137,11 @@ class DiffPushClient:
             timeout=self.timeout,
         )
         docs = body.get("documents") or {}
-        return {str(k): str(v) for k, v in docs.items()}
+        links = body.get("locality_links") or {}
+        return (
+            {str(k): str(v) for k, v in docs.items()},
+            {str(k): str(v) for k, v in links.items()},
+        )
 
     def begin(
         self,
@@ -227,11 +240,14 @@ def build_and_push(
 
     watermark = push.get_watermark()
     parent = watermark.get("release_id")
-    reader_catalog = push.get_catalog()
+    reader_catalog, reader_locality = push.fetch_catalog()
+    writer_locality = locality_links_catalog_fingerprint(qdrant)
     manifest = build_file_diff(
         storage,
         parent_release_id=parent if isinstance(parent, str) else None,
         reader_catalog=reader_catalog,
+        reader_locality_catalog=reader_locality,
+        writer_locality_catalog=writer_locality,
         writer_host=writer_host,
         force_baseline=force_baseline,
     )
@@ -247,17 +263,44 @@ def build_and_push(
         and not manifest.files_deleted
         and not manifest.catalog_doc_ids_upserted
         and not manifest.catalog_doc_ids_deleted
+        and not manifest.locality_link_doc_ids_upserted
     ):
         logger.info("Live sync: nothing to push (empty diff)")
         return {**summary, "pushed": False, "reason": "empty_diff"}
 
     records: list[dict[str, Any]] = []
+    point_ids: list[str] = []
     if manifest.catalog_doc_ids_upserted:
-        records, point_ids = export_points_for_docs(
+        exported, ids = export_points_for_docs(
             qdrant, manifest.catalog_doc_ids_upserted
         )
-        manifest.qdrant_point_ids_upserted = point_ids
+        records.extend(exported)
+        point_ids.extend(ids)
         manifest.qdrant_point_ids_deleted = list(manifest.catalog_doc_ids_deleted)
+    # Link-only docs: payload-only export (no knowledge vectors) for memory safety.
+    catalog_set = set(manifest.catalog_doc_ids_upserted)
+    link_only = [
+        doc_id
+        for doc_id in manifest.locality_link_doc_ids_upserted
+        if doc_id not in catalog_set
+    ]
+    if link_only:
+        exported, ids = export_points_for_docs(
+            qdrant,
+            link_only,
+            collections=(LOCALITY_LINKS_COLLECTION,),
+        )
+        records.extend(exported)
+        point_ids.extend(ids)
+    if point_ids:
+        # Deduplicate while preserving order.
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for pid in point_ids:
+            if pid not in seen:
+                seen.add(pid)
+                ordered.append(pid)
+        manifest.qdrant_point_ids_upserted = ordered
 
     push.begin(manifest, dry_run=dry_run)
 

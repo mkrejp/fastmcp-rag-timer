@@ -77,13 +77,15 @@ def apply_file_release(
         # Only purge upserted docs when we also have replacement points.
         upsert_ids = list(manifest.catalog_doc_ids_upserted) if has_points else []
         delete_ids = list(manifest.catalog_doc_ids_deleted)
-        if upsert_ids or delete_ids or has_points:
+        link_ids = list(manifest.locality_link_doc_ids_upserted)
+        if upsert_ids or delete_ids or link_ids or has_points:
             storage = RagStorage(str(root))
             storage.ensure_layout()
             qdrant_stats = apply_qdrant_release(
                 storage.qdrant_dir,
                 upsert_doc_ids=upsert_ids,
                 delete_doc_ids=delete_ids,
+                locality_link_doc_ids=link_ids,
                 points_jsonl=points_path,
                 client=client,
             )

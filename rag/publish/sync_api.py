@@ -36,7 +36,7 @@ from rag.logging_setup import get_logger
 from rag.publish.apply import apply_file_release
 from rag.publish.diff import catalog_fingerprint
 from rag.publish.manifest import ReleaseManifest
-from rag.publish.qdrant_sync import POINTS_REL_PATH
+from rag.publish.qdrant_sync import POINTS_REL_PATH, locality_links_catalog_fingerprint
 from rag.publish.release_state import read_release_state
 from rag.publish.sync_chunk import assemble_blob_files, assemble_points_jsonl
 from rag.publish.sync_constants import ASSEMBLED_DIR_NAME, BLOBS_STAGE, POINTS_STAGE
@@ -241,10 +241,21 @@ def get_catalog(
     request: Request,
     _token: str = Depends(require_sync_token),
 ) -> dict[str, Any]:
-    """Return ``doc_id → sha256`` fingerprint of the reader catalog."""
+    """Return document + locality_links fingerprints for the reader.
+
+    ``documents``: catalog meta fingerprints (existing).
+    ``locality_links``: payload-only link-collection fingerprints per ``doc_id``
+    (empty object when the collection has no points).
+    """
     storage = _storage(request)
     fp = catalog_fingerprint(storage)
-    return {"documents": fp, "count": len(fp)}
+    links = locality_links_catalog_fingerprint(_qdrant(request))
+    return {
+        "documents": fp,
+        "count": len(fp),
+        "locality_links": links,
+        "locality_links_count": len(links),
+    }
 
 
 @router.post("/push/begin")
@@ -521,11 +532,15 @@ def push_commit(
             set(manifest.catalog_doc_ids_upserted)
             | set(manifest.catalog_doc_ids_deleted)
         )
+        link_only_ids = sorted(
+            set(manifest.locality_link_doc_ids_upserted) - set(touch_ids)
+        )
         snapshot_touched_docs(
             root,
             client=_qdrant(request),
             release_id=release_id,
             doc_ids=touch_ids,
+            link_only_doc_ids=link_only_ids,
         )
 
         state = apply_file_release(

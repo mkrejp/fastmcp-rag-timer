@@ -103,6 +103,7 @@ After a successful ingest batch, the **ingester** pushes a delta to the warm **r
 | Auth | Bearer **`RAG_SYNC_TOKEN`** (or **`RAG_SYNC_TOKEN_PREVIOUS`** during rotation); separate from MCP / `RAG_API_TOKEN` |
 | Triggers | Opt-in post-ingest hook (`RAG_SYNC_PUSH_ENABLED=1`); optional `scripts/rag-diff-push.py`; cron as future safety-net |
 | Soft rollback | Before apply, snapshot touched docs under `.sync/rollback/<release_id>/`; `POST /sync/v1/rollback/{release_id}` |
+| Locality links | `locality_links` fingerprints on `/sync/v1/catalog`; link-only pushes export payload-only points (no knowledge vectors); MCP `link_locality` / `verify_link` call the same post-mutation sync hook as REST |
 | Dry-run | `dry_run` on begin (body/query) or `RAG_SYNC_DRY_RUN_ONLY=1`; commit → `dry_run_ok` / `dry_run_failed` (no mutations) |
 
 **Reader sync routes** (active only when `APP_MODE=reader` **and** `RAG_SYNC_TOKEN` set; otherwise **404**):
