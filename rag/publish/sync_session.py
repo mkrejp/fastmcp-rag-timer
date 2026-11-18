@@ -29,6 +29,21 @@ STATUS_ABORTED = "aborted"
 STATUS_DRY_RUN_OK = "dry_run_ok"
 STATUS_DRY_RUN_FAILED = "dry_run_failed"
 
+# Only one live push may occupy the reader at a time.
+ACTIVE_PUSH_STATUSES = frozenset({STATUS_RECEIVING, STATUS_COMMITTING})
+
+
+class PushConflictError(RuntimeError):
+    """Raised when another push session already holds the global reader lock."""
+
+    def __init__(self, active_release_id: str) -> None:
+        """Record the blocking ``active_release_id``."""
+        self.active_release_id = active_release_id
+        super().__init__(
+            f"another push session is active: release_id={active_release_id!r} "
+            f"(status receiving/committing); abort or commit it first"
+        )
+
 
 def sync_incoming_root(rag_root: Path | str) -> Path:
     """Return ``.sync/incoming`` under ``rag_root``."""
@@ -79,13 +94,40 @@ def save_session(rag_root: Path | str, session: dict[str, Any]) -> dict[str, Any
     return session
 
 
+def find_active_push_session(
+    rag_root: Path | str,
+    *,
+    exclude_release_id: str | None = None,
+) -> dict[str, Any] | None:
+    """Return the first session in ``receiving``/``committing``, if any."""
+    base = sync_incoming_root(rag_root)
+    if not base.is_dir():
+        return None
+    for child in sorted(base.iterdir()):
+        if not child.is_dir():
+            continue
+        if exclude_release_id and child.name == exclude_release_id:
+            continue
+        session = load_session(rag_root, child.name)
+        if session and session.get("status") in ACTIVE_PUSH_STATUSES:
+            return session
+    return None
+
+
 def begin_session(
     rag_root: Path | str,
     *,
     manifest: ReleaseManifest,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Create or resume a receiving session for ``manifest.release_id``."""
+    """Create or resume a receiving session for ``manifest.release_id``.
+
+    Enforces a **single global** active push on the reader: a second
+    ``begin`` for a different ``release_id`` while another session is
+    ``receiving`` or ``committing`` raises :class:`PushConflictError`.
+    Terminal statuses (``committed``, ``aborted``, ``dry_run_*``) do not
+    block. Same-``release_id`` resume remains idempotent.
+    """
     with _LOCK:
         existing = load_session(rag_root, manifest.release_id)
         if existing is not None:
@@ -100,9 +142,15 @@ def begin_session(
                 shutil.rmtree(
                     session_dir(rag_root, manifest.release_id), ignore_errors=True
                 )
-            elif existing.get("status") in {STATUS_RECEIVING, STATUS_COMMITTING}:
+            elif existing.get("status") in ACTIVE_PUSH_STATUSES:
                 # Idempotent begin: same release_id resumes (keep dry_run flag).
                 return existing
+
+        blocker = find_active_push_session(
+            rag_root, exclude_release_id=manifest.release_id
+        )
+        if blocker is not None:
+            raise PushConflictError(str(blocker.get("release_id") or "unknown"))
 
         root = session_dir(rag_root, manifest.release_id)
         root.mkdir(parents=True, exist_ok=True)
