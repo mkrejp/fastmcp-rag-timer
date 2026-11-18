@@ -79,7 +79,7 @@ Operator loop (Railway dashboard or API — whoever Marek designates):
 
 1. **Start** the ingester service; wait until `GET /health` on the ingest URL returns `status=ok`, `app_mode=ingester`.
 2. Perform uploads / OCR / ingest against the **ingester** URL only (Bearer `MCP_API_TOKEN` / `RAG_API_TOKEN`).
-3. Run **publish** on the ingester host (see below), transport the release, **apply** on the reader (brief reader stop).
+3. **Live push** to the reader (post-ingest hook or `scripts/rag-diff-push.py`) when `RAG_SYNC_URL` + `RAG_SYNC_TOKEN` are set. Fall back to CLI stop-apply only for DR (see below).
 4. Confirm reader `/health` and a sample search.
 5. **Stop** the ingester service again; leave its volume attached (billed storage only).
 
@@ -87,28 +87,77 @@ While cold: clients must not send writes to the reader (they get 403). Writes to
 
 ### (b) Incremental publish (ingester → reader) in practice
 
-Volumes are independent. There is **no** live Qdrant share and **no** HTTP “push API” on the reader for applying releases. Apply is a **filesystem** job with the reader process stopped (embedded Qdrant single-writer lock).
+Volumes are independent. There is **no** shared live Qdrant between services. Vectors travel with each publish (reader does **not** re-embed).
 
-**Env names involved (values never in docs/chat):**
+#### Happy path: live diff push (Option A)
+
+After a successful ingest batch, the **ingester** pushes a delta to the warm **reader** over an authenticated sync API. Apply runs **in-process** on the reader using the already-open `QdrantClient` (never open a second `QdrantClient(path=)` beside the app).
+
+| Piece | Detail |
+| --- | --- |
+| Chunk target | **32 MiB** (soft max 64 MiB, hard reject > 96 MiB) |
+| Staging | Reader writes under `.sync/incoming/<release_id>/` |
+| Watermark | Reader `release.json` (`rag.publish.release_state`) |
+| Diff | `build_file_diff` + `catalog_fingerprint` |
+| Auth | Bearer **`RAG_SYNC_TOKEN`** (or **`RAG_SYNC_TOKEN_PREVIOUS`** during rotation); separate from MCP / `RAG_API_TOKEN` |
+| Triggers | Opt-in post-ingest hook (`RAG_SYNC_PUSH_ENABLED=1`); optional `scripts/rag-diff-push.py`; cron as future safety-net |
+| Soft rollback | Before apply, snapshot touched docs under `.sync/rollback/<release_id>/`; `POST /sync/v1/rollback/{release_id}` |
+| Dry-run | `dry_run` on begin (body/query) or `RAG_SYNC_DRY_RUN_ONLY=1`; commit → `dry_run_ok` / `dry_run_failed` (no mutations) |
+
+**Reader sync routes** (active only when `APP_MODE=reader` **and** `RAG_SYNC_TOKEN` set; otherwise **404**):
+
+- `GET /sync/v1/watermark`
+- `GET /sync/v1/catalog` (`doc_id→sha256`)
+- `POST /sync/v1/push/begin` (manifest; `parent_release_id` must match watermark; optional `dry_run`)
+- `PUT /sync/v1/push/chunk?release_id=…` (idempotent `(release_id, stage, seq)`)
+- `POST /sync/v1/push/validate` (assemble + integrity; does **not** advance watermark)
+- `POST /sync/v1/push/commit` / `abort`
+- `GET /sync/v1/push/status`
+
+Normal write routes (`/upload`, `/ingest-json`, document mutate, …) stay **403** on the reader. Sync is excluded from that write guard and uses `RAG_SYNC_TOKEN` only.
+
+**Env names (values never in docs/chat):**
+
+| Name | Where | Role |
+| --- | --- | --- |
+| `RAG_SYNC_TOKEN` | Reader **and** ingester | Shared Bearer for `/sync/v1/*` (unset → 404) |
+| `RAG_SYNC_TOKEN_PREVIOUS` | Reader (optional) | Previous Bearer accepted during rotation |
+| `RAG_SYNC_URL` | Ingester | Reader public origin (e.g. `https://reader.example.com`) |
+| `RAG_SYNC_PUSH_ENABLED` / `RAG_SYNC_PUSH_ON_INGEST` | Ingester | **Default off**; set `1` to enable post-ingest auto-push |
+| `RAG_SYNC_NIGHTLY_OFFLINE` | Ingester | Set `1` to suppress live push (quiet hours) |
+| `RAG_SYNC_DRY_RUN_ONLY` | Reader | Force every push session into dry-run |
+| `RAG_DATA_ROOT` | Both | Default `/data/rag` |
+| `MCP_API_TOKEN` / `RAG_API_TOKEN` | Ingester (and reader MCP) | **Not** used for sync |
+| `BGE_M3_NOVITA_API_KEY` (or fallbacks) | Ingester | Ingest embeddings while ingester runs |
+
+Operator loop with live push:
+
+1. **Start** ingester → ingest against the ingest URL.
+2. With `RAG_SYNC_PUSH_ENABLED=1` (+ URL/token), the post-ingest hook pushes; or run `RAG_SKIP_DEFAULT_APP=1 python scripts/rag-diff-push.py --rag-root "$RAG_DATA_ROOT"` manually.
+3. Confirm reader `/health` (`release_id`, `sync_enabled`, `catalog_doc_count`) and a sample search.
+4. **Stop** the ingester again.
+
+**Cron (future / safety-net):** a scheduled `rag-diff-push.py` (or equivalent) can catch missed hooks; not required for the happy path. Prefer setting `RAG_SYNC_NIGHTLY_OFFLINE=1` during quiet windows if auto-push is enabled.
+
+#### DR escape hatch: CLI stop-apply
+
+Keep `scripts/rag-publish.py` + `scripts/rag-apply-release.sh` for disaster recovery, first-time seed helpers, or when the sync API is unavailable. That path still needs the reader process **stopped** (embedded Qdrant single-writer lock).
+
+**Env for CLI path:**
 
 | Name | Role |
 | --- | --- |
-| `RAG_DATA_ROOT` | Both sides; default `/data/rag` |
 | `RAG_SKIP_DEFAULT_APP` | Set `1` when running publish/apply scripts so they do not boot the HTTP app |
-| `MCP_API_TOKEN` / `RAG_API_TOKEN` | Auth for ingest HTTP/MCP on the **ingester** while it is up — **not** used by apply scripts |
-| `BGE_M3_NOVITA_API_KEY` (or fallbacks) | Ingest embeddings while ingester runs |
-
-**Reader does not expose** an authenticated “apply release” HTTP route. It exposes normal read paths (`/health`, `/mcp`, search tools, `/node-info`, static/UI). Release apply is CLI: `scripts/rag-apply-release.sh`.
 
 **Qdrant sync design (verified against Qdrant 1.20 / qdrant-client 1.20 local mode):**
 
 - Snapshots are **not** available for `QdrantClient(path=…)` (`NotImplementedError`).
 - No WAL / incremental replication between two embedded stores — scroll+filter+upsert (our JSONL by `doc_id`) is the intended pattern.
 - Baseline / disaster recovery: **stop both processes**, then **rsync** the data dir (`meta.json`, `.lock`, `collection/*/storage.sqlite`, …). Never copy while a client is open.
-- Routine deltas: JSONL (`--stage-qdrant`). Upserts must resend every named vector present on the point (omitted named vector ⇒ nulled).
-- Lock: second opener gets `RuntimeError` … already accessed…; lockfile `{qdrant_dir}/.lock`.
+- Routine deltas: live push (above) or CLI JSONL (`--stage-qdrant`). Upserts must resend every named vector present on the point (omitted named vector ⇒ nulled).
+- Lock: second opener gets `RuntimeError` … already accessed…; lockfile `{qdrant_dir}/.lock`. Live push avoids a second opener by reusing the reader's client.
 
-Practical sequence:
+CLI stop-apply sequence (DR only):
 
 1. On **ingester**, free the Qdrant lock (HTTP app must not hold `path=`). Then:  
    `RAG_SKIP_DEFAULT_APP=1 python scripts/rag-publish.py --rag-root "$RAG_DATA_ROOT" --out /tmp/release --reader-catalog /path/to/reader-fp.json --stage-blobs --stage-qdrant`  
@@ -206,7 +255,9 @@ Same tables as Coolify §4 below. Reader must have: `APP_MODE=reader`, `RAG_DATA
 1. Reader `/health` → `status=ok`, `app_mode=reader`.
 2. Write to reader → **403** with writes-disabled detail.
 3. MCP on reader → read tools work; no write tools (or writes error clearly).
-4. Start ingester → `/health` `app_mode=ingester` → ingest one doc → publish/apply → reader search sees it → stop ingester → reader still healthy.
+4. Start ingester → `/health` `app_mode=ingester` → ingest one doc → live push (or CLI publish/apply) → reader search sees it → stop ingester → reader still healthy.
+5. With `RAG_SYNC_TOKEN` set on reader: `GET /sync/v1/watermark` with Bearer returns JSON (401 without/wrong token; **404** when token unset).
+6. `/health` includes `sync_enabled`, `sync_push_on_ingest`, `catalog_doc_count`, `qdrant_points`.
 
 ---
 
@@ -254,6 +305,9 @@ Public hostname: **`art-nouveau-rag.animarium.ai`** → Coolify reader. Ingester
 | --- | --- | --- | --- |
 | `MCP_API_TOKEN` | **yes** (or `RAG_API_TOKEN`) | **yes** | Preferred Bearer for `/mcp` + embed REST |
 | `RAG_API_TOKEN` | **yes** if MCP unset | **yes** | `POST /ingest-json`; MCP fallback |
+| `RAG_SYNC_TOKEN` | **yes** for live push | **yes** | Bearer for reader `/sync/v1/*` (not MCP); unset → 404 |
+| `RAG_SYNC_TOKEN_PREVIOUS` | optional (rotation) | **yes** | Previous sync Bearer |
+
 | `BGE_M3_NOVITA_API_KEY` | **yes** when Novita used | **yes** | Preferred Novita key |
 | `NOVITA_API_KEY` | optional | **yes** | Fallback |
 | `OPENAI_TOKEN` / `OPENAI_API_KEY` | optional | **yes** | Last-resort embedding fallbacks |
@@ -282,6 +336,10 @@ Public hostname: **`art-nouveau-rag.animarium.ai`** → Coolify reader. Ingester
 | `FASTEMBED_CACHE_PATH` / `IMAGE_EMBEDDING_CACHE_PATH` | only if local models | | |
 | `MCP_DISABLE_DNS_REBINDING_PROTECTION` | avoid in prod | unset | |
 | `RAG_SKIP_DEFAULT_APP` | scripts only | unset in prod | |
+| `RAG_SYNC_URL` | ingester (live push) | reader origin URL | |
+| `RAG_SYNC_PUSH_ENABLED` / `RAG_SYNC_PUSH_ON_INGEST` | ingester optional | default **off**; set `1` to opt in | |
+| `RAG_SYNC_NIGHTLY_OFFLINE` | ingester optional | `1` suppresses push | |
+| `RAG_SYNC_DRY_RUN_ONLY` | reader optional | force dry-run commits | |
 
 ### Domain / clients (when DNS is created)
 
@@ -306,6 +364,10 @@ unless Marek explicitly asks.
 ---
 
 ## Incremental publish (summary)
+
+**Happy path (live push):** ingest on ingester → auto/manual `diff_push` → reader `/sync/v1` commit (in-process) → `/health` shows new `release_id`.
+
+**DR escape hatch (CLI):**
 
 1. Stop **ingester** (Qdrant lock) → `rag-publish.py --stage-blobs --stage-qdrant`
 2. Transport release dir

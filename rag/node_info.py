@@ -557,9 +557,15 @@ def mcp_write_blocked_message(tool: str, request: Request | None = None) -> str 
 
 
 def is_http_write_request(method: str, path: str) -> bool:
-    """Return whether an HTTP method+path mutates RAG data."""
+    """Return whether an HTTP method+path mutates RAG data.
+
+    Live sync under ``/sync/`` is intentionally excluded: it uses
+    ``RAG_SYNC_TOKEN`` and applies deltas on the reader in-process.
+    """
     upper = method.upper()
     normalized = path.rstrip("/") or "/"
+    if normalized.startswith("/sync/"):
+        return False
     if upper in {"POST", "PUT", "DELETE"} and normalized.startswith("/upload"):
         return True
     if upper == "POST" and normalized in {"/ingest-json"}:
