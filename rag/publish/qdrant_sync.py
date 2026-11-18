@@ -1,8 +1,15 @@
-"""Export/import Qdrant points by ``doc_id`` for incremental publishes."""
+"""Export/import Qdrant points by ``doc_id`` for incremental publishes.
+
+Embedded ``QdrantClient(path=...)`` has no snapshot API; official guidance is
+scroll (+filter) + upsert, or rsync the data dir after ``client.close()``.
+Named-vector upserts must resend every vector present on the point — an omitted
+named vector is nulled. Point ids in this project are UUID strings (uuid5).
+"""
 
 from __future__ import annotations
 
 import json
+import uuid
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -219,6 +226,49 @@ def delete_points_for_docs(
     return removed
 
 
+def _coerce_point_id(raw: Any) -> int | str | uuid.UUID:
+    """Accept uuid5 strings, UUID objects, or uint64 point ids."""
+    if isinstance(raw, uuid.UUID):
+        return raw
+    if isinstance(raw, int):
+        return raw
+    text = str(raw).strip()
+    try:
+        return uuid.UUID(text)
+    except ValueError:
+        pass
+    if text.isdigit():
+        return int(text)
+    # Last resort: pass through (Qdrant will reject illegal ids).
+    return text
+
+
+def _knowledge_vector_from_record(raw: Any) -> Mapping[str, Any]:
+    """Preserve the full named-vector map from export (omit ⇒ null on upsert)."""
+    if not isinstance(raw, Mapping) or not raw:
+        raise ValueError(
+            "knowledge point export missing named vectors; "
+            "re-export with scroll with_vectors=True"
+        )
+    out: dict[str, Any] = {}
+    for key, value in raw.items():
+        name = str(key)
+        if value is None:
+            # Explicit null keeps the "present but empty" case distinct from omit.
+            out[name] = None
+            continue
+        if name not in {TEXT_VECTOR_NAME, IMAGE_VECTOR_NAME}:
+            out[name] = value
+            continue
+        if hasattr(value, "tolist"):
+            out[name] = [float(x) for x in value.tolist()]
+        else:
+            out[name] = [float(x) for x in value]
+    if TEXT_VECTOR_NAME not in out and IMAGE_VECTOR_NAME not in out:
+        raise ValueError("knowledge point has neither text_vector nor image_vector")
+    return out
+
+
 def _point_struct_from_record(
     client: QdrantClient,
     record: Mapping[str, Any],
@@ -230,10 +280,12 @@ def _point_struct_from_record(
     if collection_name == LOCALITY_LINKS_COLLECTION:
         # Match whatever layout already exists on the reader ({} or dummy 1-d).
         vector = _locality_point_vector(client)
+    elif collection_name == COLLECTION_NAME:
+        vector = _knowledge_vector_from_record(vector)
     elif vector is None:
         vector = {}
     return PointStruct(
-        id=str(record["id"]),
+        id=_coerce_point_id(record["id"]),
         vector=vector,
         payload=dict(record.get("payload") or {}),
     )

@@ -29,7 +29,12 @@ Ingester:
 - `APP_MODE=ingester`
 - `EMBEDDING_PROVIDER_INGEST=novita`
 
-Volumes are **not** shared across Railway services. Use incremental
-`scripts/rag-publish.py --stage-blobs --stage-qdrant` (stop the writer first)
-plus transport (SSH/object store) and `scripts/rag-apply-release.sh` on the
-reader (stop the reader first) to push file diffs and Qdrant points.
+Volumes are **not** shared across Railway services (1 volume : 1 service).
+`railway run` does **not** mount volumes. For publish/apply, free the embedded
+Qdrant lock (app must not hold `path=`), then run
+`scripts/rag-publish.py --stage-blobs --stage-qdrant` and
+`scripts/rag-apply-release.sh` via `railway ssh` into a container that still
+mounts `/data` (e.g. temporary `sleep infinity` entrypoint) or another documented
+volume-access path. Transport release dirs with object store / `scp` — not app
+Bearer tokens. Baseline seed: stop processes and rsync `/data/rag` (snapshots
+are unavailable in local/embedded mode).

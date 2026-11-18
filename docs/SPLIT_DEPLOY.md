@@ -100,15 +100,25 @@ Volumes are independent. There is **no** live Qdrant share and **no** HTTP “pu
 
 **Reader does not expose** an authenticated “apply release” HTTP route. It exposes normal read paths (`/health`, `/mcp`, search tools, `/node-info`, static/UI). Release apply is CLI: `scripts/rag-apply-release.sh`.
 
+**Qdrant sync design (verified against Qdrant 1.20 / qdrant-client 1.20 local mode):**
+
+- Snapshots are **not** available for `QdrantClient(path=…)` (`NotImplementedError`).
+- No WAL / incremental replication between two embedded stores — scroll+filter+upsert (our JSONL by `doc_id`) is the intended pattern.
+- Baseline / disaster recovery: **stop both processes**, then **rsync** the data dir (`meta.json`, `.lock`, `collection/*/storage.sqlite`, …). Never copy while a client is open.
+- Routine deltas: JSONL (`--stage-qdrant`). Upserts must resend every named vector present on the point (omitted named vector ⇒ nulled).
+- Lock: second opener gets `RuntimeError` … already accessed…; lock file `{qdrant_dir}/.lock`.
+
 Practical sequence:
 
-1. On **ingester** (app **stopped** so Qdrant unlocks):  
+1. On **ingester**, free the Qdrant lock (HTTP app must not hold `path=`). Then:  
    `RAG_SKIP_DEFAULT_APP=1 python scripts/rag-publish.py --rag-root "$RAG_DATA_ROOT" --out /tmp/release --reader-catalog /path/to/reader-fp.json --stage-blobs --stage-qdrant`  
    (`reader-fp.json` = reader `doc_id→sha256` catalog snapshot; baseline if omitted / empty.)
-2. **Transport** `/tmp/release` (contains `manifest.json`, `blobs/`, `qdrant/points.jsonl`) to the reader host: Railway one-off / SSH / object store / `railway run` + volume access — whatever ops use. Auth for transport is infrastructure (SSH keys, bucket credentials), **not** app Bearer tokens.
-3. On **reader**: stop the reader service →  
-   `scripts/rag-apply-release.sh --release-dir /path/to/release --rag-root "$RAG_DATA_ROOT"` → start reader.
+2. **Transport** `/tmp/release` (`manifest.json`, `blobs/`, `qdrant/points.jsonl`) to the reader volume. Prefer object store or `scp` between hosts. Auth is infrastructure (SSH keys / bucket credentials), **not** app Bearer tokens.
+3. On **reader**: free Qdrant lock →  
+   `scripts/rag-apply-release.sh --release-dir /path/to/release --rag-root "$RAG_DATA_ROOT"` → start reader again.
 4. Optional on writer: `--mark-published` after a successful apply.
+
+**Railway volume ops caveat (2026-11-18):** `railway run` injects env only and **does not** mount the service volume. `railway ssh` needs a **running** container. Volumes are **1:1** with a service (no sharing). Stopping via UI “Remove” / `railway down` keeps the volume billed (~$0.15/GB/mo) but how to mount a **stopped** service’s volume for scripts is not clearly documented — practical pattern: temporarily run a hold command that mounts `/data` **without** opening Qdrant (e.g. `sleep infinity` / custom entrypoint), `railway ssh`, run publish/apply with `RAG_SKIP_DEFAULT_APP=1`, then restore the normal start command. Confirm plan volume size (≥ ~39 GB used; Hobby default 5 GB is too small).
 
 First-time seed (or disaster recovery): stop source → **rsync/copy entire** `/data/rag` (including `qdrant/`) onto the reader volume → start reader only. Prefer that over `--force-baseline` JSONL for ~39 GB trees.
 
@@ -264,6 +274,8 @@ Apply deletes then upserts points for touched `doc_id`s in `client_domain_knowle
 | `fastembed` | Local ONNX (~4GB+ peak); 8GB preferred |
 
 Ingest may stay on Novita independently via `EMBEDDING_PROVIDER_INGEST`.
+
+**Consistency:** prefer **Novita ingest + Novita query** on the warm reader. Mixing Novita ingest with local FastEmbed query is **unsafe until measured** (BGE-M3 is 1024-d, but bit-exact / cross-runtime parity is not guaranteed; FastEmbed’s built-in catalog may not list `BAAI/bge-m3`). Point sync copies existing vectors — it does not re-embed.
 
 ## Reader context search tools
 
