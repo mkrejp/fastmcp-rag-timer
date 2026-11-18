@@ -631,7 +631,7 @@ Local run and pytest install lines: [README.md](../README.md#local-run).
 
 | Topic | What the code does |
 | --- | --- |
-| HTTP auth | `POST /ingest-json` requires Bearer `RAG_API_TOKEN` (503 if unset). `/upload`, images, `PATCH`/`DELETE /documents/{doc_id}`, `PUT /documents/{doc_id}/content`, and version list/restore use MCP/RAG bearer or a Google session. Catalog, `/health`, `/node-info` have **no inbound auth**. `APP_MODE=reader` always 403s HTTP writes. `RAG_ENFORCE_NODE_ROLE=1` can 403 writes on ČTENÍ/STOP for `all`/`ingester`. |
+| HTTP auth | `POST /ingest-json` needs Bearer `RAG_API_TOKEN` (503 if unset). Uploads, images, document PATCH/DELETE, content PUT, version restore: MCP/RAG bearer or Google session. Catalog, `/health`, `/node-info` unauthenticated. `APP_MODE=reader` returns 403 on HTTP writes. `RAG_ENFORCE_NODE_ROLE=1` can 403 writes for node modes on `all`/`ingester`. |
 | MCP auth | Bearer on every `/mcp` request (`McpBearerAuth`). Host allow-list via FastMCP `TransportSecuritySettings` (`MCP_ALLOWED_HOSTS`). |
 | Console auth | `/ui/` and `/api/admin/*` require Google OAuth (`GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET`) and optional email/domain allow-lists. Cookie session via `SESSION_SECRET`. |
 | Secrets | Embedding key from `BGE_M3_NOVITA_API_KEY`, then `NOVITA_API_KEY`, `OPENAI_TOKEN`, `OPENAI_API_KEY`; sent as `Authorization: Bearer` to Novita. Inbound tokens compared with `hmac.compare_digest`. Not read from a file or vault. |
