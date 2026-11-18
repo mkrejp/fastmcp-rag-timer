@@ -1,6 +1,8 @@
 # Railway deploy notes
 
-Same images run on Railway or a VPS. Typical split:
+Same images run on Railway or a VPS. Use one service per role (separate volumes). Monolith: root `Dockerfile` + `APP_MODE=all` (or omit).
+
+Typical split:
 
 | Service | Image / start | Domain |
 | --- | --- | --- |
@@ -51,3 +53,9 @@ The warm reader is down for that sleep window (volume deploy cutover). Copy rele
 dirs with `scp` via `ssh.railway.com` or `railway volume files` — not app Bearer
 tokens. Baseline seed: copy `/data/rag` after processes are stopped (embedded
 snapshots are unavailable). Full runbook: `docs/SPLIT_DEPLOY.md`.
+
+**Happy path:** live diff-push (`RAG_SYNC_URL` + `RAG_SYNC_TOKEN`, optional `RAG_SYNC_PUSH_ENABLED=1`) — see [SPLIT_DEPLOY.md](../docs/SPLIT_DEPLOY.md).
+
+`GET /health` should report `app_mode`, `writes_enabled`, `release_id`, and sync fields (`sync_enabled`, `catalog_doc_count`, …) when configured.
+
+**Assumption:** Custom domains in the table are deployment targets; wire DNS and `PUBLIC_BASE_URL` when going live.

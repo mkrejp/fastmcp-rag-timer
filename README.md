@@ -2,6 +2,22 @@
 
 Combines FastAPI (web endpoints and a Google-authenticated console), FastMCP (tools over Streamable HTTP), and an on-disk Qdrant Client. It extracts PDF/text/GeoJSON, stores originals and processed artifacts, and indexes named vectors for semantic retrieval. Search is retrieval-only (no generator LLM). There is no scheduler despite the repository name.
 
+## Process roles (`APP_MODE`)
+
+One codebase, three deploy shapes. Set `APP_MODE` or `RAG_APP_MODE` (`all` default), or use role-specific entrypoints and Dockerfiles.
+
+| Mode | Entry | Typical use |
+| --- | --- | --- |
+| `all` | `main.py`, root `Dockerfile` | Local dev and legacy single-node deploys (ingest + search on one volume) |
+| `reader` | `reader_main.py`, `Dockerfile.reader` | Public ČTENÍ node: search and catalog; HTTP/MCP writes blocked |
+| `ingester` | `ingester_main.py`, `Dockerfile.ingester` | ZÁPIS node: upload/OCR/ingest; builds incremental releases for readers |
+
+Cross-host data: volumes are **not** shared live. The ingester publishes file/catalog diffs with `scripts/rag-publish.py`; the reader applies them with `scripts/rag-apply-release.sh` (stop the reader first). Qdrant point-level sync is still a follow-up — see [Split deploy](docs/SPLIT_DEPLOY.md).
+
+Detail: [Architecture — process roles](docs/ARCHITECTURE.md#process-roles-app_mode) · [Connectivity — which clients hit which mode](docs/CONNECTIVITY.md#clients-tokens-and-target-modes) · [Railway notes](deploy/railway/README.md).
+
+**Assumption:** Example hostnames in split-deploy docs (`art-nouveau-rag*.animarium.ai`) are targets, not necessarily live DNS yet.
+
 ## Persistent storage
 
 All RAG server data lives under **`/data/rag`** (override with `RAG_DATA_ROOT`):
@@ -87,11 +103,13 @@ request host. Railway-provided `RAILWAY_SERVICE_NAME`, `RAILWAY_REPLICA_REGION`,
 `RAILWAY_ENVIRONMENT_NAME` are shown when present. Other env values are never returned. Write
 blocking stays off until `RAG_ENFORCE_NODE_ROLE=1`.
 
-**Split ingest vs query:** Ingest may use Novita (`baai/bge-m3`, 1024-dim) while every search path uses
-**local** FastEmbed (`BAAI/bge-m3`, 1024-dim). Search never calls Novita. When `EMBEDDING_PROVIDER` is
-`novita` (the default), set `EMBEDDING_PROVIDER_QUERY=fastembed` or startup refuses to start. Novita
-HTTP vs local ONNX can differ slightly; re-check recall after switching ingest provider (optional
-`scripts/golden_recall_smoke.py`).
+**Split ingest vs query:** Ingest may use Novita or local FastEmbed (`BAAI/bge-m3`, 1024-dim). Search uses
+`EMBEDDING_PROVIDER_QUERY` / `EMBEDDING_PROVIDER_SEARCH` — either `novita` or `fastembed` (both must stay
+1024-dim BGE-M3). `APP_MODE=reader` defaults query to **novita** when unset (slim image, no local ONNX).
+`APP_MODE=all` with default `EMBEDDING_PROVIDER=novita` still needs an explicit query override unless you
+set query to `novita` too. Low-RAM readers: `EMBEDDING_PROVIDER_QUERY=novita`; heavier local search:
+`EMBEDDING_PROVIDER_QUERY=fastembed` (~4GB+ peak). Novita HTTP vs local ONNX can differ slightly; re-check
+recall after provider changes (`scripts/golden_recall_smoke.py`).
 
 **Named vectors:** Qdrant collection `client_domain_knowledge` uses `text_vector` (BGE-M3 1024) and `image_vector` (CLIP `Qdrant/clip-ViT-B-32-vision`, 512). Collections with a single unnamed vector are recreated on startup; **re-ingest all documents** after that recreate. Enable visual search with `IMAGE_EMBEDDING_ENABLED=true` (lazy CLIP load; extra RAM on top of BGE-M3 — risky on 8GB hosts).
 
@@ -141,7 +159,7 @@ Embedding REST routes (multipart upload, chunked upload, PDF alias, images, dele
 - `POST /documents/{doc_id}/unsupersede` — atomically remove that link from both documents (`doc_status` is deleted only when it is `superseded`)
 - `DELETE /documents/{doc_id}` — remove originals, processed files (including `images/` and version history), catalog row, and Qdrant points; **409** if supersession links remain
 - `GET /images/{doc_id}/{image_id}` — extracted PDF image bytes (same auth as `POST /upload`; `413` if larger than 50 MiB)
-- `GET /health` — liveness (`status`, `rag_data_root`, ingest/query embedding providers, `image_embedding_enabled`)
+- `GET /health` — liveness (`status`, `rag_data_root`, ingest/query embedding providers, `image_embedding_enabled`, `app_mode`, `writes_enabled`, `mcp_write_tools`, `release_id`)
 - `GET /node-info` — public JSON: this instance (name, public URL, Railway service/region when present), catalog of nodes with Czech roles (`ZÁPIS` / `ČTENÍ` / `STOP`). No secrets
 - `GET /` — redirect to `/ui/`
 - `GET /ui/` — Google-authenticated RAG console (static shell under `static/`)
@@ -503,16 +521,27 @@ Default `format=text` leaves legacy `Source:` / `Content:` blocks unchanged and 
 
 ## Documentation
 
-- [Architecture](docs/ARCHITECTURE.md) — system context, components, MCP surface, RAG pipeline, runtime, configuration, security.
-- [Connectivity](docs/CONNECTIVITY.md) — trust boundaries, inbound/outbound paths, ports, auth points, connection inventory.
+- [Architecture](docs/ARCHITECTURE.md) — process roles (`APP_MODE`), split deploy, components, MCP/HTTP by mode, RAG pipeline, configuration, security.
+- [Split deploy](docs/SPLIT_DEPLOY.md) — reader vs ingester images, env defaults, incremental publish.
+- [Connectivity](docs/CONNECTIVITY.md) — trust boundaries, clients vs modes, publish path, ports, auth, embedding egress.
 - [Embedding connectivity](docs/CONNECTIVITY.md#embedding-connectivity) — Novita embeddings API, auth, egress, timeouts, privacy, and cost.
 - [Embedding provider](docs/embedding-provider.md) — split ingest/query providers, named vectors, and Qdrant layout.
+- [AI agents](docs/AI_AGENTS.md) — Marek's agent roles, cooperation rules, and [agents.json](docs/agents.json) for cloud agents.
 
 ## Package layout
 
 ```text
-main.py                 # entrypoint (uvicorn / python main.py)
+main.py                 # monolith entrypoint (APP_MODE=all)
+reader_main.py          # reader entrypoint (defaults APP_MODE=reader)
+ingester_main.py        # ingester entrypoint (defaults APP_MODE=ingester)
+Dockerfile              # monolith image
+Dockerfile.reader       # slim reader (Novita query default; no Tesseract/fastembed)
+Dockerfile.ingester     # writer image (Tesseract + fastembed; Novita ingest default)
+scripts/rag-publish.py  # incremental release manifest from writer root
+scripts/rag-apply-release.sh  # apply release on reader (stop app first)
 rag/
+  app_mode.py           # APP_MODE resolution, health flags, MCP write gating
+  publish/              # release manifest, diff, apply (files only)
   app.py                # create_app() — FastAPI, FastMCP mount, UI, lifespan
   routes.py             # HTTP API (upload, ingest-json, documents, images)
   admin_routes.py       # Google-gated /api/admin
@@ -549,7 +578,7 @@ scripts/golden_recall_smoke.py
 
 ## Local run
 
-Startup validates that search uses FastEmbed. With the default Novita ingest provider you must set `EMBEDDING_PROVIDER_QUERY=fastembed`.
+Startup validates ingest and query are both supported BGE-M3 1024-dim providers. For a local monolith with Novita ingest only, set `EMBEDDING_PROVIDER_QUERY=fastembed` or `novita`.
 
 ```bash
 export RAG_DATA_ROOT=./data/rag

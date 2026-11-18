@@ -1,6 +1,6 @@
 # Embedding provider and Qdrant index
 
-Runtime defaults: **`EMBEDDING_PROVIDER`** is `novita` when unset. **`EMBEDDING_PROVIDER_INGEST`** and **`EMBEDDING_PROVIDER_QUERY`** (alias **`EMBEDDING_PROVIDER_SEARCH`**) override ingest vs search independently so ingest can stay on Novita while search uses local FastEmbed only.
+Runtime defaults: **`EMBEDDING_PROVIDER`** is `novita` when unset. **`EMBEDDING_PROVIDER_INGEST`** and **`EMBEDDING_PROVIDER_QUERY`** (alias **`EMBEDDING_PROVIDER_SEARCH`**) override ingest vs search independently. Search may use Novita or local FastEmbed; **`APP_MODE=reader`** defaults query to **novita** when those vars are unset.
 
 ## Split ingest vs query
 
@@ -48,9 +48,9 @@ Novita HTTP vs local ONNX BGE-M3 vectors can **drift slightly**. After changing 
 | Backend | Model | Dimension | Used on |
 | --- | --- | --- | --- |
 | Novita HTTP | `baai/bge-m3` | 1024 | Ingest when `EMBEDDING_PROVIDER_INGEST=novita` |
-| FastEmbed ONNX | `BAAI/bge-m3` | 1024 | Query (required) and ingest when set to `fastembed` |
+| FastEmbed ONNX | `BAAI/bge-m3` | 1024 | Query when `EMBEDDING_PROVIDER_QUERY=fastembed`, or ingest when ingest is `fastembed` |
 
-Configured in `rag/embeddings.py`. FastEmbed BGE-M3 loads on the **first** query or FastEmbed ingest call. Query always uses FastEmbed, so the first search downloads ONNX even when ingest stays on Novita.
+Configured in `rag/embeddings.py`. FastEmbed BGE-M3 loads on the **first** FastEmbed query or FastEmbed ingest call. With query on Novita, the reader image avoids installing FastEmbed entirely (`Dockerfile.reader`).
 
 ### Novita (ingest)
 

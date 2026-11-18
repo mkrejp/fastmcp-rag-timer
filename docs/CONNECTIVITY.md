@@ -8,7 +8,52 @@ This document inventories inbound, outbound, and in-process connections for **fa
 reverse-proxy config, TLS cert, compose network, or firewall rules in the repository. Anything about
 an edge proxy or Railway routing is labeled **Assumption**.
 
-Related: [ARCHITECTURE.md](./ARCHITECTURE.md), [Embedding provider](./embedding-provider.md). Embedding API details are in [Embedding connectivity](#embedding-connectivity).
+Related: [ARCHITECTURE.md](./ARCHITECTURE.md), [SPLIT_DEPLOY.md](./SPLIT_DEPLOY.md), [Embedding provider](./embedding-provider.md). Embedding API details are in [Embedding connectivity](#embedding-connectivity).
+
+## Clients, tokens, and target modes
+
+`APP_MODE` (`rag/app_mode.py`) chooses whether a process accepts writes. Operators usually run **ingester** for uploads and **reader** for public search; **all** keeps both on one host (local dev / legacy Railway).
+
+| Client | Typical target | Auth | Reader | Ingester / `all` |
+| --- | --- | --- | --- | --- |
+| MCP search agents | Reader URL | Bearer `MCP_API_TOKEN` or `RAG_API_TOKEN` | Read MCP tools + search embeddings (Novita default) | Same |
+| MCP / HTTP ingest | Ingester URL | Bearer or Google session | **403** / write tools absent | Upload, ingest, MCP writes |
+| `POST /ingest-json` | Ingester | Bearer `RAG_API_TOKEN` only | **403** | Fetch remote JSON + index |
+| Catalog `GET /documents*` | Reader (often) | None | OK | OK |
+| Google console `/ui` | Either | Google OAuth | Read-only on reader if writes blocked | Full console on writer |
+| Publish automation | Ingester host shell | n/a | Runs `rag-publish.py` on writer `RAG_DATA_ROOT` | — |
+| Release apply | Reader host shell | n/a | `rag-apply-release.sh` (stop reader first) | — |
+
+**Assumption:** Production may point `RAG_NODES` at separate ingester and reader public URLs; example Animarium hostnames in deploy docs are not confirmed live DNS.
+
+## Writer → reader data flow
+
+**Happy path (live):** ingester → `POST /sync/v1/*` with Bearer `RAG_SYNC_TOKEN` (see [SPLIT_DEPLOY.md](./SPLIT_DEPLOY.md)) → reader applies files + `points.jsonl` in-process.
+
+**DR path (CLI):** stop reader → `rag-publish.py` / transport → `rag-apply-release.sh` → start reader.
+
+```mermaid
+sequenceDiagram
+  participant Ing as Ingester
+  participant Sync as Reader /sync/v1
+  participant R as Reader Qdrant in-process
+
+  Ing->>Sync: push/begin chunk commit (RAG_SYNC_TOKEN)
+  Sync->>R: apply files + upsert points (live path)
+```
+
+```mermaid
+sequenceDiagram
+  participant Op as Operator
+  participant Pub as rag-publish.py
+  participant A as rag-apply-release.sh
+  participant R as Reader volume
+
+  Note over Op,R: DR only — reader stopped
+  Op->>Pub: --stage-blobs --stage-qdrant
+  Op->>A: apply manifest + points.jsonl
+  A->>R: files + qdrant point upsert via CLI client
+```
 
 ## Trust boundaries
 
@@ -113,9 +158,9 @@ sequenceDiagram
   Port->>UV: accept
   UV->>API: ASGI
   alt GET /health
-    API-->>Client: 200 status ok plus embedding status
+    API-->>Client: 200 status ok embeddings app_mode writes_enabled release_id
   else POST /upload or chunked upload or /upload-pdf
-    API-->>Client: 401/503 without token, else 400 or 200 JSON
+    API-->>Client: 403 on reader else 401/503 without token else 400 or 200
   else POST /ingest-json
     API-->>Client: 401/503 without RAG_API_TOKEN, else fetch+index
   else GET /documents...
@@ -129,7 +174,7 @@ sequenceDiagram
   else /ui or /api/admin
     API-->>Client: redirect to Google login, or console JSON
   else /mcp Streamable HTTP
-    API-->>Client: 401/503 without bearer, else MCP session / tool result
+    API-->>Client: 401/503 without bearer, else tools list omits writes on reader
   else other path
     API-->>Client: FastAPI default 404 or /docs
   end
@@ -152,11 +197,13 @@ Facts:
 
 Runtime network clients in application code:
 
-1. `requests.post` in `rag.embeddings` when **ingest** uses Novita (`EMBEDDING_PROVIDER_INGEST` unset/`novita`) — see [Embedding connectivity](#embedding-connectivity). Search does **not** call Novita.
-2. Hugging Face Hub download via FastEmbed on the **first** query embed (always FastEmbed) or FastEmbed ingest, cached under `{RAG_DATA_ROOT}/fastembed` or `FASTEMBED_CACHE_PATH`.
-3. Hugging Face Hub download for CLIP vision/text towers when `IMAGE_EMBEDDING_ENABLED=true`, cached under `{RAG_DATA_ROOT}/clip` or `IMAGE_EMBEDDING_CACHE_PATH`.
-4. `requests.get` in `rag.remote.fetch_remote_bytes()` — used by `POST /ingest-json` to download public http(s) JSON/GeoJSON (GitHub blob URLs rewritten to `raw.githubusercontent.com`). Private/loopback/link-local/metadata destinations are rejected. Max 5 redirects; size cap `RAG_MAX_REMOTE_JSON_BYTES`.
-5. `requests.post` / `requests.get` in `rag.google_oauth` to `oauth2.googleapis.com/token` and `openidconnect.googleapis.com/v1/userinfo` during console sign-in. The browser is redirected to `accounts.google.com/o/oauth2/v2/auth`.
+1. `requests.post` in `rag.embeddings` when **ingest** uses Novita (`EMBEDDING_PROVIDER_INGEST` unset/`novita`) — see [Embedding connectivity](#embedding-connectivity).
+2. `requests.post` to Novita when **query** uses `EMBEDDING_PROVIDER_QUERY=novita` (default in `APP_MODE=reader` when unset) — same endpoint as ingest embeddings.
+3. Hugging Face Hub download via FastEmbed on the **first** FastEmbed query or FastEmbed ingest, cached under `{RAG_DATA_ROOT}/fastembed` or `FASTEMBED_CACHE_PATH`.
+4. Hugging Face Hub download for CLIP vision/text towers when `IMAGE_EMBEDDING_ENABLED=true`, cached under `{RAG_DATA_ROOT}/clip` or `IMAGE_EMBEDDING_CACHE_PATH`.
+5. `requests.get` in `rag.remote.fetch_remote_bytes()` — used by `POST /ingest-json` to download public http(s) JSON/GeoJSON (GitHub blob URLs rewritten to `raw.githubusercontent.com`). Private/loopback/link-local/metadata destinations are rejected. Max 5 redirects; size cap `RAG_MAX_REMOTE_JSON_BYTES`.
+6. `requests.post` / `requests.get` in `rag.google_oauth` to `oauth2.googleapis.com/token` and `openidconnect.googleapis.com/v1/userinfo` during console sign-in. The browser is redirected to `accounts.google.com/o/oauth2/v2/auth`.
+7. Optional `requests` to TrailsAssemblage when `TRAILS_API_URL` and `TRAILS_API_TOKEN` are set (locality links; write MCP tools / ingester only).
 
 No code talks to a remote Qdrant URL, PostgreSQL, Redis, SMTP, or webhooks.
 
@@ -201,7 +248,7 @@ No second container is required for the vector store.
 | MCP Streamable HTTP | HTTP on `/mcp` | `PORT` | Bearer `MCP_API_TOKEN`/`RAG_API_TOKEN`; Host allow-list |
 | MCP stdio | — | — | Not started |
 | Embedded Qdrant | in-process + disk | no listen port | n/a |
-| Novita embeddings | HTTPS | 443 | Bearer `BGE_M3_NOVITA_API_KEY` or fallbacks (outbound; **ingest only**) |
+| Novita embeddings | HTTPS | 443 | Bearer `BGE_M3_NOVITA_API_KEY` or fallbacks (outbound; **ingest and/or query** when provider is `novita`) |
 | FastEmbed / CLIP model download | HTTPS | 443 | none (Hugging Face Hub, first load) |
 | Google OAuth | HTTPS | 443 | OAuth client id/secret |
 | Remote JSON fetch | HTTPS/HTTP | 443/80 | None (public URLs only; SSRF guards) |
@@ -221,7 +268,8 @@ Auth points that do not exist: JWT (other than Google session cookie), mTLS, MCP
 | Browser | `/ui`, `/auth`, `/api/admin` | HTTP | `PORT` | Google OAuth session | Inbound |
 | Platform edge (**assumption**) | uvicorn | HTTP (TLS already terminated) | `PORT` | None at app | Inbound |
 | `get_ingest_embeddings()` (`requests`) | `https://api.novita.ai/openai/v1/embeddings` | HTTPS | 443 | Bearer `BGE_M3_NOVITA_API_KEY` or fallbacks | Outbound (Novita ingest) |
-| FastEmbed `TextEmbedding` | Hugging Face `BAAI/bge-m3` ONNX | HTTPS | 443 | none | Outbound on first query/FastEmbed ingest |
+| `get_query_embeddings()` (`requests`) when query=novita | same Novita URL | HTTPS | 443 | Bearer (same resolver) | Outbound (search on reader default) |
+| FastEmbed `TextEmbedding` | Hugging Face `BAAI/bge-m3` ONNX | HTTPS | 443 | none | Outbound on first FastEmbed query or FastEmbed ingest |
 | CLIP `ImageEmbedding` / text tower | Hugging Face CLIP ViT-B/32 ONNX | HTTPS | 443 | none | Outbound on first visual embed |
 | `google_oauth` (`requests`) | Google token + userinfo | HTTPS | 443 | OAuth client secret | Outbound |
 | `fetch_remote_bytes()` (`requests`) | caller-supplied public http(s) JSON URL | HTTP/HTTPS | 80/443 | None | Outbound |
@@ -253,13 +301,14 @@ No encryption-at-rest is configured in this repository. Volume confidentiality i
 
 ## Embedding connectivity
 
-Ingest embeddings are Novita by default (`EMBEDDING_PROVIDER` / `EMBEDDING_PROVIDER_INGEST`). All of
-it is in `rag/embeddings.py`, called from `rag.ingest.ingest_bytes` (HTTP upload, chunked complete,
-`/ingest-json`, MCP `ingest_text`). Search (`search_domain_knowledge` and the hybrid text leg of
-`search_images`) calls `get_query_embedding`, which is **local FastEmbed only** — no Novita tokens on
-query.
+Ingest embeddings default to Novita (`EMBEDDING_PROVIDER` / `EMBEDDING_PROVIDER_INGEST`). Search
+calls `get_query_embedding` / `get_query_embeddings` with `EMBEDDING_PROVIDER_QUERY` (alias
+`EMBEDDING_PROVIDER_SEARCH`): **`novita`** or **`fastembed`**. Unset query env on **`APP_MODE=reader`**
+defaults to Novita so the slim reader image avoids local BGE-M3 ONNX.
 
-Set `EMBEDDING_PROVIDER_INGEST=fastembed` to skip Novita on ingest as well. The first FastEmbed call downloads ONNX weights from Hugging Face (~2.3GB). Query always needs that download even when ingest stays on Novita.
+Set `EMBEDDING_PROVIDER_INGEST=fastembed` to skip Novita on ingest. The first FastEmbed call downloads
+ONNX weights from Hugging Face (~2.3GB). A FastEmbed query path needs that download; a Novita query path
+does not.
 
 The Novita HTTP API is OpenAI-compatible (`/openai/v1/embeddings`); the host is **Novita**, not `api.openai.com`. There is no chat/completions client.
 
@@ -268,7 +317,7 @@ The Novita HTTP API is OpenAI-compatible (`/openai/v1/embeddings`); the host is 
 | Kind | Used? | Evidence |
 | --- | --- | --- |
 | Embeddings (ingest) | **Yes** | Novita: `NOVITA_EMBEDDING_URL`, model `baai/bge-m3`, dim 1024, **or** FastEmbed `BAAI/bge-m3` ONNX dim 1024. Selected by `EMBEDDING_PROVIDER_INGEST`. |
-| Embeddings (query) | **Yes, local only** | FastEmbed `BAAI/bge-m3` 1024. Startup refuses a Novita query provider. |
+| Embeddings (query) | **Yes** | Novita `baai/bge-m3` or FastEmbed `BAAI/bge-m3` 1024 per `EMBEDDING_PROVIDER_QUERY`. |
 | Image embeddings | **Optional** | CLIP `Qdrant/clip-ViT-B-32-vision` / `-text`, dim 512, when `IMAGE_EMBEDDING_ENABLED=true`. |
 | Chat / Completions / Responses | **No** | No chat or LLM client in the repository |
 | Azure OpenAI or a configurable base URL | **No** | Novita URL is a module constant; provider is selected by env |
@@ -338,13 +387,13 @@ TLS certificate verification is the `requests` default (verify on). It is not di
 
 **Assumption:** `HTTP_PROXY` / `HTTPS_PROXY` would be honored by `requests` if set in the environment; the app does not configure proxies.
 
-Query path (not shown): `get_query_embedding` → FastEmbed ONNX, no HTTPS to Novita.
+Query path when `EMBEDDING_PROVIDER_QUERY=fastembed`: `get_query_embedding` → FastEmbed ONNX (no Novita). When query is `novita`, the same Novita POST sequence as ingest applies per query string.
 
 ### Egress
 
 - Novita protocol: HTTPS port **443**, host `api.novita.ai`
 - Frequency on Novita ingest: **one POST per text** (chunk or OCR summary); FastEmbed ingest batches locally
-- Frequency on search: **zero Novita calls**; one local FastEmbed encode per query (plus CLIP if `search_images`)
+- Frequency on search: **zero Novita calls** when query provider is FastEmbed; **one Novita POST per query** when query provider is Novita (plus CLIP if `search_images`)
 
 ### Timeouts, retries, rate limits, error handling
 
@@ -373,7 +422,7 @@ Sent on every **ingest** Novita call:
 - The API key in the Authorization header
 - Model name `baai/bge-m3`
 
-Not sent: original PDF/binary (only extracted text), `doc_id`, filenames, Qdrant vectors, or **search queries** (queries stay local in FastEmbed). Filenames are not in the embedding JSON body.
+Not sent: original PDF/binary (only extracted text), `doc_id`, filenames, and Qdrant vectors. **Search query plaintext is sent to Novita** when `EMBEDDING_PROVIDER_QUERY=novita`; it stays local when query uses FastEmbed. Filenames are not in the embedding JSON body.
 
 Processed fulltext and chunks remain on local disk. Novita also stores whatever their API terms specify for API inputs.
 
@@ -399,7 +448,7 @@ There are still **no budgets**, spend caps, or dollar conversion.
 - `/documents/{id}/text`, `PATCH /documents/{id}`, `PATCH /documents/{id}/metadata`,
   `list_documents`, `get_document_chunks`, `update_document`, and `update_document_metadata` do
   **not** embed.
-- Every `search_domain_knowledge` call embeds the query locally (no query-embedding cache; no Novita query spend).
+- Every `search_domain_knowledge` call embeds the query (Novita HTTP or local FastEmbed per env; no query-embedding cache).
 - `/upload-media` does not embed.
 
 **Assumption:** Billing follows Novita’s published pricing for `baai/bge-m3` on ingest. Exact rates are not in this repository. Empty-text documents create zero embedding calls.
