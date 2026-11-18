@@ -181,13 +181,16 @@ def build_file_diff(
         for doc_id in deleted:
             for prefix in ("originals", "processed", "versions"):
                 files_deleted.append(f"{prefix}/{doc_id}")
-        # Re-hash files under touched upserted docs + top-level index.json.
-        index_path = root / "index.json"
-        if index_path.is_file():
-            digest, size = _sha256_file(index_path)
-            files_added.append(
-                FileChange(path="index.json", sha256=digest, size=size, doc_id=None)
-            )
+        # Include top-level index.json only when the catalog actually changed.
+        # Always appending it made no-op cron/parity runs look non-empty
+        # (files_added=1) and open a spurious release (V2).
+        if upserted or deleted:
+            index_path = root / "index.json"
+            if index_path.is_file():
+                digest, size = _sha256_file(index_path)
+                files_added.append(
+                    FileChange(path="index.json", sha256=digest, size=size, doc_id=None)
+                )
         for doc_id in upserted:
             for prefix in ("originals", "processed", "versions"):
                 base = root / prefix / doc_id
