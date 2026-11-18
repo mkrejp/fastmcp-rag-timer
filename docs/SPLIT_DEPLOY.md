@@ -264,3 +264,15 @@ Apply deletes then upserts points for touched `doc_id`s in `client_domain_knowle
 | `fastembed` | Local ONNX (~4GB+ peak); 8GB preferred |
 
 Ingest may stay on Novita independently via `EMBEDDING_PROVIDER_INGEST`.
+
+## Reader context search tools
+
+On reader hosts, prefer tools that reuse disk/catalog data instead of loading more models:
+
+| Tool | Embeddings? | Attaches |
+| --- | --- | --- |
+| `search_with_context` | yes (query provider only) | catalog, versions index, locality links, related docs, neighbor chunks |
+| `get_document_context` | no | same context bundle for one `doc_id` |
+| `search_catalog_documents` | no | filename/doc_id/sha256 substring; optional full context |
+
+Keep `IMAGE_EMBEDDING_ENABLED=false` on ≤4GB readers. Context attachment is payload + filesystem only.
