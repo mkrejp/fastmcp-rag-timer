@@ -4,49 +4,99 @@
 
 This document describes **fastmcp-rag-timer** as implemented in this repository.
 
-The service is a single-process Python application that:
+The service is a single-process **FastAPI + FastMCP** application per container. Deploy it as a monolith (`APP_MODE=all`) or as split **reader** (ČTENÍ) / **ingester** (ZÁPIS) roles sharing one codebase. Each process:
 
 - Accepts PDF, TXT, Markdown, and JSON/GeoJSON over HTTP (FastAPI), including multipart upload, chunked upload with server-side reassembly, remote GeoJSON by URL via bearer-authenticated `POST /ingest-json`, and optional plain-text ingest over MCP.
 - Persists originals, processed fulltext/chunks/images, content-version snapshots, and chunked-upload staging under a data root (default `/data/rag`).
-- Embeds ingest text with Novita `baai/bge-m3` or local FastEmbed `BAAI/bge-m3` (`EMBEDDING_PROVIDER_INGEST`), and embeds **every search query** with local FastEmbed only.
+- Embeds ingest text with Novita `baai/bge-m3` or local FastEmbed `BAAI/bge-m3` (`EMBEDDING_PROVIDER_INGEST`), and embeds search queries via `EMBEDDING_PROVIDER_QUERY` (`novita` or `fastembed`; reader mode defaults query to Novita when unset).
 - Indexes named vectors in an embedded Qdrant collection (`text_vector` 1024, `image_vector` 512).
 - Exposes catalog/text HTTP APIs, a Google-authenticated console, Streamable HTTP MCP tools (including similarity search), and per-day accounting under `/data/accnt`.
 
-**Sources of truth:** `main.py`, `rag/` (`app.py`, `config.py`, `embeddings.py`,
+**Sources of truth:** `main.py`, `reader_main.py`, `ingester_main.py`, `Dockerfile`,
+`Dockerfile.reader`, `Dockerfile.ingester`, `deploy/`, `scripts/rag-publish.py`,
+`scripts/rag-apply-release.sh`, `rag/` (`app.py`, `app_mode.py`, `config.py`, `embeddings.py`,
 `image_embed.py`, `ingest.py`, `document_delete.py`, `document_patch.py`,
 `document_replace.py`, `document_supersede.py`, `verification_meta.py`,
 `mcp_tools.py`, `processing.py`, `routes.py`, `admin_routes.py`,
 `google_oauth.py`, `chunked_upload.py`, `asgi_shutdown.py`, `storage.py`,
-`vectorstore.py`, `auth.py`), `Dockerfile`, `README.md`,
+`vectorstore.py`, `auth.py`, `publish/`), `README.md`, `docs/SPLIT_DEPLOY.md`,
 `docs/embedding-provider.md`, `static/`, and `tests/`.
 `pyproject.toml` lists runtime dependencies (including `fastembed`, `pymupdf`, `pillow`, `pytesseract`).
-There is no `requirements.txt`, lockfile, compose file, or platform config (for example `railway.toml`).
+There is no `requirements.txt`, lockfile, or `railway.toml`. Example VPS layout: `deploy/vps/docker-compose.yml`.
 CI lives under `.github/workflows/` (Super Linter, pytest on Python 3.11, and Docker image build).
 
 Statements below are taken from those files unless labeled **Assumption**.
 
 Embedding request details (endpoint, auth, timeouts, privacy, cost) live in [Embedding connectivity](./CONNECTIVITY.md#embedding-connectivity) and [Embedding provider](./embedding-provider.md).
 
-## System context
+## Process roles (`APP_MODE`)
+
+Resolved by `rag/app_mode.py` from `APP_MODE` or `RAG_APP_MODE` (default `all`). Aliases: `readonly`/`read`/`cteni` → `reader`; `ingest`/`writer`/`zapis` → `ingester`.
+
+| Mode | Entry | Image | Writes | Default node role (`RAG_NODE_ROLE` unset) | Query embed default |
+| --- | --- | --- | --- | --- | --- |
+| `all` | `main.py` | `Dockerfile` | allowed (unless `RAG_ENFORCE_NODE_ROLE=1` and catalog says ČTENÍ) | from `RAG_NODES` / Railway match | `EMBEDDING_PROVIDER` |
+| `reader` | `reader_main.py` | `Dockerfile.reader` | **blocked** (HTTP 403 + no write MCP tools) | ČTENÍ | **novita** |
+| `ingester` | `ingester_main.py` | `Dockerfile.ingester` | allowed | ZÁPIS+ČTENÍ | `EMBEDDING_PROVIDER` (image sets ingest/query novita) |
+
+Write gating uses `rag/node_info.py`: `enforce_node_role()` is **always true** in `reader` mode. `NodeWriteGuard` rejects `POST`/`PUT`/`PATCH`/`DELETE` on upload, `/ingest-json`, and mutating `/documents/*` paths. In `all`/`ingester`, optional `RAG_ENFORCE_NODE_ROLE=1` applies the same guard from the node catalog role.
+
+Incremental replication (files only, not live volume sharing):
 
 ```mermaid
 flowchart LR
-  httpClient["HTTP client<br/>upload, catalog, health"]
-  mcpClient["MCP client / agent<br/>Streamable HTTP /mcp"]
-  browser["Browser<br/>Google console /ui"]
-  this["Lightweight RAG Engine<br/>FastAPI + FastMCP + embedded Qdrant"]
-  novita["api.novita.ai<br/>POST /openai/v1/embeddings"]
-  hf["Hugging Face Hub<br/>BGE-M3 and CLIP ONNX"]
-  google["accounts.google.com<br/>OAuth token + userinfo"]
-  disk[("/data/rag and /data/accnt")]
+  ingester["Ingester APP_MODE=ingester<br/>ingest + Qdrant on writer volume"]
+  pub["scripts/rag-publish.py<br/>manifest + blobs"]
+  transport["rsync / SSH / object store"]
+  apply["scripts/rag-apply-release.sh<br/>reader stopped"]
+  reader["Reader APP_MODE=reader<br/>search + catalog on reader volume"]
 
-  httpClient -->|"HTTP PORT"| this
-  mcpClient -->|"HTTP PORT /mcp Bearer"| this
-  browser -->|"HTTP PORT /ui /auth"| this
-  this -->|"HTTPS Bearer when ingest=novita"| novita
-  this -->|"HTTPS first FastEmbed/CLIP load"| hf
-  this -->|"HTTPS OAuth code exchange"| google
-  this -->|"read/write files and vector index"| disk
+  ingester --> pub --> transport --> apply --> reader
+```
+
+**Follow-up:** `rag/publish/apply.py` does not upsert Qdrant points — only filesystem/catalog files under `RAG_DATA_ROOT`. Point-level Qdrant sync or full `qdrant/` directory copy remains operator-owned until a later phase.
+
+**Assumption:** Split production hostnames (`art-nouveau-rag*.animarium.ai`) in deploy docs are planned targets, not necessarily routed in DNS today.
+
+## System context
+
+```mermaid
+flowchart TB
+  subgraph clients["Clients"]
+    agents["MCP agents Bearer"]
+    httpW["HTTP writers Bearer/Google"]
+    httpR["HTTP readers no auth"]
+    ui["Browser Google session"]
+  end
+
+  subgraph ingester["Ingester or monolith APP_MODE ingester|all"]
+    I["FastAPI + FastMCP<br/>writes enabled"]
+  end
+
+  subgraph reader["Reader APP_MODE reader"]
+    R["FastAPI + FastMCP<br/>read tools only"]
+  end
+
+  novita["api.novita.ai embeddings"]
+  hf["Hugging Face ONNX"]
+  google["Google OAuth"]
+  diskW[("Writer /data/rag")]
+  diskR[("Reader /data/rag")]
+
+  httpW --> I
+  agents --> I
+  agents --> R
+  httpR --> R
+  ui --> I
+  ui --> R
+  I --> novita
+  I --> hf
+  R --> novita
+  R --> hf
+  I --> google
+  R --> google
+  I --> diskW
+  R --> diskR
 ```
 
 **Assumption:** An HTTPS edge (Railway or similar reverse proxy) sits in front of the listen port in production. Nothing in the repository terminates TLS. README says to mount a Railway volume at `/data`; there is no Railway config file in the repository.
@@ -54,8 +104,11 @@ flowchart LR
 ## Component and module overview
 
 ```text
-main.py                 # uvicorn entrypoint; module-level app = create_app()
+main.py                 # monolith entrypoint (APP_MODE=all)
+reader_main.py          # sets APP_MODE=reader before create_app()
+ingester_main.py        # sets APP_MODE=ingester before create_app()
 rag/
+  app_mode.py           # APP_MODE, health flags, mcp_include_write_tools
   app.py                # FastAPI factory, FastMCP mount, UI, Google session, lifespan
   routes.py             # HTTP API
   admin_routes.py       # /api/admin (Google session)
@@ -83,6 +136,9 @@ rag/
   accounting.py         # /data/accnt rollups
   logging_setup.py      # rag logger + ring buffer
   config.py             # constants and env helpers
+  publish/              # release manifest, file diff, apply (no Qdrant upsert yet)
+scripts/rag-publish.py  # CLI: build release from ingester root
+scripts/rag-apply-release.sh  # CLI: apply release on reader (stop process first)
 static/                 # RAG console
 ```
 
@@ -91,14 +147,14 @@ static/                 # RAG console
 | FastAPI app `Lightweight RAG Engine` | `rag.app.create_app()` | HTTP API (see [HTTP API](#http-api)). FastAPI also exposes default `/docs`, `/redoc`, `/openapi.json` (not disabled). |
 | FastMCP server `Client RAG Node` | `rag.app.create_app()` | `stateless_http=True`, `streamable_http_path="/"`, mounted at `/mcp` behind `McpBearerAuth` and `CompleteResponseOnExit`. FastAPI lifespan enters the MCP app lifespan and closes Qdrant on shutdown. |
 | RAG console | `static/` + `google_oauth.py` + `admin_routes.py` | Google-gated UI at `/ui/`; admin JSON under `/api/admin`. |
-| `get_ingest_embeddings()` / `get_query_embedding()` | `rag/embeddings.py` | Ingest: Novita `baai/bge-m3` or FastEmbed `BAAI/bge-m3`. Query: FastEmbed only. Startup calls `validate_embedding_configuration()`. |
+| `get_ingest_embeddings()` / `get_query_embedding()` | `rag/embeddings.py` | Ingest: Novita or FastEmbed BGE-M3. Query: Novita or FastEmbed per `EMBEDDING_PROVIDER_QUERY` (reader defaults to Novita). Startup calls `validate_embedding_configuration()`. |
 | CLIP `embed_image_paths` / `embed_image_query` | `rag/image_embed.py` | Optional `image_vector` (512-dim) when `IMAGE_EMBEDDING_ENABLED=true`. |
 | `RagStorage` | `rag/storage.py` | Filesystem catalog under `RAG_DATA_ROOT` (originals, processed, versions, Qdrant path). |
 | `ChunkedUploadStore` | `rag/chunked_upload.py` | Staging under `{RAG_DATA_ROOT}/uploads`. |
 | Embedded Qdrant | `rag/vectorstore.py` | `QdrantClient(path=storage.qdrant_dir)`, collection `client_domain_knowledge`, cosine, named vectors `text_vector` (1024) and `image_vector` (512). |
 | Uvicorn | `main.py` `__main__` and Docker `CMD` | `host=HOST` (`0.0.0.0`), `port=PORT` (`os.getenv("PORT", "8080")`), `proxy_headers=True`, `timeout_graceful_shutdown=15`. |
 | Tests | `tests/` | pytest; `RAG_SKIP_DEFAULT_APP=1` so `main.py` does not lock the production Qdrant path. |
-| Container image | `Dockerfile` | Python 3.11 slim, `uv` installer, `mcp[cli]<2`, Tesseract `ces+eng`, `EXPOSE 8080`, `ENV RAG_DATA_ROOT=/data/rag`. No `VOLUME` instruction. |
+| Container images | `Dockerfile`, `Dockerfile.reader`, `Dockerfile.ingester` | Monolith: Tesseract + FastEmbed. Reader: no Tesseract/FastEmbed, `APP_MODE=reader`, default Novita query. Ingester: Tesseract + FastEmbed, `APP_MODE=ingester`. All `EXPOSE 8080`, `ENV RAG_DATA_ROOT=/data/rag`. No `VOLUME` instruction. |
 
 ```mermaid
 flowchart TB
@@ -159,11 +215,13 @@ flowchart TB
 
 ## HTTP API
 
+**By mode:** Reader serves all **GET** catalog/health/node-info routes and authenticated read paths (`GET /images/...`, versions list). Mutating routes (`POST`/`PUT`/`PATCH`/`DELETE` upload, `/ingest-json`, `/documents/...` writes) return **403** on `APP_MODE=reader`. Ingester and `all` expose the full table below (subject to bearer/Google auth and optional `RAG_ENFORCE_NODE_ROLE`).
+
 From `rag/routes.py`, `rag/app.py`, `rag/google_oauth.py`, and `rag/admin_routes.py`:
 
 | Method | Path | Auth | Behavior |
 | --- | --- | --- | --- |
-| `GET` | `/health` | None | `status`, `rag_data_root`, `embeddings` (ingest/query providers), `image_embedding_enabled` |
+| `GET` | `/health` | None | `status`, `rag_data_root`, `embeddings`, `image_embedding_enabled`, `app_mode`, `writes_enabled`, `mcp_write_tools`, `release_id` (from `{RAG_DATA_ROOT}/release.json` when present) |
 | `GET` | `/node-info` | None | This instance (name, public URL, optional Railway service/region/environment), catalog of nodes with Czech roles (`ZÁPIS` / `ČTENÍ` / `STOP`). No secrets |
 | `POST` | `/upload` | Bearer MCP/RAG or Google | PDF, TXT, Markdown, JSON, or GeoJSON → persist + index |
 | `POST` | `/upload/init` | same as `/upload` | Start chunked session; returns `upload_id`, `chunk_size`, `chunk_count`, `expires_at` |
@@ -255,26 +313,23 @@ PATCH /documents/{doc_id}/metadata
 
 From `rag/mcp_tools.py`, registered in `create_app()` and served at **`/mcp`** (Streamable HTTP). `streamable_http_path="/"` so the MCP endpoint is the mount root `/mcp`, not `/mcp/mcp`. Every `/mcp` HTTP request requires Bearer `MCP_API_TOKEN` or fallback `RAG_API_TOKEN` (`McpBearerAuth`; 401 invalid, 503 unset).
 
-| Kind | Name | Present? |
+`register_mcp_tools(..., include_write_tools=...)` omits write tools entirely when `APP_MODE=reader` (`mcp_include_write_tools()`). `/api/admin/mcp` and `app.state.mcp_tools` list only registered names.
+
+| Tool | Reader | Ingester / `all` |
 | --- | --- | --- |
-| Tool | `list_documents(since: str = "") -> str` | Yes |
-| Tool | `get_document_text(doc_id: str) -> str` | Yes |
-| Tool | `get_document_chunks(doc_id: str) -> str` | Yes |
-| Tool | `get_document_images(doc_id: str) -> str` | Yes |
-| Tool | `get_image(image_id: str) -> list[TextContent \| ImageContent]` | Yes |
-| Tool | `ingest_text(filename: str, content: str) -> str` | Yes |
-| Tool | `update_document(doc_id, filename="", extra=None)` | Yes |
-| Tool | `update_document_metadata(doc_id, metadata=None)` | Yes |
-| Tool | `supersede_document(old_doc_id, new_doc_id, correction_note="")` | Yes |
-| Tool | `unsupersede_document(old_doc_id)` | Yes |
-| Tool | `search_domain_knowledge(query: str, limit: int = 3, obec_id: str = "", cast_obce: str = "") -> str` | Yes |
-| Tool | `search_images(query: str, limit: int = 5, hybrid: bool = False) -> str` | Yes |
-| Tool | `sync_links_to_trails(dry_run: bool = False) -> str` | Yes |
-| Tool | `refine_geo(doc_id, geo_refined, chunk_index?, image_id?, dry_run=true) -> str` | Yes |
-| Tool | `refine_geo_batch(items, dry_run=true) -> str` | Yes |
-| Tool | `list_geo_refinements(filter?, …) -> str` | Yes |
-| Resource | — | None |
-| Prompt | — | None |
+| `list_documents`, `get_document_text`, `get_document_chunks`, `get_document_images` | Yes | Yes |
+| `get_image`, `get_page_image`, `get_page_highlights` | Yes | Yes |
+| `search_domain_knowledge`, `search_images` | Yes | Yes |
+| `list_links`, `link_stats`, `list_image_records`, `list_geo_refinements`, `image_record_stats` | Yes | Yes |
+| `ingest_text`, `update_document`, `update_document_metadata` | **No** | Yes |
+| `supersede_document`, `unsupersede_document` | **No** | Yes |
+| `link_locality`, `verify_link`, `sync_links_to_trails` | **No** | Yes |
+| `verify_image_record`, `reindex_figures` | **No** | Yes |
+| `refine_geo`, `refine_geo_batch` | **No** | Yes |
+
+Resources and prompts: none.
+
+HTTP mutating routes follow the same split: reader returns **403** before handlers run; ingester and monolith accept Bearer/Google on write routes unless `RAG_ENFORCE_NODE_ROLE` blocks a ČTENÍ catalog match.
 
 Tool behavior:
 
@@ -292,7 +347,7 @@ Tool behavior:
 - `supersede_document` / `unsupersede_document`: atomic both-sides link / unlink with rollback if
   the second write fails; replacement must not be superseded/retracted; unsupersede keeps
   `doc_status=retracted`; no reverse-link auto-write beyond the pair; no re-embed.
-- `search_domain_knowledge`: `get_query_embedding` (FastEmbed) → `search_similar` on
+- `search_domain_knowledge`: `get_query_embedding` (Novita or FastEmbed per query provider) → `search_similar` on
   `text_vector` with optional `obec_id` / `cast_obce` payload filter on denormalized
   `localities` / `cast_obce` arrays and a default `doc_status` must_not filter for
   superseded/retracted → format `Source:` / `Content:` blocks (OCR image hits included
@@ -358,8 +413,8 @@ Chunked upload (`POST /upload/init` … `complete`) stages parts under `{RAG_DAT
 See [Embedding connectivity](./CONNECTIVITY.md#embedding-connectivity) and [Embedding provider](./embedding-provider.md).
 
 - Text collection size is always BGE-M3 **1024** (`text_vector`). CLIP `image_vector` is **512**.
-- Query embeddings always use local FastEmbed. `EMBEDDING_PROVIDER_QUERY=novita` (including an unset default of `novita` without override) **refuses to start**.
-- Missing Novita credentials on a Novita ingest call raise `ValueError` naming `BGE_M3_NOVITA_API_KEY`.
+- Query embeddings use `EMBEDDING_PROVIDER_QUERY` / `EMBEDDING_PROVIDER_SEARCH`: `novita` (HTTP, default in `reader` when unset) or `fastembed` (local ONNX). `validate_embedding_configuration()` requires both ingest and query providers to be supported 1024-dim backends.
+- Missing Novita credentials on a Novita ingest or query call raise `ValueError` naming `BGE_M3_NOVITA_API_KEY`.
 - FastEmbed needs no API key; first use downloads ~2.3GB ONNX.
 - HTTP `_ingest_upload` maps any `ValueError` to **400** (filename/type checks and missing credentials).
 - Other ingest failures become HTTP **500** `"Ingest failed: ..."`.
@@ -388,7 +443,7 @@ See [Embedding connectivity](./CONNECTIVITY.md#embedding-connectivity) and [Embe
 
 ### Retrieval
 
-- `search_domain_knowledge`: FastEmbed query → cosine search on `text_vector` with `limit` (default 3). Default Qdrant `must_not` on `doc_status` in `{superseded, retracted}`; `include_superseded=true` disables it.
+- `search_domain_knowledge`: query embedding (Novita or FastEmbed) → cosine search on `text_vector` with `limit` (default 3). Default Qdrant `must_not` on `doc_status` in `{superseded, retracted}`; `include_superseded=true` disables it.
   Optional `obec_id` / `cast_obce` filters on payload arrays. Hits may be PDF chunks or OCR image
   points. Citations use `parent_document`/`source`, `source_type`, `doc_id`, optional `page_number` /
   `image_id` / URL. When coordinates exist, JSON hits include preferred `lat`/`lon`, `geo_source`
@@ -407,7 +462,7 @@ Dockerfile installs `curl` (comment: healthchecks) and Tesseract. `GET /health` 
 Startup (`python main.py` or Docker `CMD`):
 
 1. Unless `RAG_SKIP_DEFAULT_APP=1`, `main.py` calls `create_app()`.
-2. `validate_embedding_configuration()` (query provider must be FastEmbed).
+2. `validate_embedding_configuration()` (ingest and query providers must both be `novita` or `fastembed` at 1024-dim).
 3. Resolve `RAG_DATA_ROOT` (default `/data/rag`; Dockerfile sets the same) and `ACCNT_DATA_ROOT`.
 4. `RagStorage.ensure_layout()` creates `originals/`, `processed/`, `qdrant/`, `versions/`, and empty `index.json`. `ChunkedUploadStore.ensure_layout()` creates `uploads/`.
 5. Open embedded Qdrant; create or recreate the named-vector collection if needed.
@@ -465,6 +520,7 @@ sequenceDiagram
   participant Tool as search_domain_knowledge
   participant Embed as get_query_embedding
   participant FE as FastEmbed BGE-M3
+  participant Novita as api.novita.ai
   participant Qdrant
 
   Agent->>Auth: Streamable HTTP tools/call Bearer
@@ -474,8 +530,13 @@ sequenceDiagram
     Auth->>MCP: pass
     MCP->>Tool: invoke query, limit=3
     Tool->>Embed: get_query_embedding(query)
-    Embed->>FE: local ONNX BAAI/bge-m3
-    FE-->>Embed: 1024-dim vector
+    alt query provider fastembed
+      Embed->>FE: local ONNX BAAI/bge-m3
+      FE-->>Embed: 1024-dim vector
+    else query provider novita
+      Embed->>Novita: POST /openai/v1/embeddings
+      Novita-->>Embed: 1024-dim vector
+    end
     Tool->>Qdrant: query_points using text_vector
     Qdrant-->>Tool: points with payload
     alt hits
@@ -488,7 +549,7 @@ sequenceDiagram
   end
 ```
 
-`list_documents`, `get_document_text`, `get_document_chunks`, and `get_document_images` do not embed; they only read disk. `search_domain_knowledge` does **not** call Novita.
+`list_documents`, `get_document_text`, `get_document_chunks`, and `get_document_images` do not embed; they only read disk. `search_domain_knowledge` calls Novita only when `EMBEDDING_PROVIDER_QUERY=novita`.
 
 ## Configuration and environment variables
 
@@ -501,7 +562,8 @@ See the table in [README.md](../README.md#configuration) for every env var and d
 | `ACCNT_DATA_ROOT` | `/data/accnt` | Accounting rollups |
 | `EMBEDDING_PROVIDER` | unset → `novita` | Default for ingest/query when overrides are unset |
 | `EMBEDDING_PROVIDER_INGEST` | falls back to default | `novita` or `fastembed` |
-| `EMBEDDING_PROVIDER_QUERY` | falls back to default; **must resolve to `fastembed`** | Search (alias `EMBEDDING_PROVIDER_SEARCH`) |
+| `EMBEDDING_PROVIDER_QUERY` | `EMBEDDING_PROVIDER`, or **novita** when `APP_MODE=reader` and unset | Search (alias `EMBEDDING_PROVIDER_SEARCH`): `novita` or `fastembed` |
+| `APP_MODE` / `RAG_APP_MODE` | `all` | `all` \| `reader` \| `ingester` (see [Process roles](#process-roles-app_mode)) |
 | `RAG_API_TOKEN` | unset | Required for `/ingest-json`; fallback MCP/embed token |
 | `MCP_API_TOKEN` | unset | Preferred token for `/mcp` and embedding REST |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | unset | Enable `/ui` and `/api/admin` |
@@ -514,7 +576,7 @@ Not configurable without code changes:
 | Collection | `client_domain_knowledge` |
 | Vector layout | `text_vector` 1024 cosine + `image_vector` 512 cosine |
 | Ingest embed model | Novita `baai/bge-m3` or FastEmbed `BAAI/bge-m3` |
-| Query embed model | FastEmbed `BAAI/bge-m3` |
+| Query embed model | Novita `baai/bge-m3` or FastEmbed `BAAI/bge-m3` (env-selected) |
 | CLIP models | `Qdrant/clip-ViT-B-32-vision` / `Qdrant/clip-ViT-B-32-text` |
 | Novita embed URL | hardcoded `https://api.novita.ai/openai/v1/embeddings` |
 | Novita embed timeout | 60 seconds |
@@ -529,14 +591,22 @@ There is no `.env` file, `.env.example`, or secret manager integration in the re
 
 ## Build and deployment
 
-`Dockerfile`:
+| Artifact | `CMD` | Notes |
+| --- | --- | --- |
+| `Dockerfile` | `python main.py` | `ENV APP_MODE=all`; Tesseract + FastEmbed |
+| `Dockerfile.reader` | `python reader_main.py` | No Tesseract/FastEmbed; `EMBEDDING_PROVIDER_QUERY=novita` |
+| `Dockerfile.ingester` | `python ingester_main.py` | Tesseract + FastEmbed; Novita ingest/query defaults |
+
+Split deploy: [SPLIT_DEPLOY.md](./SPLIT_DEPLOY.md), [deploy/railway/README.md](../deploy/railway/README.md), [deploy/vps/docker-compose.yml](../deploy/vps/docker-compose.yml).
+
+`Dockerfile` (monolith):
 
 - Base: `python:3.11-slim-bookworm`
 - Copies `uv` / `uvx` from `ghcr.io/astral-sh/uv:latest`
 - `WORKDIR /app`
 - `apt-get install curl tesseract-ocr tesseract-ocr-ces tesseract-ocr-eng`
 - `uv pip install --system`: `fastapi`, `uvicorn`, `"mcp[cli]<2"` (comment: FastMCP lives in mcp 1.x; 2.x renames it to MCPServer), `pypdf`, `pymupdf`, `pillow`, `pytesseract`, `"qdrant-client>=1.12,<2"`, `requests`, `python-multipart`, `itsdangerous`, `fastembed`
-- `COPY main.py ./`, `COPY rag ./rag`, `COPY static ./static`
+- `COPY main.py reader_main.py ingester_main.py ./`, `COPY rag ./rag`, `COPY static ./static`, `COPY scripts ./scripts`
 - `EXPOSE 8080`
 - No `VOLUME` instruction (comment: Railway rejects Dockerfile `VOLUME`; use the service volume mount)
 - `ENV RAG_DATA_ROOT=/data/rag`
@@ -557,7 +627,7 @@ Local run and pytest install lines: [README.md](../README.md#local-run).
 
 | Topic | What the code does |
 | --- | --- |
-| HTTP auth | `POST /ingest-json` requires Bearer `RAG_API_TOKEN` (503 if unset). `/upload`, images, `PATCH`/`DELETE /documents/{doc_id}`, `PUT /documents/{doc_id}/content`, and version list/restore use MCP/RAG bearer or a Google session. Catalog, `/health`, `/node-info` have **no inbound auth**. `RAG_ENFORCE_NODE_ROLE` can 403 writes on ČTENÍ/STOP. |
+| HTTP auth | `POST /ingest-json` requires Bearer `RAG_API_TOKEN` (503 if unset). `/upload`, images, `PATCH`/`DELETE /documents/{doc_id}`, `PUT /documents/{doc_id}/content`, and version list/restore use MCP/RAG bearer or a Google session. Catalog, `/health`, `/node-info` have **no inbound auth**. `APP_MODE=reader` always 403s HTTP writes. `RAG_ENFORCE_NODE_ROLE=1` can 403 writes on ČTENÍ/STOP for `all`/`ingester`. |
 | MCP auth | Bearer on every `/mcp` request (`McpBearerAuth`). Host allow-list via FastMCP `TransportSecuritySettings` (`MCP_ALLOWED_HOSTS`). |
 | Console auth | `/ui/` and `/api/admin/*` require Google OAuth (`GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET`) and optional email/domain allow-lists. Cookie session via `SESSION_SECRET`. |
 | Secrets | Embedding key from `BGE_M3_NOVITA_API_KEY`, then `NOVITA_API_KEY`, `OPENAI_TOKEN`, `OPENAI_API_KEY`; sent as `Authorization: Bearer` to Novita. Inbound tokens compared with `hmac.compare_digest`. Not read from a file or vault. |
@@ -574,7 +644,7 @@ Anyone who can reach the listen port can list/read processed catalog text, store
 
 - Application logger `rag.*` with StreamHandler plus an in-memory ring buffer (`rag/logging_setup.py`, 500 entries) exposed at `GET /api/admin/logs` (Google session).
 - Uvicorn default access/error logs.
-- `GET /health` returns liveness, data root, and embedding provider status; it does not probe Qdrant or Novita.
+- `GET /health` returns liveness, data root, embedding provider status, `app_mode` / `writes_enabled`, and `release_id`; it does not probe Qdrant or Novita.
 - `GET /node-info` returns the public node catalog and this instance's Railway identity fields; it does not include secrets.
 - MCP tool failures are returned as strings and recorded in accounting; they are also logged on the search path.
 - Accounting under `ACCNT_DATA_ROOT`: daily JSON rollups and JSONL events for embeddings, MCP tools, HTTP routes, and outbound fetches. No budgets or dollar conversion.
@@ -593,9 +663,9 @@ Current gaps (not a history of old bugs):
 7. **No HTTP reindex** of PDF bytes — `PUT /documents/{doc_id}/content` replaces indexed text only (no image/figure re-extract). To replace a PDF file entirely, delete then re-upload.
 8. **No lockfile**; most Docker deps unpinned. CI runs Super Linter, pytest (Python 3.11), and the Docker image build.
 9. **No Docker HEALTHCHECK** despite `curl` and `/health`.
-10. **Novita ingest is one HTTP call per text string**, with no batch `input` array, retries, or 429 handling. FastEmbed ingest batches locally. Query never uses Novita.
+10. **Novita ingest (and Novita query) is one HTTP call per text string**, with no batch `input` array, retries, or 429 handling. FastEmbed ingest/query batches locally where applicable.
 11. Recreating a Qdrant collection on schema mismatch **drops existing vectors**.
-12. **Novita HTTP vs FastEmbed ONNX BGE-M3 vectors can drift**; search always uses FastEmbed.
+12. **Novita HTTP vs FastEmbed ONNX BGE-M3 vectors can drift** across ingest/query provider mixes.
 13. **CLIP + BGE-M3 together** can exceed 8GB RAM. Visual search stays off unless `IMAGE_EMBEDDING_ENABLED=true`.
 14. **`SESSION_SECRET` unset** yields an ephemeral cookie secret (sessions reset on restart).
 15. Process runs as **root** in the published image.

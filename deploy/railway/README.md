@@ -1,6 +1,8 @@
 # Railway deploy notes
 
-Same images run on Railway or a VPS. Typical split:
+Same images run on Railway or a VPS. Use one service per role (separate volumes). Monolith: root `Dockerfile` + `APP_MODE=all` (or omit).
+
+Typical split:
 
 | Service | Image / start | Domain |
 | --- | --- | --- |
@@ -29,4 +31,8 @@ Ingester:
 - `APP_MODE=ingester`
 - `EMBEDDING_PROVIDER_INGEST=novita`
 
-Volumes are **not** shared across Railway services. Use incremental `scripts/rag-publish.py` + transport (SSH/HF) to push diffs to reader datastores.
+Volumes are **not** shared across Railway services. Use incremental `scripts/rag-publish.py` + transport (SSH/rsync/object store) to push diffs to reader datastores, then `scripts/rag-apply-release.sh` on the reader while the service is stopped.
+
+`GET /health` on each service should report `app_mode`, `writes_enabled`, and `release_id` after apply.
+
+**Assumption:** Custom domains in the table are deployment targets; wire DNS and `PUBLIC_BASE_URL` when going live.
