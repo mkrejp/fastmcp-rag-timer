@@ -269,6 +269,9 @@ From `rag/mcp_tools.py`, registered in `create_app()` and served at **`/mcp`** (
 | Tool | `unsupersede_document(old_doc_id)` | Yes |
 | Tool | `search_domain_knowledge(query: str, limit: int = 3, obec_id: str = "", cast_obce: str = "") -> str` | Yes |
 | Tool | `search_images(query: str, limit: int = 5, hybrid: bool = False) -> str` | Yes |
+| Tool | `search_with_context(query, limit=3, …) -> str` | Yes |
+| Tool | `get_document_context(doc_id, chunk_index?=None, …) -> str` | Yes |
+| Tool | `search_catalog_documents(query="", limit=20, include_context=false) -> str` | Yes |
 | Tool | `sync_links_to_trails(dry_run: bool = False) -> str` | Yes |
 | Tool | `refine_geo(doc_id, geo_refined, chunk_index?, image_id?, dry_run=true) -> str` | Yes |
 | Tool | `refine_geo_batch(items, dry_run=true) -> str` | Yes |
@@ -299,6 +302,8 @@ Tool behavior:
   when they have text vectors); empty → `"No relevant facts found."`; exceptions →
   `"Error executing RAG search: ..."`
 - `search_images`: requires `IMAGE_EMBEDDING_ENABLED=true`; CLIP text tower → `image_vector`; `hybrid=true` RRF-merges CLIP hits with `pdf_image` text hits; same `doc_status` default exclusion
+- `search_with_context`: same vector path as `search_domain_knowledge`, always JSON; each hit adds optional catalog, versions index (no fulltext), locality links, supersession-related docs, and neighbor chunks from disk (`rag/search_context.py`)
+- `get_document_context` / `search_catalog_documents`: reader-local only (no embeddings); catalog substring search optionally wraps the same context bundle
 - `link_locality` / `verify_link`: when `TRAILS_API_URL` and `TRAILS_API_TOKEN` are set, forward to TrailsAssemblage `POST /locality-links` and `PATCH /locality-links/{id}/verify`. Failures retry with backoff then land in `{RAG_DATA_ROOT}/trails_outbox.json`; MCP tools still succeed. Unset env leaves tools unchanged.
 - `sync_links_to_trails`: idempotent backfill of all `locality_links` points; `dry_run` counts without HTTP.
 - `refine_geo`: validates a `geo_refined` object (Pydantic) and `set_payload`s it onto document metadata and/or Qdrant image/chunk points. Never writes original `lat`/`lon`. `dry_run=true` (default) returns old vs new. Repeat writes of the same object are idempotent; a changed object is appended to `geo_refined_history`. Same `/mcp` bearer as `link_locality`. Not forwarded to Trails.

@@ -16,6 +16,7 @@ APP_MODE=reader   # or ingester
 EMBEDDING_PROVIDER=novita
 EMBEDDING_PROVIDER_INGEST=novita
 EMBEDDING_PROVIDER_QUERY=novita
+IMAGE_EMBEDDING_ENABLED=false
 ```
 
 Legacy local-search layout (heavier RAM):
@@ -24,6 +25,17 @@ Legacy local-search layout (heavier RAM):
 EMBEDDING_PROVIDER_INGEST=novita
 EMBEDDING_PROVIDER_QUERY=fastembed
 ```
+
+### Reader RAM budget (~4GB VPS)
+
+| Knob | Low-RAM recommendation | Why |
+| --- | --- | --- |
+| `APP_MODE=reader` | required for read-only hosts | Omits write MCP tools; defaults query to Novita |
+| `EMBEDDING_PROVIDER_QUERY=novita` | default in reader mode | Query vectors over HTTP — no local BGE-M3 ONNX (~2.3GB cache / ~4GB+ peak) |
+| `IMAGE_EMBEDDING_ENABLED=false` | default | Avoids loading CLIP beside text search |
+| Context tools (`search_with_context`, `get_document_context`, `search_catalog_documents`) | prefer these for enrichment | Attach catalog / versions / locality / related docs / neighbor chunks from disk + payload-only Qdrant scrolls; no extra models |
+
+Tiny/small embedding tokens are preferred when a host must stay under 4GB: keep query remote (Novita) rather than loading FastEmbed locally. The collection dimension stays **1024** (BGE-M3 family) so remote and local backends remain interchangeable without recreating vectors.
 
 See [Split deploy](./SPLIT_DEPLOY.md).
 
