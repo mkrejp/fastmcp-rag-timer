@@ -66,6 +66,12 @@ in any backup or restore of `/data/rag`; there is no in-repo backup tooling.
 | `RAG_SKIP_DEFAULT_APP` | unset | Set to `1` to skip module-level `create_app()` (used by tests) |
 | `RAG_API_TOKEN` | unset | Required Bearer token for `POST /ingest-json`; fallback token for `/mcp` and embedding REST routes |
 | `MCP_API_TOKEN` | unset | Preferred Bearer token for `/mcp` and embedding REST routes (wins over `RAG_API_TOKEN`) |
+| `RAG_SYNC_TOKEN` | unset | Bearer for reader live diff-push API (`/sync/v1/*`); unset → routes return 404 |
+| `RAG_SYNC_TOKEN_PREVIOUS` | unset | Optional previous Bearer accepted during token rotation |
+| `RAG_SYNC_URL` | unset | Reader origin for ingester live push (e.g. `https://reader.example.com`) |
+| `RAG_SYNC_PUSH_ENABLED` / `RAG_SYNC_PUSH_ON_INGEST` | off (default) | Opt-in post-ingest auto-push (`1`/`true`); still needs URL+token |
+| `RAG_SYNC_NIGHTLY_OFFLINE` | unset | Set `1` to suppress live push (quiet hours / offline window) |
+| `RAG_SYNC_DRY_RUN_ONLY` | unset | Force every reader push session into dry-run (no watermark advance) |
 | `MCP_ALLOWED_HOSTS` | production Railway host + localhost | Comma-separated Host allow-list for MCP DNS-rebinding protection |
 | `MCP_DISABLE_DNS_REBINDING_PROTECTION` | unset | Set to `1`/`true`/`yes` to accept any Host |
 | `RAG_MAX_REMOTE_JSON_BYTES` | `134217728` (128 MiB) | Remote GeoJSON download cap (`obce.json` is ~95 MiB) |

@@ -52,6 +52,11 @@ from rag.page_ids import format_page_image_id
 from rag.payloads import ImageRecordPayloadError, LocalityLinkPayloadError
 from rag.pdf_pages import get_page_highlights as compute_page_highlights
 from rag.processing import is_supported_filename
+from rag.search_context import (
+    build_document_context,
+    enrich_knowledge_hit,
+    search_catalog,
+)
 from rag.search_hits import (
     build_image_search_hit,
     build_knowledge_hit,
@@ -1019,6 +1024,200 @@ def register_mcp_tools(
             "search_images",
             request_chars=len(query) + len(precision),
             source="search_mcp",
+            fn=_body,
+        )
+
+    @mcp.tool()
+    def search_with_context(
+        query: str,
+        limit: int = 3,
+        obec_id: str = "",
+        cast_obce: str = "",
+        include_figures: bool = True,
+        only_verified: bool = False,
+        min_status: str = "",
+        include_superseded: bool = False,
+        include_catalog: bool = True,
+        include_versions: bool = True,
+        include_locality: bool = True,
+        include_related: bool = True,
+        include_neighbors: bool = True,
+        neighbor_radius: int = 1,
+        locality_limit: int = 20,
+    ) -> str:
+        """Vector search that returns hits enriched with reader-local context.
+
+        Same filters as ``search_domain_knowledge``, but every hit includes
+        optional catalog metadata, version index (no fulltext), locality
+        links, supersession-related documents, and neighboring chunks from
+        disk. Uses the configured query embedding provider (Novita by
+        default in reader mode); context itself needs no local models.
+        Always returns JSON.
+        """
+
+        def _body() -> str:
+            try:
+                logger.info(
+                    "MCP search_with_context query_chars=%s limit=%s",
+                    len(query),
+                    limit,
+                )
+                query_vector = get_query_embedding(query)
+                locality_filter = knowledge_locality_filter(
+                    obec_id=obec_id.strip() or None,
+                    cast_obce=cast_obce.strip() or None,
+                )
+                fetch_limit = (
+                    limit * 4 if (only_verified or min_status.strip()) else limit
+                )
+                results = search_similar(
+                    qdrant,
+                    query_vector=query_vector,
+                    limit=fetch_limit,
+                    collection_name=collection_name,
+                    vector_name=TEXT_VECTOR_NAME,
+                    query_filter=locality_filter,
+                    include_superseded=include_superseded,
+                )
+                json_hits: list[dict[str, Any]] = []
+                doc_geo_cache: dict[str, dict[str, Any] | None] = {}
+                for res in results:
+                    payload: dict[str, Any] = res.payload or {}
+                    st = payload.get("source_type", "pdf_chunk")
+                    if st == "pdf_figure":
+                        if not include_figures:
+                            continue
+                        vstat = str(payload.get("verification_status") or "unverified")
+                        if vstat == "rejected":
+                            continue
+                        if only_verified and vstat != "verified":
+                            continue
+                        if min_status.strip() == "auto_checked" and vstat not in (
+                            "auto_checked",
+                            "verified",
+                        ):
+                            continue
+                    if len(json_hits) >= limit:
+                        break
+                    hit_doc_id = str(payload.get("doc_id") or "")
+                    if hit_doc_id not in doc_geo_cache:
+                        doc_geo_cache[hit_doc_id] = document_geo_fallback(
+                            storage, hit_doc_id
+                        )
+                    text = payload.get("content_summary") or payload.get("text", "")
+                    json_hits.append(
+                        enrich_knowledge_hit(
+                            storage,
+                            qdrant,
+                            payload=payload,
+                            score=getattr(res, "score", None),
+                            text=str(text),
+                            image_url_fn=_image_public_url,
+                            document_fallback=doc_geo_cache.get(hit_doc_id),
+                            include_catalog=include_catalog,
+                            include_versions=include_versions,
+                            include_locality=include_locality,
+                            include_related=include_related,
+                            include_neighbors=include_neighbors,
+                            neighbor_radius=neighbor_radius,
+                            locality_limit=locality_limit,
+                        )
+                    )
+                return json.dumps(json_hits, ensure_ascii=False, indent=2)
+            except Exception as exc:  # noqa: BLE001 - return tool-visible error text
+                return f"Error executing search_with_context: {exc}"
+
+        return _run_mcp_tool(
+            "search_with_context",
+            request_chars=len(query) + len(obec_id) + len(cast_obce),
+            source="search_mcp",
+            fn=_body,
+        )
+
+    @mcp.tool()
+    def get_document_context(
+        doc_id: str,
+        chunk_index: int | None = None,
+        include_catalog: bool = True,
+        include_versions: bool = True,
+        include_locality: bool = True,
+        include_related: bool = True,
+        include_neighbors: bool = True,
+        neighbor_radius: int = 1,
+        locality_limit: int = 20,
+    ) -> str:
+        """Return reader-local context for one document without embedding.
+
+        Pulls catalog metadata, version index, locality links, supersession
+        peers, and optional neighbor chunks around ``chunk_index``. Safe for
+        low-RAM reader hosts; does not call embedding APIs.
+        """
+
+        def _body() -> str:
+            try:
+                context = build_document_context(
+                    storage,
+                    qdrant,
+                    doc_id,
+                    chunk_index=chunk_index,
+                    include_catalog=include_catalog,
+                    include_versions=include_versions,
+                    include_locality=include_locality,
+                    include_related=include_related,
+                    include_neighbors=include_neighbors,
+                    neighbor_radius=neighbor_radius,
+                    locality_limit=locality_limit,
+                )
+                if context is None:
+                    return f"Document not found: {doc_id}"
+                return json.dumps(context, ensure_ascii=False, indent=2)
+            except Exception as exc:  # noqa: BLE001 - return tool-visible error text
+                return f"Error get_document_context: {exc}"
+
+        return _run_mcp_tool(
+            "get_document_context",
+            request_chars=len(doc_id) + len(str(chunk_index or "")),
+            source=None,
+            fn=_body,
+        )
+
+    @mcp.tool()
+    def search_catalog_documents(
+        query: str = "",
+        limit: int = 20,
+        include_context: bool = False,
+    ) -> str:
+        """Search the on-disk catalog by filename/doc_id/sha256 substring.
+
+        No embeddings and no Qdrant similarity. When ``include_context`` is
+        true, each match is wrapped with the same reader-local context bundle
+        as ``get_document_context`` (catalog/versions/locality/related).
+        Empty ``query`` returns the newest catalog entries up to ``limit``.
+        """
+
+        def _body() -> str:
+            try:
+                matches = search_catalog(storage, query=query, limit=limit)
+                if not include_context:
+                    return json.dumps(matches, ensure_ascii=False, indent=2)
+                enriched: list[dict[str, Any]] = []
+                for entry in matches:
+                    doc_id = str(entry.get("doc_id") or "")
+                    context = build_document_context(
+                        storage,
+                        qdrant,
+                        doc_id,
+                        include_neighbors=False,
+                    )
+                    enriched.append(context or {"doc_id": doc_id, "catalog": entry})
+                return json.dumps(enriched, ensure_ascii=False, indent=2)
+            except Exception as exc:  # noqa: BLE001 - return tool-visible error text
+                return f"Error search_catalog_documents: {exc}"
+
+        return _run_mcp_tool(
+            "search_catalog_documents",
+            request_chars=len(query) + len(str(limit)),
+            source=None,
             fn=_body,
         )
 

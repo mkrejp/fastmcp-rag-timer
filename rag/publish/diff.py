@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from rag.publish.manifest import FileChange, ReleaseManifest, new_release_id
-from rag.storage import RagStorage, utc_now_iso
+from rag.storage import DocumentMeta, RagStorage, utc_now_iso
 
 # Paths under the RAG root that are never published to readers.
 SKIP_PREFIXES = (
@@ -15,6 +16,22 @@ SKIP_PREFIXES = (
     "fastembed/",
     "clip/",
     "qdrant/",  # points synced separately; directory replace is baseline-only
+)
+
+# Fields that affect reader visibility / catalog parity beyond content bytes.
+# Content ``sha256`` is always included separately.
+_FINGERPRINT_META_KEYS = (
+    "filename",
+    "doc_status",
+    "superseded_by",
+    "supersedes",
+    "correction_note",
+    "verification_status",
+    "reliability",
+    "source_key",
+    "source_axis",
+    "verification_checks",
+    "evidence_source_type",
 )
 
 
@@ -60,14 +77,64 @@ def iter_publishable_files(rag_root: Path) -> Iterable[Path]:
         yield path
 
 
+def _meta_fingerprint_payload(meta: DocumentMeta) -> dict[str, Any]:
+    """Return the stable subset of metadata hashed into a catalog fingerprint."""
+    extra = meta.extra if isinstance(meta.extra, Mapping) else {}
+    payload: dict[str, Any] = {
+        "sha256": str(meta.sha256 or ""),
+        "filename": str(meta.filename or ""),
+    }
+    for key in _FINGERPRINT_META_KEYS:
+        if key in {"sha256", "filename"}:
+            continue
+        if key in extra:
+            payload[key] = extra[key]
+    return payload
+
+
+def document_catalog_fingerprint(meta: DocumentMeta) -> str:
+    """Return a composite fingerprint for one document.
+
+    Hashes content ``sha256`` together with lifecycle / verification fields so
+    metadata-only patches (e.g. ``reliability``) still produce a catalog diff
+    when the file content digest is unchanged.
+    """
+    canonical = json.dumps(
+        _meta_fingerprint_payload(meta),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def catalog_fingerprint(storage: RagStorage) -> dict[str, str]:
-    """Map ``doc_id`` → content ``sha256`` from the catalog."""
+    """Map ``doc_id`` → composite catalog fingerprint.
+
+    Prefer ``meta.json`` (includes verification / lifecycle extras). Fall back
+    to the index ``sha256`` only when meta is missing.
+    """
     out: dict[str, str] = {}
     for doc in storage.list_documents():
         doc_id = str(doc.get("doc_id") or "")
+        if not doc_id:
+            continue
+        meta = storage.read_meta(doc_id)
+        if meta is not None:
+            out[doc_id] = document_catalog_fingerprint(meta)
+            continue
         sha = str(doc.get("sha256") or "")
-        if doc_id and sha:
-            out[doc_id] = sha
+        if sha:
+            # Legacy fallback: content digest alone (no meta on disk).
+            out[doc_id] = hashlib.sha256(
+                json.dumps(
+                    {"sha256": sha},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
     return out
 
 
@@ -79,11 +146,12 @@ def build_file_diff(
     writer_host: str | None = None,
     force_baseline: bool = False,
 ) -> ReleaseManifest:
-    """Build a file+catalog diff against ``reader_catalog`` (doc_id→sha256).
+    """Build a file+catalog diff against ``reader_catalog`` (doc_id→fingerprint).
 
     When ``reader_catalog`` is empty/None or ``force_baseline`` is true, every
-    publishable file is listed (baseline). Otherwise only docs whose sha256
-    changed (or are new/deleted) contribute file paths under that doc.
+    publishable file is listed (baseline). Otherwise only docs whose catalog
+    fingerprint changed (or are new/deleted) contribute file paths under that
+    doc — including metadata-only changes.
     """
     root = Path(storage.root)
     writer_fp = catalog_fingerprint(storage)
@@ -92,8 +160,8 @@ def build_file_diff(
 
     upserted = sorted(
         doc_id
-        for doc_id, sha in writer_fp.items()
-        if baseline or reader_fp.get(doc_id) != sha
+        for doc_id, digest in writer_fp.items()
+        if baseline or reader_fp.get(doc_id) != digest
     )
     deleted = sorted(doc_id for doc_id in reader_fp if doc_id not in writer_fp)
 
@@ -168,5 +236,7 @@ def summarize_diff(manifest: ReleaseManifest) -> dict[str, Any]:
         "files_deleted": len(manifest.files_deleted),
         "docs_upserted": len(manifest.catalog_doc_ids_upserted),
         "docs_deleted": len(manifest.catalog_doc_ids_deleted),
+        "qdrant_points_upserted": len(manifest.qdrant_point_ids_upserted),
+        "qdrant_points_deleted": len(manifest.qdrant_point_ids_deleted),
         "bytes_added": bytes_out,
     }

@@ -42,20 +42,20 @@ Resolved by `rag/app_mode.py` from `APP_MODE` or `RAG_APP_MODE` (default `all`).
 
 Write gating uses `rag/node_info.py`: `enforce_node_role()` is **always true** in `reader` mode. `NodeWriteGuard` rejects `POST`/`PUT`/`PATCH`/`DELETE` on upload, `/ingest-json`, and mutating `/documents/*` paths. In `all`/`ingester`, optional `RAG_ENFORCE_NODE_ROLE=1` applies the same guard from the node catalog role.
 
-Incremental replication (files only, not live volume sharing):
+Incremental replication (volumes are not live-shared):
 
 ```mermaid
 flowchart LR
-  ingester["Ingester APP_MODE=ingester<br/>ingest + Qdrant on writer volume"]
-  pub["scripts/rag-publish.py<br/>manifest + blobs"]
-  transport["rsync / SSH / object store"]
-  apply["scripts/rag-apply-release.sh<br/>reader stopped"]
-  reader["Reader APP_MODE=reader<br/>search + catalog on reader volume"]
+  ingester["Ingester APP_MODE=ingester"]
+  live["POST /sync/v1/* Bearer RAG_SYNC_TOKEN<br/>in-process Qdrant apply"]
+  cli["scripts/rag-publish.py + rag-apply-release.sh<br/>DR / baseline"]
+  reader["Reader APP_MODE=reader"]
 
-  ingester --> pub --> transport --> apply --> reader
+  ingester -->|"happy path"| live --> reader
+  ingester -->|"DR escape"| cli --> reader
 ```
 
-**Follow-up:** `rag/publish/apply.py` does not upsert Qdrant points — only filesystem/catalog files under `RAG_DATA_ROOT`. Point-level Qdrant sync or full `qdrant/` directory copy remains operator-owned until a later phase.
+**Happy path:** `rag/publish/diff_push.py` + reader `rag/publish/sync_api.py` — chunked manifest/blobs/points, then `apply_qdrant_release_with_client` on the reader's open client (no second `QdrantClient(path=)`). **DR:** stop reader, `apply.py` with `qdrant/points.jsonl`, or full `qdrant/` rsync after both processes exit. Details: [SPLIT_DEPLOY.md](./SPLIT_DEPLOY.md).
 
 **Assumption:** Split production hostnames (`art-nouveau-rag*.animarium.ai`) in deploy docs are planned targets, not necessarily routed in DNS today.
 
@@ -321,6 +321,7 @@ From `rag/mcp_tools.py`, registered in `create_app()` and served at **`/mcp`** (
 | `list_documents`, `get_document_text`, `get_document_chunks`, `get_document_images` | Yes | Yes |
 | `get_image`, `get_page_image`, `get_page_highlights` | Yes | Yes |
 | `search_domain_knowledge`, `search_images` | Yes | Yes |
+| `search_with_context`, `get_document_context`, `search_catalog_documents` | Yes | Yes |
 | `list_links`, `link_stats`, `list_image_records`, `list_geo_refinements`, `image_record_stats` | Yes | Yes |
 | `ingest_text`, `update_document`, `update_document_metadata` | **No** | Yes |
 | `supersede_document`, `unsupersede_document` | **No** | Yes |
@@ -330,7 +331,7 @@ From `rag/mcp_tools.py`, registered in `create_app()` and served at **`/mcp`** (
 
 Resources and prompts: none.
 
-HTTP mutating routes follow the same split: reader returns **403** before handlers run; ingester and monolith accept Bearer/Google on write routes unless `RAG_ENFORCE_NODE_ROLE` blocks a ČTENÍ catalog match.
+HTTP mutating routes follow the same split: reader returns **403** before handlers run (except `/sync/v1/*` with `RAG_SYNC_TOKEN` when sync is enabled); ingester and monolith accept Bearer/Google on write routes unless `RAG_ENFORCE_NODE_ROLE` blocks a ČTENÍ catalog match.
 
 Tool behavior:
 
@@ -355,6 +356,8 @@ Tool behavior:
   when they have text vectors); empty → `"No relevant facts found."`; exceptions →
   `"Error executing RAG search: ..."`
 - `search_images`: requires `IMAGE_EMBEDDING_ENABLED=true`; CLIP text tower → `image_vector`; `hybrid=true` RRF-merges CLIP hits with `pdf_image` text hits; same `doc_status` default exclusion
+- `search_with_context`: same vector path as `search_domain_knowledge`, always JSON; each hit adds optional catalog, versions index (no fulltext), locality links, supersession-related docs, and neighbor chunks from disk (`rag/search_context.py`)
+- `get_document_context` / `search_catalog_documents`: reader-local only (no embeddings); catalog substring search optionally wraps the same context bundle
 - `link_locality` / `verify_link`: when `TRAILS_API_URL` and `TRAILS_API_TOKEN` are set, forward to TrailsAssemblage `POST /locality-links` and `PATCH /locality-links/{id}/verify`. Failures retry with backoff then land in `{RAG_DATA_ROOT}/trails_outbox.json`; MCP tools still succeed. Unset env leaves tools unchanged.
 - `sync_links_to_trails`: idempotent backfill of all `locality_links` points; `dry_run` counts without HTTP.
 - `refine_geo`: validates a `geo_refined` object (Pydantic) and `set_payload`s it onto document metadata and/or Qdrant image/chunk points. Never writes original `lat`/`lon`. `dry_run=true` (default) returns old vs new. Repeat writes of the same object are idempotent; a changed object is appended to `geo_refined_history`. Same `/mcp` bearer as `link_locality`. Not forwarded to Trails.

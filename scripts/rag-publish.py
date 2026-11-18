@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Build an incremental release manifest (+ optional blob staging) from a RAG root.
+"""Build an incremental release manifest (+ optional blob/Qdrant staging).
 
 Example::
 
+    # Stop the writer first when using --stage-qdrant (embedded Qdrant lock).
     RAG_SKIP_DEFAULT_APP=1 python scripts/rag-publish.py \\
-        --rag-root /data/rag --out /tmp/release --stage-blobs
+        --rag-root /data/rag --out /tmp/release --stage-blobs --stage-qdrant
 """
 
 from __future__ import annotations
@@ -19,6 +20,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from rag.publish.diff import build_file_diff, summarize_diff  # noqa: E402
+from rag.publish.qdrant_sync import (  # noqa: E402
+    POINTS_REL_PATH,
+    export_points_for_docs,
+    open_qdrant_for_sync,
+    write_points_jsonl,
+)
 from rag.publish.release_state import (  # noqa: E402
     read_release_state,
     write_release_state,
@@ -27,7 +34,7 @@ from rag.storage import RagStorage  # noqa: E402
 
 
 def main() -> int:
-    """CLI entry: compute diff and write manifest (+ blobs)."""
+    """CLI entry: compute diff and write manifest (+ blobs / Qdrant points)."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--rag-root", required=True, help="Writer RAG_DATA_ROOT")
     parser.add_argument("--out", required=True, help="Output release directory")
@@ -50,6 +57,14 @@ def main() -> int:
         "--stage-blobs",
         action="store_true",
         help="Copy changed files into out/blobs for transport",
+    )
+    parser.add_argument(
+        "--stage-qdrant",
+        action="store_true",
+        help=(
+            "Export Qdrant points for upserted docs into out/qdrant/points.jsonl "
+            "(writer must be stopped; embedded Qdrant is single-writer)"
+        ),
     )
     parser.add_argument(
         "--mark-published",
@@ -82,6 +97,28 @@ def main() -> int:
         writer_host=args.writer_host.strip() or None,
         force_baseline=bool(args.force_baseline),
     )
+
+    if args.stage_qdrant:
+        # Deleted docs: record placeholder ids so apply knows to purge points.
+        # Upserted docs: export live points (requires exclusive Qdrant access).
+        try:
+            client = open_qdrant_for_sync(storage.qdrant_dir)
+        except Exception as exc:  # noqa: BLE001 - surface lock errors clearly
+            raise SystemExit(
+                f"Cannot open writer Qdrant at {storage.qdrant_dir}: {exc}. "
+                "Stop the ingester process before --stage-qdrant."
+            ) from exc
+        try:
+            records, point_ids = export_points_for_docs(
+                client, manifest.catalog_doc_ids_upserted
+            )
+            manifest.qdrant_point_ids_upserted = point_ids
+            # Apply deletes by doc_id filter; list deleted doc ids as markers.
+            manifest.qdrant_point_ids_deleted = list(manifest.catalog_doc_ids_deleted)
+            out_points = Path(args.out) / POINTS_REL_PATH
+            write_points_jsonl(out_points, records)
+        finally:
+            client.close()
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)

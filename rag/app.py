@@ -40,6 +40,7 @@ from rag.image_embed import image_embedding_enabled
 from rag.logging_setup import configure_logging, get_logger
 from rag.mcp_tools import register_mcp_tools
 from rag.node_info import MCP_WRITE_TOOLS, NodeWriteGuard
+from rag.publish.sync_api import router as sync_router
 from rag.routes import router
 from rag.storage import RagStorage
 from rag.trails_sync import maybe_drain_on_startup
@@ -61,6 +62,9 @@ MCP_TOOL_DOCS = {
     "unsupersede_document": "Atomically remove a supersession link from both documents.",
     "search_domain_knowledge": "Query RAG facts; optional obec_id/cast_obce filter.",
     "search_images": "Search PDF images by CLIP visual similarity (optional hybrid).",
+    "search_with_context": "Vector search with catalog/versions/locality/related/neighbor context.",
+    "get_document_context": "Reader-local catalog/versions/locality/related context for one doc_id.",
+    "search_catalog_documents": "Substring catalog search (optional context; no embeddings).",
     "link_locality": "Upsert document-municipality links into locality_links (no embeddings).",
     "list_links": "List locality_links with optional filters and pagination.",
     "verify_link": "Set verification_status on an existing locality_links point.",
@@ -187,6 +191,8 @@ def create_app(
     app.include_router(router)
     app.include_router(auth_router)
     app.include_router(admin_router)
+    # Live diff-push API: handlers enforce APP_MODE=reader + RAG_SYNC_TOKEN.
+    app.include_router(sync_router)
 
     @app.get("/")
     def root_redirect() -> RedirectResponse:
