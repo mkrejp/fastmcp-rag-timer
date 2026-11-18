@@ -314,6 +314,29 @@ def sync_dry_run_only() -> bool:
     return _bool_env_default_false("RAG_SYNC_DRY_RUN_ONLY")
 
 
+DEFAULT_SYNC_ROLLBACK_KEEP = 1
+_MAX_SYNC_ROLLBACK_KEEP = 100
+
+
+def resolve_sync_rollback_keep() -> int:
+    """How many soft-rollback snapshots to retain after a successful commit.
+
+    ``RAG_SYNC_ROLLBACK_KEEP`` (default **1**): keep the newest N directories under
+    ``.sync/rollback/`` and prune older ones. ``0`` prunes all snapshots.
+    Invalid / negative values fall back to the default; values above 100 are capped.
+    """
+    raw = os.getenv("RAG_SYNC_ROLLBACK_KEEP", "").strip()
+    if not raw:
+        return DEFAULT_SYNC_ROLLBACK_KEEP
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_SYNC_ROLLBACK_KEEP
+    if value < 0:
+        return DEFAULT_SYNC_ROLLBACK_KEEP
+    return min(value, _MAX_SYNC_ROLLBACK_KEEP)
+
+
 FIGURE_INDEX_VERSION = 1
 
 

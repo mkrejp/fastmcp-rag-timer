@@ -72,6 +72,7 @@ in any backup or restore of `/data/rag`; there is no in-repo backup tooling.
 | `RAG_SYNC_PUSH_ENABLED` / `RAG_SYNC_PUSH_ON_INGEST` | off (default) | Opt-in post-ingest auto-push (`1`/`true`); still needs URL+token |
 | `RAG_SYNC_NIGHTLY_OFFLINE` | unset | Set `1` to suppress live push (quiet hours / offline window) |
 | `RAG_SYNC_DRY_RUN_ONLY` | unset | Force every reader push session into dry-run (no watermark advance) |
+| `RAG_SYNC_ROLLBACK_KEEP` | `1` | Reader: how many `.sync/rollback/<release_id>/` snapshots to keep after a successful commit (older pruned; `0` = prune all) |
 | `MCP_ALLOWED_HOSTS` | production Railway host + localhost | Comma-separated Host allow-list for MCP DNS-rebinding protection |
 | `MCP_DISABLE_DNS_REBINDING_PROTECTION` | unset | Set to `1`/`true`/`yes` to accept any Host |
 | `RAG_MAX_REMOTE_JSON_BYTES` | `134217728` (128 MiB) | Remote GeoJSON download cap (`obce.json` is ~95 MiB) |

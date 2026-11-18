@@ -102,7 +102,7 @@ After a successful ingest batch, the **ingester** pushes a delta to the warm **r
 | Diff | `build_file_diff` + `catalog_fingerprint` |
 | Auth | Bearer **`RAG_SYNC_TOKEN`** (or **`RAG_SYNC_TOKEN_PREVIOUS`** during rotation); separate from MCP / `RAG_API_TOKEN` |
 | Triggers | Opt-in post-ingest hook (`RAG_SYNC_PUSH_ENABLED=1`); optional `scripts/rag-diff-push.py`; cron as future safety-net |
-| Soft rollback | Before apply, snapshot touched docs under `.sync/rollback/<release_id>/`; `POST /sync/v1/rollback/{release_id}` |
+| Soft rollback | Before apply, snapshot touched docs under `.sync/rollback/<release_id>/`; `POST /sync/v1/rollback/{release_id}`; after successful commit prune to `RAG_SYNC_ROLLBACK_KEEP` (default **1**) |
 | Dry-run | `dry_run` on begin (body/query) or `RAG_SYNC_DRY_RUN_ONLY=1`; commit → `dry_run_ok` / `dry_run_failed` (no mutations) |
 
 **Reader sync routes** (active only when `APP_MODE=reader` **and** `RAG_SYNC_TOKEN` set; otherwise **404**):
@@ -127,6 +127,7 @@ Normal write routes (`/upload`, `/ingest-json`, document mutate, …) stay **403
 | `RAG_SYNC_PUSH_ENABLED` / `RAG_SYNC_PUSH_ON_INGEST` | Ingester | **Default off**; set `1` to enable post-ingest auto-push |
 | `RAG_SYNC_NIGHTLY_OFFLINE` | Ingester | Set `1` to suppress live push (quiet hours) |
 | `RAG_SYNC_DRY_RUN_ONLY` | Reader | Force every push session into dry-run |
+| `RAG_SYNC_ROLLBACK_KEEP` | Reader | Snapshots retained after commit (default `1`; `0` prunes all) |
 | `RAG_DATA_ROOT` | Both | Default `/data/rag` |
 | `MCP_API_TOKEN` / `RAG_API_TOKEN` | Ingester (and reader MCP) | **Not** used for sync |
 | `BGE_M3_NOVITA_API_KEY` (or fallbacks) | Ingester | Ingest embeddings while ingester runs |
@@ -341,6 +342,7 @@ Public hostname: **`art-nouveau-rag.animarium.ai`** → Coolify reader. Ingester
 | `RAG_SYNC_PUSH_ENABLED` / `RAG_SYNC_PUSH_ON_INGEST` | ingester optional | default **off**; set `1` to opt in | |
 | `RAG_SYNC_NIGHTLY_OFFLINE` | ingester optional | `1` suppresses push | |
 | `RAG_SYNC_DRY_RUN_ONLY` | reader optional | force dry-run commits | |
+| `RAG_SYNC_ROLLBACK_KEEP` | reader optional | rollback snapshots kept after commit (default `1`) | |
 
 ### Domain / clients (when DNS is created)
 
