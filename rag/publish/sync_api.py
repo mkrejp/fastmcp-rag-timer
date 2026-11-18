@@ -31,11 +31,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from qdrant_client import QdrantClient
 
 from rag.app_mode import is_reader_mode
-from rag.config import (
-    accepted_sync_tokens,
-    sync_api_enabled,
-    sync_dry_run_only,
-)
+from rag.config import accepted_sync_tokens, sync_api_enabled, sync_dry_run_only
 from rag.logging_setup import get_logger
 from rag.publish.apply import apply_file_release
 from rag.publish.diff import catalog_fingerprint
@@ -390,9 +386,13 @@ def push_validate(
         )
 
     try:
-        manifest, _blob_root, points_path, written_paths, points_chunks = (
-            _assemble_session(root, release_id, session)
-        )
+        (
+            manifest,
+            _blob_root,
+            points_path,
+            written_paths,
+            points_chunks,
+        ) = _assemble_session(root, release_id, session)
         info = {
             "ok": True,
             "blobs_assembled": len(written_paths),
@@ -470,9 +470,13 @@ def push_commit(
     try:
         if not dry_run:
             mark_status(root, release_id, STATUS_COMMITTING)
-        manifest, blob_root, points_path, written_paths, points_chunks = (
-            _assemble_session(root, release_id, session)
-        )
+        (
+            manifest,
+            blob_root,
+            points_path,
+            written_paths,
+            points_chunks,
+        ) = _assemble_session(root, release_id, session)
 
         commit_info: dict[str, Any] = {
             "blobs_assembled": len(written_paths),

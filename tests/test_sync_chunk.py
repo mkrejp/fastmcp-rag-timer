@@ -28,13 +28,8 @@ def test_chunk_constants_match_approved_budget() -> None:
 
 def test_pack_many_small_files_into_one_chunk(tmp_path) -> None:
     """Small files share a single chunk under the target budget."""
-    files = [
-        (f"originals/d{i}/f.txt", f"hello-{i}".encode(), "")
-        for i in range(5)
-    ]
-    files = [
-        (path, data, hashlib.sha256(data).hexdigest()) for path, data, _ in files
-    ]
+    files = [(f"originals/d{i}/f.txt", f"hello-{i}".encode(), "") for i in range(5)]
+    files = [(path, data, hashlib.sha256(data).hexdigest()) for path, data, _ in files]
     chunks = pack_blob_chunks("rel-1", files, target_bytes=1024, soft_max_bytes=2048)
     assert len(chunks) == 1
     encoded = chunks[0].encode()
@@ -78,8 +73,18 @@ def test_hard_max_rejects_huge_wire_body() -> None:
 def test_pack_points_jsonl_round_trip(tmp_path) -> None:
     """Point records survive JSONL chunk packing."""
     records = [
-        {"collection": "c", "id": "1", "vector": {"t": [0.1]}, "payload": {"doc_id": "a"}},
-        {"collection": "c", "id": "2", "vector": {"t": [0.2]}, "payload": {"doc_id": "b"}},
+        {
+            "collection": "c",
+            "id": "1",
+            "vector": {"t": [0.1]},
+            "payload": {"doc_id": "a"},
+        },
+        {
+            "collection": "c",
+            "id": "2",
+            "vector": {"t": [0.2]},
+            "payload": {"doc_id": "b"},
+        },
     ]
     chunks = pack_points_chunks("rel-3", records, target_bytes=10_000)
     assert len(chunks) == 1

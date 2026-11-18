@@ -267,9 +267,7 @@ def build_and_push(
             push.put_chunk(manifest.release_id, chunk)
         for chunk in pack_points_chunks(manifest.release_id, records):
             push.put_chunk(manifest.release_id, chunk)
-        commit = push.commit(
-            manifest.release_id, source=writer_host or "diff-push"
-        )
+        commit = push.commit(manifest.release_id, source=writer_host or "diff-push")
     except DiffPushError:
         try:
             push.abort(manifest.release_id)

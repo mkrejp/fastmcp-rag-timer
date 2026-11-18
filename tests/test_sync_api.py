@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
-from typing import Callable, Iterator
+from typing import Any, Callable, Iterator, Mapping, Sequence
 
 import pytest
 from _pytest.monkeypatch import MonkeyPatch
@@ -17,6 +17,7 @@ from rag.embeddings import EMBEDDING_DIM
 from rag.image_embed import IMAGE_EMBEDDING_DIM
 from rag.ingest import stable_point_id
 from rag.publish.diff import build_file_diff, catalog_fingerprint
+from rag.publish.manifest import ReleaseManifest
 from rag.publish.qdrant_sync import (
     export_points_for_docs,
     open_qdrant_for_sync,
@@ -30,6 +31,37 @@ from tests.conftest import patched_embeddings
 
 SYNC_TOKEN = "test-sync-token-option-a"
 SYNC_HEADERS = {"Authorization": f"Bearer {SYNC_TOKEN}"}
+
+
+def _upload_release_chunks(
+    client: TestClient,
+    *,
+    writer_root: Path,
+    manifest: ReleaseManifest,
+    records: Sequence[Mapping[str, Any]],
+    expect_first_blob_unique: bool = True,
+) -> None:
+    """PUT blob + points chunks for ``manifest`` (shared by apply/dry-run tests)."""
+    blob_files = [
+        (change.path, (writer_root / change.path).read_bytes(), change.sha256)
+        for change in manifest.files_added
+    ]
+    for index, chunk in enumerate(pack_blob_chunks(manifest.release_id, blob_files)):
+        put = client.put(
+            f"/sync/v1/push/chunk?release_id={manifest.release_id}",
+            headers=SYNC_HEADERS,
+            content=chunk.encode(),
+        )
+        assert put.status_code == 200, put.text
+        if expect_first_blob_unique and index == 0:
+            assert put.json()["duplicate"] is False
+    for chunk in pack_points_chunks(manifest.release_id, records):
+        put = client.put(
+            f"/sync/v1/push/chunk?release_id={manifest.release_id}",
+            headers=SYNC_HEADERS,
+            content=chunk.encode(),
+        )
+        assert put.status_code == 200, put.text
 
 
 def _upsert_chunk(
@@ -170,20 +202,18 @@ def test_live_push_commit_applies_files_and_points(
     assert begin.status_code == 200, begin.text
     assert begin.json()["status"] == "receiving"
 
+    _upload_release_chunks(
+        reader_sync_client,
+        writer_root=writer,
+        manifest=manifest,
+        records=records,
+    )
+
+    # Idempotent re-PUT of the first blob chunk.
     blob_files = [
         (change.path, (writer / change.path).read_bytes(), change.sha256)
         for change in manifest.files_added
     ]
-    for chunk in pack_blob_chunks(manifest.release_id, blob_files):
-        put = reader_sync_client.put(
-            f"/sync/v1/push/chunk?release_id={manifest.release_id}",
-            headers=SYNC_HEADERS,
-            content=chunk.encode(),
-        )
-        assert put.status_code == 200, put.text
-        assert put.json()["duplicate"] is False
-
-    # Idempotent re-PUT of the same chunk.
     first_blob = pack_blob_chunks(manifest.release_id, blob_files)[0]
     again = reader_sync_client.put(
         f"/sync/v1/push/chunk?release_id={manifest.release_id}",
@@ -192,14 +222,6 @@ def test_live_push_commit_applies_files_and_points(
     )
     assert again.status_code == 200
     assert again.json()["duplicate"] is True
-
-    for chunk in pack_points_chunks(manifest.release_id, records):
-        put = reader_sync_client.put(
-            f"/sync/v1/push/chunk?release_id={manifest.release_id}",
-            headers=SYNC_HEADERS,
-            content=chunk.encode(),
-        )
-        assert put.status_code == 200, put.text
 
     commit = reader_sync_client.post(
         "/sync/v1/push/commit",
@@ -346,24 +368,13 @@ def test_dry_run_commit_does_not_advance_watermark(
     assert begin.status_code == 200, begin.text
     assert begin.json()["dry_run"] is True
 
-    blob_files = [
-        (change.path, (writer / change.path).read_bytes(), change.sha256)
-        for change in manifest.files_added
-    ]
-    for chunk in pack_blob_chunks(manifest.release_id, blob_files):
-        put = reader_sync_client.put(
-            f"/sync/v1/push/chunk?release_id={manifest.release_id}",
-            headers=SYNC_HEADERS,
-            content=chunk.encode(),
-        )
-        assert put.status_code == 200, put.text
-    for chunk in pack_points_chunks(manifest.release_id, records):
-        put = reader_sync_client.put(
-            f"/sync/v1/push/chunk?release_id={manifest.release_id}",
-            headers=SYNC_HEADERS,
-            content=chunk.encode(),
-        )
-        assert put.status_code == 200, put.text
+    _upload_release_chunks(
+        reader_sync_client,
+        writer_root=writer,
+        manifest=manifest,
+        records=records,
+        expect_first_blob_unique=False,
+    )
 
     validate = reader_sync_client.post(
         "/sync/v1/push/validate",
@@ -390,7 +401,7 @@ def test_first_push_parent_null_ok(
     reader_sync_client: TestClient,
 ) -> None:
     """Null watermark accepts parent_release_id=null on first begin."""
-    body = {
+    body: dict[str, Any] = {
         "manifest": {
             "release_id": "first-baseline-rel",
             "parent_release_id": None,

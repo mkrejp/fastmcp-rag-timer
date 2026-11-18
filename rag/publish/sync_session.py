@@ -48,9 +48,7 @@ def session_path(rag_root: Path | str, release_id: str) -> Path:
 def chunk_path(rag_root: Path | str, release_id: str, stage: str, seq: int) -> Path:
     """Return the on-disk path for ``(release_id, stage, seq)``."""
     return (
-        session_dir(rag_root, release_id)
-        / CHUNKS_DIR_NAME
-        / f"{stage}.{seq:05d}.chunk"
+        session_dir(rag_root, release_id) / CHUNKS_DIR_NAME / f"{stage}.{seq:05d}.chunk"
     )
 
 
@@ -92,9 +90,7 @@ def begin_session(
         existing = load_session(rag_root, manifest.release_id)
         if existing is not None:
             if existing.get("status") == STATUS_COMMITTED:
-                raise ValueError(
-                    f"release {manifest.release_id} already committed"
-                )
+                raise ValueError(f"release {manifest.release_id} already committed")
             if existing.get("status") in {
                 STATUS_ABORTED,
                 STATUS_DRY_RUN_OK,
@@ -111,7 +107,7 @@ def begin_session(
         root = session_dir(rag_root, manifest.release_id)
         root.mkdir(parents=True, exist_ok=True)
         (root / CHUNKS_DIR_NAME).mkdir(parents=True, exist_ok=True)
-        session = {
+        session: dict[str, Any] = {
             "release_id": manifest.release_id,
             "parent_release_id": manifest.parent_release_id,
             "status": STATUS_RECEIVING,
@@ -198,7 +194,9 @@ def list_received_chunks(rag_root: Path | str, release_id: str) -> list[PackedCh
     chunks: list[PackedChunk] = []
     for key, meta in sorted((session.get("chunks") or {}).items()):
         stage = str(meta.get("stage") or key.split(":", 1)[0])
-        seq = int(meta.get("seq") if meta.get("seq") is not None else key.split(":")[-1])
+        seq = int(
+            meta.get("seq") if meta.get("seq") is not None else key.split(":")[-1]
+        )
         path = chunk_path(rag_root, release_id, stage, seq)
         if path.is_file():
             chunks.append(read_chunk_file(path))

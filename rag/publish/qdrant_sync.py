@@ -334,13 +334,13 @@ def apply_qdrant_release_with_client(
     Does **not** close ``client`` (safe for the live reader process). Prefer this
     over :func:`apply_qdrant_release` whenever a Qdrant handle is already held.
     """
-    loaded: list[Mapping[str, Any]]
+    loaded: Sequence[Mapping[str, Any]]
     if records is not None:
-        loaded = list(records)
+        loaded = records
     elif points_jsonl:
         loaded = read_points_jsonl(points_jsonl)
     else:
-        loaded = []
+        loaded = ()
     touch_ids = sorted(
         {str(d) for d in list(upsert_doc_ids) + list(delete_doc_ids) if d}
     )

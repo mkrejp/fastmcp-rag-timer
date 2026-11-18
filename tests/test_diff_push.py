@@ -45,9 +45,7 @@ def test_nightly_offline_skips_push(monkeypatch: MonkeyPatch) -> None:
     assert sync_push_enabled() is True
 
 
-def test_maybe_push_after_ingest_noop(
-    tmp_path: Path, monkeypatch: MonkeyPatch
-) -> None:
+def test_maybe_push_after_ingest_noop(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     """Post-ingest hook returns None when sync is not configured / not opted in."""
     monkeypatch.delenv("RAG_SYNC_URL", raising=False)
     monkeypatch.delenv("RAG_SYNC_TOKEN", raising=False)

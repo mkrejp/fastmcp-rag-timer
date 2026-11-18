@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 from rag.publish.diff import build_file_diff, summarize_diff
-from rag.publish.diff_push import DiffPushClient, build_and_push, maybe_push_after_ingest
+from rag.publish.diff_push import (
+    DiffPushClient,
+    build_and_push,
+    maybe_push_after_ingest,
+)
 from rag.publish.manifest import ReleaseManifest, new_release_id
 from rag.publish.qdrant_sync import (
     apply_qdrant_release,
