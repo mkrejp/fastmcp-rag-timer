@@ -50,8 +50,10 @@ _LIFECYCLE_EXTRA_KEYS = (
 
 def _clamp_int(value: object, *, default: int, minimum: int, maximum: int) -> int:
     """Coerce ``value`` to an int within ``[minimum, maximum]``."""
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return default
     try:
-        parsed = int(value)  # type: ignore[arg-type]
+        parsed = int(value)
     except (TypeError, ValueError):
         return default
     return min(max(parsed, minimum), maximum)
@@ -68,9 +70,7 @@ def _chunk_index_of(chunk: Mapping[str, Any]) -> int | None:
         return None
 
 
-def catalog_entry_for_doc(
-    storage: RagStorage, doc_id: str
-) -> dict[str, Any] | None:
+def catalog_entry_for_doc(storage: RagStorage, doc_id: str) -> dict[str, Any] | None:
     """Return a compact catalog entry for ``doc_id``, or ``None`` if missing."""
     trimmed = doc_id.strip()
     if not trimmed:
@@ -116,9 +116,7 @@ def lifecycle_from_meta(meta: DocumentMeta | None) -> dict[str, Any]:
     return out
 
 
-def version_summary_for_doc(
-    storage: RagStorage, doc_id: str
-) -> dict[str, Any] | None:
+def version_summary_for_doc(storage: RagStorage, doc_id: str) -> dict[str, Any] | None:
     """Return version index metadata without archived fulltext bodies."""
     trimmed = doc_id.strip()
     if not trimmed:
@@ -332,16 +330,13 @@ def enrich_knowledge_hit(
     text: str,
     image_url_fn: Any,
     document_fallback: dict[str, Any] | None,
-    include_catalog: bool = True,
-    include_versions: bool = True,
-    include_locality: bool = True,
-    include_related: bool = True,
-    include_neighbors: bool = True,
-    neighbor_radius: int = DEFAULT_NEIGHBOR_RADIUS,
-    locality_limit: int = DEFAULT_LOCALITY_LIMIT,
-    related_limit: int = DEFAULT_RELATED_LIMIT,
+    **context_kwargs: Any,
 ) -> dict[str, Any]:
-    """Build a knowledge hit and attach reader-local context sections."""
+    """Build a knowledge hit and attach reader-local context sections.
+
+    Extra keyword arguments are forwarded to ``build_document_context``
+    (include flags, neighbor radius, locality/related limits).
+    """
     hit = build_knowledge_hit(
         storage,
         dict(payload),
@@ -359,14 +354,7 @@ def enrich_knowledge_hit(
         qdrant,
         doc_id,
         chunk_index=chunk_index,
-        include_catalog=include_catalog,
-        include_versions=include_versions,
-        include_locality=include_locality,
-        include_related=include_related,
-        include_neighbors=include_neighbors,
-        neighbor_radius=neighbor_radius,
-        locality_limit=locality_limit,
-        related_limit=related_limit,
+        **context_kwargs,
     )
     if context is not None:
         # Flatten context sections onto the hit (keep doc_id once).

@@ -38,7 +38,9 @@ def qdrant(rag_storage: RagStorage) -> Iterator[QdrantClient]:
         client.close()
 
 
-def _write_doc(storage: RagStorage, doc_id: str, *, filename: str = "note.txt") -> DocumentMeta:
+def _write_doc(
+    storage: RagStorage, doc_id: str, *, filename: str = "note.txt"
+) -> DocumentMeta:
     """Persist a small multi-chunk document for context tests."""
     chunks = [
         {"index": 0, "text": "alpha chunk about Prague", "page": 0},
