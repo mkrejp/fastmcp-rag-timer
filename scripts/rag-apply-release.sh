@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Apply an incremental release directory onto a reader RAG_DATA_ROOT.
 # Stop the reader process before running (Qdrant path lock). Optional --reboot.
+# Applies file blobs and, when present, qdrant/points.jsonl for doc-scoped sync.
 set -euo pipefail
 
 RAG_ROOT="${RAG_DATA_ROOT:-/data/rag}"

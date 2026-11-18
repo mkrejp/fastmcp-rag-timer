@@ -168,5 +168,7 @@ def summarize_diff(manifest: ReleaseManifest) -> dict[str, Any]:
         "files_deleted": len(manifest.files_deleted),
         "docs_upserted": len(manifest.catalog_doc_ids_upserted),
         "docs_deleted": len(manifest.catalog_doc_ids_deleted),
+        "qdrant_points_upserted": len(manifest.qdrant_point_ids_upserted),
+        "qdrant_points_deleted": len(manifest.qdrant_point_ids_deleted),
         "bytes_added": bytes_out,
     }

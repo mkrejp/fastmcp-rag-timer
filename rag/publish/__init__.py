@@ -4,11 +4,14 @@ from __future__ import annotations
 
 from rag.publish.diff import build_file_diff, summarize_diff
 from rag.publish.manifest import ReleaseManifest, new_release_id
+from rag.publish.qdrant_sync import apply_qdrant_release, export_points_for_docs
 from rag.publish.release_state import read_release_state, write_release_state
 
 __all__ = [
     "ReleaseManifest",
+    "apply_qdrant_release",
     "build_file_diff",
+    "export_points_for_docs",
     "new_release_id",
     "read_release_state",
     "summarize_diff",

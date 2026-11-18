@@ -37,14 +37,15 @@ Examples: `deploy/vps/docker-compose.yml`, `deploy/railway/README.md`.
 
 ## Incremental publish (diffs only)
 
-Volumes are **not** live-shared across hosts. The writer pushes **changed** catalog docs/files:
+Volumes are **not** live-shared across hosts. The writer pushes **changed** catalog docs/files **and** matching Qdrant points:
 
-1. `python scripts/rag-publish.py --rag-root … --out … --reader-catalog reader-fp.json --stage-blobs`
-2. Transport blobs (rsync/SSH or object store).
-3. On the reader (app stopped): `scripts/rag-apply-release.sh --release-dir … [--reboot]`
-4. Health exposes `app_mode` and `release_id`.
+1. Stop the **ingester** (embedded Qdrant is single-writer).
+2. `python scripts/rag-publish.py --rag-root … --out … --reader-catalog reader-fp.json --stage-blobs --stage-qdrant`
+3. Transport the release dir (rsync/SSH or object store) — includes `blobs/` and `qdrant/points.jsonl`.
+4. Stop the **reader**, then: `scripts/rag-apply-release.sh --release-dir … [--reboot]`
+5. Health exposes `app_mode` and `release_id`.
 
-Qdrant point-level sync is intentionally phased: file/catalog diff lands first; full `qdrant/` replace remains a baseline option (`--force-baseline`).
+Apply deletes then upserts points for touched `doc_id`s in `client_domain_knowledge` and `locality_links`. The on-disk `qdrant/` directory is never rsynced as a whole; only JSONL point payloads move. `--force-baseline` still means a full file catalog dump plus all points for every catalog doc when `--stage-qdrant` is set.
 
 ## Query embeddings
 
