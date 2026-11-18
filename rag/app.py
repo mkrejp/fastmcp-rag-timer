@@ -34,13 +34,12 @@ from rag.embeddings import (
     embedding_provider_status,
     validate_embedding_configuration,
 )
-from rag.node_info import MCP_WRITE_TOOLS
 from rag.google_oauth import current_user
 from rag.google_oauth import router as auth_router
 from rag.image_embed import image_embedding_enabled
 from rag.logging_setup import configure_logging, get_logger
 from rag.mcp_tools import register_mcp_tools
-from rag.node_info import NodeWriteGuard
+from rag.node_info import MCP_WRITE_TOOLS, NodeWriteGuard
 from rag.routes import router
 from rag.storage import RagStorage
 from rag.trails_sync import maybe_drain_on_startup

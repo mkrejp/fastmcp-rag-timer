@@ -41,7 +41,9 @@ def _should_skip(rel: str) -> bool:
     """Return whether ``rel`` is excluded from publish."""
     if rel in {"release.json", "index.json"}:
         return False
-    return any(rel == prefix.rstrip("/") or rel.startswith(prefix) for prefix in SKIP_PREFIXES)
+    return any(
+        rel == prefix.rstrip("/") or rel.startswith(prefix) for prefix in SKIP_PREFIXES
+    )
 
 
 def iter_publishable_files(rag_root: Path) -> Iterable[Path]:
@@ -107,7 +109,6 @@ def build_file_diff(
                 FileChange(path=rel, sha256=digest, size=size, doc_id=doc_id)
             )
     else:
-        touched = set(upserted) | set(deleted)
         # Delete processed/originals trees for removed docs.
         for doc_id in deleted:
             for prefix in ("originals", "processed", "versions"):
@@ -132,9 +133,7 @@ def build_file_diff(
                     rel = _rel_posix(root, path)
                     digest, size = _sha256_file(path)
                     files_added.append(
-                        FileChange(
-                            path=rel, sha256=digest, size=size, doc_id=doc_id
-                        )
+                        FileChange(path=rel, sha256=digest, size=size, doc_id=doc_id)
                     )
 
     return ReleaseManifest(

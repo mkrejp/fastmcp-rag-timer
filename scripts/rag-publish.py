@@ -19,7 +19,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from rag.publish.diff import build_file_diff, summarize_diff  # noqa: E402
-from rag.publish.release_state import read_release_state, write_release_state  # noqa: E402
+from rag.publish.release_state import (  # noqa: E402
+    read_release_state,
+    write_release_state,
+)
 from rag.storage import RagStorage  # noqa: E402
 
 

@@ -29,9 +29,7 @@ def test_baseline_then_incremental_diff(tmp_path: Path) -> None:
         status="ready",
     )
 
-    baseline = build_file_diff(
-        storage, parent_release_id=None, reader_catalog=None
-    )
+    baseline = build_file_diff(storage, parent_release_id=None, reader_catalog=None)
     assert baseline.full_baseline is True
     assert doc_a in baseline.catalog_doc_ids_upserted
     assert any(
@@ -69,9 +67,7 @@ def test_baseline_then_incremental_diff(tmp_path: Path) -> None:
         reader_catalog={doc_a: "aaa"},
     )
     assert delta.catalog_doc_ids_upserted == [doc_b]
-    assert all(
-        (f.doc_id == doc_b) or f.path == "index.json" for f in delta.files_added
-    )
+    assert all((f.doc_id == doc_b) or f.path == "index.json" for f in delta.files_added)
 
 
 def test_apply_file_release_copies_blobs(tmp_path: Path) -> None:

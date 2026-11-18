@@ -8,7 +8,8 @@ WORKDIR /app
 
 # curl for operator healthchecks (no Docker HEALTHCHECK instruction)
 # Tesseract ces+eng for PDF image OCR during ingest
-# hadolint ignore=DL3008 -- apt package versions float with the slim base image
+# apt package versions float with the slim base image
+# hadolint ignore=DL3008
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     tesseract-ocr \

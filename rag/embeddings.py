@@ -471,9 +471,7 @@ def get_query_embeddings(texts: Sequence[str]) -> list[list[float]]:
     expected = provider_text_dim(provider)
     if provider == "fastembed":
         return _get_fastembed_embeddings(texts, expected_dim=expected)
-    return [
-        _get_novita_embedding(text, expected_dim=expected) for text in texts
-    ]
+    return [_get_novita_embedding(text, expected_dim=expected) for text in texts]
 
 
 def get_query_embedding(text: str) -> list[float]:

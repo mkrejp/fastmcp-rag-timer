@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import os
 
+from rag.config import HOST, PORT, should_skip_default_app
+
 # Force reader role before app construction (overridable only by explicit env set earlier).
 os.environ.setdefault("APP_MODE", "reader")
 
-from rag.app import create_app
-from rag.config import HOST, PORT, should_skip_default_app
+from rag.app import create_app  # noqa: E402
 
 if should_skip_default_app():
     app = None  # type: ignore[assignment]

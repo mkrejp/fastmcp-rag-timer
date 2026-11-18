@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from qdrant_client import QdrantClient
 
 from rag.accounting import accounting_source, get_global_store
+from rag.app_mode import app_mode_status
 from rag.auth import require_api_token, require_embed_access
 from rag.chunked_upload import (
     ChunkConflictError,
@@ -48,9 +49,7 @@ from rag.document_replace import (
     restore_document_version,
 )
 from rag.document_supersede import supersede_document, unsupersede_document
-from rag.app_mode import app_mode_status
 from rag.embeddings import embedding_provider_status, validate_embedding_configuration
-from rag.publish.release_state import read_release_state
 from rag.google_oauth import current_user
 from rag.image_delivery import resolve_image_delivery
 from rag.image_embed import image_embedding_enabled
@@ -59,6 +58,7 @@ from rag.logging_setup import get_logger
 from rag.node_info import node_info_payload
 from rag.page_ids import parse_page_image_id
 from rag.processing import is_supported_filename
+from rag.publish.release_state import read_release_state
 from rag.remote import (
     RemoteFetchError,
     RemoteTooLargeError,

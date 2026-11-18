@@ -14,7 +14,12 @@ from rag.embeddings import (
     resolve_embedding_provider_query_unvalidated,
     validate_embedding_configuration,
 )
-from rag.node_info import ROLE_READ, ROLE_WRITE, enforce_node_role, resolve_node_role_override
+from rag.node_info import (
+    ROLE_READ,
+    ROLE_WRITE,
+    enforce_node_role,
+    resolve_node_role_override,
+)
 from tests.conftest import AUTH_HEADERS, patched_embeddings
 
 

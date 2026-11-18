@@ -55,6 +55,8 @@ def write_release_state(
         body.update(extra)
     path = release_state_path(root)
     tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(body, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    tmp.write_text(
+        json.dumps(body, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
     tmp.replace(path)
     return body
