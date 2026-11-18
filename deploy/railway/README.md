@@ -29,4 +29,7 @@ Ingester:
 - `APP_MODE=ingester`
 - `EMBEDDING_PROVIDER_INGEST=novita`
 
-Volumes are **not** shared across Railway services. Use incremental `scripts/rag-publish.py` + transport (SSH/HF) to push diffs to reader datastores.
+Volumes are **not** shared across Railway services. Use incremental
+`scripts/rag-publish.py --stage-blobs --stage-qdrant` (stop the writer first)
+plus transport (SSH/object store) and `scripts/rag-apply-release.sh` on the
+reader (stop the reader first) to push file diffs and Qdrant points.

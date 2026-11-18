@@ -1,0 +1,306 @@
+"""Export/import Qdrant points by ``doc_id`` for incremental publishes."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any, Iterable, Mapping, Sequence
+
+from qdrant_client import QdrantClient
+from qdrant_client.models import (
+    Distance,
+    FieldCondition,
+    Filter,
+    FilterSelector,
+    MatchValue,
+    PointStruct,
+    VectorParams,
+)
+
+from rag.config import COLLECTION_NAME, LOCALITY_LINKS_COLLECTION
+from rag.embeddings import TEXT_EMBEDDING_DIM
+from rag.image_embed import IMAGE_EMBEDDING_DIM
+from rag.logging_setup import get_logger
+from rag.vectorstore import (
+    IMAGE_VECTOR_NAME,
+    TEXT_VECTOR_NAME,
+    _locality_point_vector,
+    ensure_locality_links_collection,
+    ensure_payload_indexes,
+)
+
+logger = get_logger("rag.publish.qdrant_sync")
+
+POINTS_REL_PATH = "qdrant/points.jsonl"
+_SCROLL_LIMIT = 256
+DEFAULT_SYNC_COLLECTIONS: tuple[str, ...] = (
+    COLLECTION_NAME,
+    LOCALITY_LINKS_COLLECTION,
+)
+
+
+def doc_id_filter(doc_id: str) -> Filter:
+    """Return a payload filter matching ``doc_id``."""
+    return Filter(must=[FieldCondition(key="doc_id", match=MatchValue(value=doc_id))])
+
+
+def open_qdrant_for_sync(qdrant_dir: Path | str) -> QdrantClient:
+    """Open embedded Qdrant for publish/apply without deleting existing data.
+
+    Creates missing collections with the expected named-vector schema. Does
+    **not** recreate collections on marker mismatch (unlike ``open_qdrant``).
+    Caller must ensure the writer/reader process is stopped (single-writer lock).
+    """
+    path = Path(qdrant_dir)
+    path.mkdir(parents=True, exist_ok=True)
+    client = QdrantClient(path=str(path))
+    if not client.collection_exists(COLLECTION_NAME):
+        client.create_collection(
+            collection_name=COLLECTION_NAME,
+            vectors_config={
+                TEXT_VECTOR_NAME: VectorParams(
+                    size=TEXT_EMBEDDING_DIM, distance=Distance.COSINE
+                ),
+                IMAGE_VECTOR_NAME: VectorParams(
+                    size=IMAGE_EMBEDDING_DIM, distance=Distance.COSINE
+                ),
+            },
+        )
+    ensure_payload_indexes(client, collection_name=COLLECTION_NAME)
+    ensure_locality_links_collection(client)
+    return client
+
+
+def scroll_points_for_doc(
+    client: QdrantClient,
+    *,
+    collection_name: str,
+    doc_id: str,
+    with_vectors: bool = True,
+) -> list[Any]:
+    """Scroll every point in ``collection_name`` with payload ``doc_id``."""
+    if not client.collection_exists(collection_name):
+        return []
+    points: list[Any] = []
+    offset: Any = None
+    selector = doc_id_filter(doc_id)
+    while True:
+        batch, offset = client.scroll(
+            collection_name=collection_name,
+            scroll_filter=selector,
+            limit=_SCROLL_LIMIT,
+            offset=offset,
+            with_payload=True,
+            with_vectors=with_vectors,
+        )
+        points.extend(batch)
+        if offset is None:
+            break
+    return points
+
+
+def _coerce_vector(raw: Any) -> Any:
+    """Normalize a Qdrant vector value for JSON + PointStruct round-trip."""
+    if raw is None:
+        return None
+    if isinstance(raw, Mapping):
+        out: dict[str, Any] = {}
+        for key, value in raw.items():
+            if value is None:
+                out[str(key)] = None
+            elif hasattr(value, "tolist"):
+                out[str(key)] = [float(x) for x in value.tolist()]
+            else:
+                out[str(key)] = [float(x) for x in value]
+        return out
+    if hasattr(raw, "tolist"):
+        return [float(x) for x in raw.tolist()]
+    return [float(x) for x in raw]
+
+
+def serialize_point_record(collection_name: str, point: Any) -> dict[str, Any]:
+    """Serialize one scrolled point for JSONL transport."""
+    payload = point.payload if isinstance(point.payload, Mapping) else {}
+    return {
+        "collection": collection_name,
+        "id": str(point.id),
+        "vector": _coerce_vector(point.vector),
+        "payload": dict(payload),
+    }
+
+
+def export_points_for_docs(
+    client: QdrantClient,
+    doc_ids: Sequence[str],
+    *,
+    collections: Sequence[str] = DEFAULT_SYNC_COLLECTIONS,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Export all points for ``doc_ids`` across ``collections``.
+
+    Returns ``(records, point_ids)`` suitable for JSONL staging and the
+    release manifest ``qdrant_point_ids_upserted`` field.
+    """
+    records: list[dict[str, Any]] = []
+    point_ids: list[str] = []
+    seen: set[str] = set()
+    for doc_id in doc_ids:
+        if not doc_id:
+            continue
+        for collection_name in collections:
+            for point in scroll_points_for_doc(
+                client, collection_name=collection_name, doc_id=doc_id
+            ):
+                record = serialize_point_record(collection_name, point)
+                records.append(record)
+                pid = str(record["id"])
+                if pid not in seen:
+                    seen.add(pid)
+                    point_ids.append(pid)
+    return records, point_ids
+
+
+def write_points_jsonl(path: Path | str, records: Iterable[Mapping[str, Any]]) -> int:
+    """Write point records as JSONL. Returns the number of lines written."""
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    count = 0
+    with target.open("w", encoding="utf-8") as handle:
+        for record in records:
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+            count += 1
+    return count
+
+
+def read_points_jsonl(path: Path | str) -> list[dict[str, Any]]:
+    """Load point records from a JSONL file."""
+    target = Path(path)
+    if not target.is_file():
+        return []
+    records: list[dict[str, Any]] = []
+    for line in target.read_text(encoding="utf-8").splitlines():
+        text = line.strip()
+        if not text:
+            continue
+        payload = json.loads(text)
+        if isinstance(payload, dict):
+            records.append(payload)
+    return records
+
+
+def delete_points_for_docs(
+    client: QdrantClient,
+    doc_ids: Sequence[str],
+    *,
+    collections: Sequence[str] = DEFAULT_SYNC_COLLECTIONS,
+) -> int:
+    """Delete every point matching ``doc_ids`` in ``collections``. Returns count."""
+    removed = 0
+    for doc_id in doc_ids:
+        if not doc_id:
+            continue
+        selector = doc_id_filter(doc_id)
+        for collection_name in collections:
+            if not client.collection_exists(collection_name):
+                continue
+            count = int(
+                client.count(
+                    collection_name=collection_name,
+                    count_filter=selector,
+                    exact=True,
+                ).count
+            )
+            if count:
+                client.delete(
+                    collection_name=collection_name,
+                    points_selector=FilterSelector(filter=selector),
+                    wait=True,
+                )
+                removed += count
+    return removed
+
+
+def _point_struct_from_record(
+    client: QdrantClient,
+    record: Mapping[str, Any],
+    *,
+    collection_name: str,
+) -> PointStruct:
+    """Build a ``PointStruct`` from a serialized record."""
+    vector = record.get("vector")
+    if collection_name == LOCALITY_LINKS_COLLECTION:
+        # Match whatever layout already exists on the reader ({} or dummy 1-d).
+        vector = _locality_point_vector(client)
+    elif vector is None:
+        vector = {}
+    return PointStruct(
+        id=str(record["id"]),
+        vector=vector,
+        payload=dict(record.get("payload") or {}),
+    )
+
+
+def upsert_point_records(
+    client: QdrantClient,
+    records: Sequence[Mapping[str, Any]],
+) -> int:
+    """Upsert serialized point records. Returns the number of points written."""
+    by_collection: dict[str, list[Mapping[str, Any]]] = {}
+    for record in records:
+        collection = str(record.get("collection") or COLLECTION_NAME)
+        by_collection.setdefault(collection, []).append(record)
+    written = 0
+    for collection_name, collection_records in by_collection.items():
+        if collection_name == LOCALITY_LINKS_COLLECTION:
+            ensure_locality_links_collection(client)
+        elif not client.collection_exists(collection_name):
+            # Knowledge collection should already exist via open_qdrant_for_sync.
+            raise RuntimeError(f"missing Qdrant collection: {collection_name}")
+        points = [
+            _point_struct_from_record(client, record, collection_name=collection_name)
+            for record in collection_records
+        ]
+        # Batch upserts to keep memory bounded for large docs.
+        batch_size = 64
+        for start in range(0, len(points), batch_size):
+            end = start + batch_size
+            chunk = points[start:end]
+            client.upsert(collection_name=collection_name, points=chunk, wait=True)
+            written += len(chunk)
+    return written
+
+
+def apply_qdrant_release(
+    qdrant_dir: Path | str,
+    *,
+    upsert_doc_ids: Sequence[str],
+    delete_doc_ids: Sequence[str],
+    points_jsonl: Path | str | None,
+) -> dict[str, Any]:
+    """Delete then upsert points for a release onto ``qdrant_dir``.
+
+    For upserted docs, existing points are removed first so replacements do not
+    leave stale chunk/image ids. Deleted docs only remove points.
+    """
+    client = open_qdrant_for_sync(qdrant_dir)
+    try:
+        records = read_points_jsonl(points_jsonl) if points_jsonl else []
+        touch_ids = sorted(
+            {str(d) for d in list(upsert_doc_ids) + list(delete_doc_ids) if d}
+        )
+        deleted = delete_points_for_docs(client, touch_ids)
+        written = upsert_point_records(client, records) if records else 0
+        logger.info(
+            "Qdrant sync qdrant_dir=%s docs=%s points_deleted=%s points_upserted=%s",
+            qdrant_dir,
+            len(touch_ids),
+            deleted,
+            written,
+        )
+        return {
+            "docs_touched": len(touch_ids),
+            "points_deleted": deleted,
+            "points_upserted": written,
+            "records_in_bundle": len(records),
+        }
+    finally:
+        client.close()
