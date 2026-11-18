@@ -431,6 +431,31 @@ def health(request: Request) -> dict[str, object]:
         validate_embedding_configuration()
         storage = _storage(request)
         release = read_release_state(storage.root)
+        from rag.config import (
+            COLLECTION_NAME,
+            LOCALITY_LINKS_COLLECTION,
+            sync_api_enabled,
+            sync_push_on_ingest_enabled,
+        )
+        from rag.publish.diff import catalog_fingerprint
+
+        catalog_count = len(catalog_fingerprint(storage))
+        qdrant_points: dict[str, int | None] = {}
+        try:
+            qdrant = _qdrant(request)
+            for name in (COLLECTION_NAME, LOCALITY_LINKS_COLLECTION):
+                if qdrant.collection_exists(name):
+                    qdrant_points[name] = int(
+                        qdrant.count(collection_name=name, exact=False).count
+                    )
+                else:
+                    qdrant_points[name] = None
+        except Exception:  # noqa: BLE001 - health stays up if count fails
+            qdrant_points = {
+                COLLECTION_NAME: None,
+                LOCALITY_LINKS_COLLECTION: None,
+            }
+
         body: dict[str, object] = {
             "status": "ok",
             "rag_data_root": _rag_data_root(request),
@@ -438,6 +463,10 @@ def health(request: Request) -> dict[str, object]:
             "image_embedding_enabled": image_embedding_enabled(),
             **app_mode_status(),
             "release_id": release.get("release_id") if release else None,
+            "catalog_doc_count": catalog_count,
+            "qdrant_points": qdrant_points,
+            "sync_enabled": sync_api_enabled(),
+            "sync_push_on_ingest": sync_push_on_ingest_enabled(),
         }
         _record_http(route="health", ok=True)
         return body

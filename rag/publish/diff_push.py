@@ -8,7 +8,6 @@ on the reader).
 from __future__ import annotations
 
 import json
-import os
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -17,7 +16,12 @@ from urllib.parse import urlencode, urljoin
 
 from qdrant_client import QdrantClient
 
-from rag.config import resolve_sync_token, resolve_sync_url
+from rag.config import (
+    resolve_sync_token,
+    resolve_sync_url,
+    sync_nightly_offline,
+    sync_push_on_ingest_enabled,
+)
 from rag.logging_setup import get_logger
 from rag.publish.diff import build_file_diff, catalog_fingerprint, summarize_diff
 from rag.publish.manifest import ReleaseManifest
@@ -34,13 +38,19 @@ class DiffPushError(RuntimeError):
 
 
 def sync_push_enabled() -> bool:
-    """Return whether auto/manual push should run (URL + token present)."""
+    """Return whether post-ingest auto-push should run.
+
+    Default **off**. Requires ``RAG_SYNC_URL`` + ``RAG_SYNC_TOKEN``, an explicit
+    ``RAG_SYNC_PUSH_ENABLED=1`` (or ``RAG_SYNC_PUSH_ON_INGEST=1``), and must not
+    be in a nightly offline window.
+    """
+    if sync_nightly_offline():
+        return False
     if resolve_sync_url() is None:
         return False
     if resolve_sync_token() is None:
         return False
-    raw = os.getenv("RAG_SYNC_PUSH_ENABLED", "1").strip().lower()
-    return raw not in {"0", "false", "no", "off"}
+    return sync_push_on_ingest_enabled()
 
 
 def _request_json(
@@ -120,14 +130,29 @@ class DiffPushClient:
         docs = body.get("documents") or {}
         return {str(k): str(v) for k, v in docs.items()}
 
-    def begin(self, manifest: ReleaseManifest) -> dict[str, Any]:
+    def begin(
+        self,
+        manifest: ReleaseManifest,
+        *,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
         """POST /sync/v1/push/begin."""
         return _request_json(
             "POST",
             self._url("sync/v1/push/begin"),
             token=self.token,
-            body={"manifest": manifest.to_dict()},
+            body={"manifest": manifest.to_dict(), "dry_run": bool(dry_run)},
             timeout=self.timeout,
+        )
+
+    def validate(self, release_id: str) -> dict[str, Any]:
+        """POST /sync/v1/push/validate (integrity only)."""
+        return _request_json(
+            "POST",
+            self._url("sync/v1/push/validate"),
+            token=self.token,
+            body={"release_id": release_id},
+            timeout=max(self.timeout, 300.0),
         )
 
     def put_chunk(self, release_id: str, chunk: PackedChunk) -> dict[str, Any]:
@@ -182,12 +207,16 @@ def build_and_push(
     writer_host: str | None = None,
     mark_published: bool = True,
     force_baseline: bool = False,
+    dry_run: bool = False,
 ) -> dict[str, Any]:
     """Diff against the reader, push chunks, commit. Returns a summary dict.
 
     No-op summary when there is nothing to publish. Raises ``DiffPushError`` on
-    transport/API failures.
+    transport/API failures. Manual CLI may call this even when auto-push is off.
     """
+    if sync_nightly_offline() and not dry_run:
+        raise DiffPushError("RAG_SYNC_NIGHTLY_OFFLINE=1; refusing live push")
+
     push = client
     if push is None:
         url = resolve_sync_url()
@@ -225,7 +254,7 @@ def build_and_push(
         manifest.qdrant_point_ids_upserted = point_ids
         manifest.qdrant_point_ids_deleted = list(manifest.catalog_doc_ids_deleted)
 
-    push.begin(manifest)
+    push.begin(manifest, dry_run=dry_run)
 
     root = Path(storage.root)
     blob_files: list[tuple[str, bytes, str]] = []
@@ -252,7 +281,7 @@ def build_and_push(
             )
         raise
 
-    if mark_published:
+    if mark_published and not dry_run and commit.get("status") == "committed":
         write_release_state(
             storage.root,
             release_id=manifest.release_id,
@@ -262,14 +291,15 @@ def build_and_push(
         )
 
     logger.info(
-        "Live sync pushed release=%s files=%s docs_upserted=%s",
+        "Live sync pushed release=%s files=%s docs_upserted=%s status=%s",
         manifest.release_id,
         len(manifest.files_added),
         len(manifest.catalog_doc_ids_upserted),
+        commit.get("status"),
     )
     return {
         **summarize_diff(manifest),
-        "pushed": True,
+        "pushed": commit.get("status") == "committed",
         "commit": commit,
         "writer_catalog_count": len(catalog_fingerprint(storage)),
     }

@@ -99,16 +99,18 @@ After a successful ingest batch, the **ingester** pushes a delta to the warm **r
 | Staging | Reader writes under `.sync/incoming/<release_id>/` |
 | Watermark | Reader `release.json` (`rag.publish.release_state`) |
 | Diff | `build_file_diff` + `catalog_fingerprint` |
-| Auth | Bearer **`RAG_SYNC_TOKEN`** (separate from MCP / `RAG_API_TOKEN`) |
-| Triggers | Post-ingest hook on ingester; optional `scripts/rag-diff-push.py`; cron as future safety-net |
+| Auth | Bearer **`RAG_SYNC_TOKEN`** (or **`RAG_SYNC_TOKEN_PREVIOUS`** during rotation); separate from MCP / `RAG_API_TOKEN` |
+| Triggers | Opt-in post-ingest hook (`RAG_SYNC_PUSH_ENABLED=1`); optional `scripts/rag-diff-push.py`; cron as future safety-net |
 | Soft rollback | Before apply, snapshot touched docs under `.sync/rollback/<release_id>/`; `POST /sync/v1/rollback/{release_id}` |
+| Dry-run | `dry_run` on begin (body/query) or `RAG_SYNC_DRY_RUN_ONLY=1`; commit → `dry_run_ok` / `dry_run_failed` (no mutations) |
 
-**Reader sync routes** (only useful when `APP_MODE=reader` + token set):
+**Reader sync routes** (active only when `APP_MODE=reader` **and** `RAG_SYNC_TOKEN` set; otherwise **404**):
 
 - `GET /sync/v1/watermark`
 - `GET /sync/v1/catalog` (`doc_id→sha256`)
-- `POST /sync/v1/push/begin` (manifest; `parent_release_id` must match watermark)
+- `POST /sync/v1/push/begin` (manifest; `parent_release_id` must match watermark; optional `dry_run`)
 - `PUT /sync/v1/push/chunk?release_id=…` (idempotent `(release_id, stage, seq)`)
+- `POST /sync/v1/push/validate` (assemble + integrity; does **not** advance watermark)
 - `POST /sync/v1/push/commit` / `abort`
 - `GET /sync/v1/push/status`
 
@@ -118,9 +120,12 @@ Normal write routes (`/upload`, `/ingest-json`, document mutate, …) stay **403
 
 | Name | Where | Role |
 | --- | --- | --- |
-| `RAG_SYNC_TOKEN` | Reader **and** ingester | Shared Bearer for `/sync/v1/*` |
+| `RAG_SYNC_TOKEN` | Reader **and** ingester | Shared Bearer for `/sync/v1/*` (unset → 404) |
+| `RAG_SYNC_TOKEN_PREVIOUS` | Reader (optional) | Previous Bearer accepted during rotation |
 | `RAG_SYNC_URL` | Ingester | Reader public origin (e.g. `https://reader.example.com`) |
-| `RAG_SYNC_PUSH_ENABLED` | Ingester | Default on when URL+token set; set `0` to disable auto-push |
+| `RAG_SYNC_PUSH_ENABLED` / `RAG_SYNC_PUSH_ON_INGEST` | Ingester | **Default off**; set `1` to enable post-ingest auto-push |
+| `RAG_SYNC_NIGHTLY_OFFLINE` | Ingester | Set `1` to suppress live push (quiet hours) |
+| `RAG_SYNC_DRY_RUN_ONLY` | Reader | Force every push session into dry-run |
 | `RAG_DATA_ROOT` | Both | Default `/data/rag` |
 | `MCP_API_TOKEN` / `RAG_API_TOKEN` | Ingester (and reader MCP) | **Not** used for sync |
 | `BGE_M3_NOVITA_API_KEY` (or fallbacks) | Ingester | Ingest embeddings while ingester runs |
@@ -128,11 +133,11 @@ Normal write routes (`/upload`, `/ingest-json`, document mutate, …) stay **403
 Operator loop with live push:
 
 1. **Start** ingester → ingest against the ingest URL.
-2. On success, the post-ingest hook (or `RAG_SKIP_DEFAULT_APP=1 python scripts/rag-diff-push.py --rag-root "$RAG_DATA_ROOT"`) pushes to `RAG_SYNC_URL`.
-3. Confirm reader `/health` (`release_id` advanced) and a sample search.
+2. With `RAG_SYNC_PUSH_ENABLED=1` (+ URL/token), the post-ingest hook pushes; or run `RAG_SKIP_DEFAULT_APP=1 python scripts/rag-diff-push.py --rag-root "$RAG_DATA_ROOT"` manually.
+3. Confirm reader `/health` (`release_id`, `sync_enabled`, `catalog_doc_count`) and a sample search.
 4. **Stop** the ingester again.
 
-**Cron (future / safety-net):** a scheduled `rag-diff-push.py` (or equivalent) can catch missed hooks; not required for the happy path.
+**Cron (future / safety-net):** a scheduled `rag-diff-push.py` (or equivalent) can catch missed hooks; not required for the happy path. Prefer setting `RAG_SYNC_NIGHTLY_OFFLINE=1` during quiet windows if auto-push is enabled.
 
 #### DR escape hatch: CLI stop-apply
 
@@ -251,7 +256,8 @@ Same tables as Coolify §4 below. Reader must have: `APP_MODE=reader`, `RAG_DATA
 2. Write to reader → **403** with writes-disabled detail.
 3. MCP on reader → read tools work; no write tools (or writes error clearly).
 4. Start ingester → `/health` `app_mode=ingester` → ingest one doc → live push (or CLI publish/apply) → reader search sees it → stop ingester → reader still healthy.
-5. With `RAG_SYNC_TOKEN` set on reader: `GET /sync/v1/watermark` with Bearer returns JSON (401 without token).
+5. With `RAG_SYNC_TOKEN` set on reader: `GET /sync/v1/watermark` with Bearer returns JSON (401 without/wrong token; **404** when token unset).
+6. `/health` includes `sync_enabled`, `sync_push_on_ingest`, `catalog_doc_count`, `qdrant_points`.
 
 ---
 
@@ -299,7 +305,9 @@ Public hostname: **`art-nouveau-rag.animarium.ai`** → Coolify reader. Ingester
 | --- | --- | --- | --- |
 | `MCP_API_TOKEN` | **yes** (or `RAG_API_TOKEN`) | **yes** | Preferred Bearer for `/mcp` + embed REST |
 | `RAG_API_TOKEN` | **yes** if MCP unset | **yes** | `POST /ingest-json`; MCP fallback |
-| `RAG_SYNC_TOKEN` | **yes** for live push | **yes** | Bearer for reader `/sync/v1/*` (not MCP) |
+| `RAG_SYNC_TOKEN` | **yes** for live push | **yes** | Bearer for reader `/sync/v1/*` (not MCP); unset → 404 |
+| `RAG_SYNC_TOKEN_PREVIOUS` | optional (rotation) | **yes** | Previous sync Bearer |
+
 | `BGE_M3_NOVITA_API_KEY` | **yes** when Novita used | **yes** | Preferred Novita key |
 | `NOVITA_API_KEY` | optional | **yes** | Fallback |
 | `OPENAI_TOKEN` / `OPENAI_API_KEY` | optional | **yes** | Last-resort embedding fallbacks |
@@ -329,7 +337,9 @@ Public hostname: **`art-nouveau-rag.animarium.ai`** → Coolify reader. Ingester
 | `MCP_DISABLE_DNS_REBINDING_PROTECTION` | avoid in prod | unset | |
 | `RAG_SKIP_DEFAULT_APP` | scripts only | unset in prod | |
 | `RAG_SYNC_URL` | ingester (live push) | reader origin URL | |
-| `RAG_SYNC_PUSH_ENABLED` | ingester optional | `1` when URL+token set | |
+| `RAG_SYNC_PUSH_ENABLED` / `RAG_SYNC_PUSH_ON_INGEST` | ingester optional | default **off**; set `1` to opt in | |
+| `RAG_SYNC_NIGHTLY_OFFLINE` | ingester optional | `1` suppresses push | |
+| `RAG_SYNC_DRY_RUN_ONLY` | reader optional | force dry-run commits | |
 
 ### Domain / clients (when DNS is created)
 

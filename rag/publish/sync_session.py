@@ -26,6 +26,8 @@ STATUS_RECEIVING = "receiving"
 STATUS_COMMITTING = "committing"
 STATUS_COMMITTED = "committed"
 STATUS_ABORTED = "aborted"
+STATUS_DRY_RUN_OK = "dry_run_ok"
+STATUS_DRY_RUN_FAILED = "dry_run_failed"
 
 
 def sync_incoming_root(rag_root: Path | str) -> Path:
@@ -83,6 +85,7 @@ def begin_session(
     rag_root: Path | str,
     *,
     manifest: ReleaseManifest,
+    dry_run: bool = False,
 ) -> dict[str, Any]:
     """Create or resume a receiving session for ``manifest.release_id``."""
     with _LOCK:
@@ -92,11 +95,17 @@ def begin_session(
                 raise ValueError(
                     f"release {manifest.release_id} already committed"
                 )
-            if existing.get("status") == STATUS_ABORTED:
-                # Allow re-begin after abort by clearing the tree.
-                shutil.rmtree(session_dir(rag_root, manifest.release_id), ignore_errors=True)
+            if existing.get("status") in {
+                STATUS_ABORTED,
+                STATUS_DRY_RUN_OK,
+                STATUS_DRY_RUN_FAILED,
+            }:
+                # Allow re-begin after abort / dry-run by clearing the tree.
+                shutil.rmtree(
+                    session_dir(rag_root, manifest.release_id), ignore_errors=True
+                )
             elif existing.get("status") in {STATUS_RECEIVING, STATUS_COMMITTING}:
-                # Idempotent begin: same release_id resumes.
+                # Idempotent begin: same release_id resumes (keep dry_run flag).
                 return existing
 
         root = session_dir(rag_root, manifest.release_id)
@@ -106,6 +115,7 @@ def begin_session(
             "release_id": manifest.release_id,
             "parent_release_id": manifest.parent_release_id,
             "status": STATUS_RECEIVING,
+            "dry_run": bool(dry_run),
             "begun_at": utc_now_iso(),
             "updated_at": utc_now_iso(),
             "manifest": manifest.to_dict(),

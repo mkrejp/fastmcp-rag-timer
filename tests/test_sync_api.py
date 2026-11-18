@@ -236,13 +236,13 @@ def test_live_push_commit_applies_files_and_points(
     assert commit2.json()["duplicate"] is True
 
 
-def test_sync_routes_forbidden_on_ingester(
+def test_sync_routes_inactive_on_ingester(
     rag_root: Path,
     accnt_root: Path,
     fake_embed: Callable[[str], list[float]],
     monkeypatch: MonkeyPatch,
 ) -> None:
-    """Non-reader modes reject sync even with a valid token."""
+    """Non-reader modes hide sync with 404 even with a valid token."""
     monkeypatch.setenv("APP_MODE", "ingester")
     monkeypatch.setenv("RAG_SYNC_TOKEN", SYNC_TOKEN)
     with patched_embeddings(fake_embed):
@@ -251,7 +251,175 @@ def test_sync_routes_forbidden_on_ingester(
         app = create_app(str(rag_root), accnt_data_root=str(accnt_root))
         with TestClient(app) as client:
             response = client.get("/sync/v1/watermark", headers=SYNC_HEADERS)
-            assert response.status_code == 403
+            assert response.status_code == 404
+
+
+def test_sync_token_unset_returns_404(
+    rag_root: Path,
+    accnt_root: Path,
+    fake_embed: Callable[[str], list[float]],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Without RAG_SYNC_TOKEN the sync surface is fully inactive (404)."""
+    monkeypatch.setenv("APP_MODE", "reader")
+    monkeypatch.setenv("EMBEDDING_PROVIDER_QUERY", "novita")
+    monkeypatch.delenv("RAG_SYNC_TOKEN", raising=False)
+    monkeypatch.delenv("RAG_SYNC_TOKEN_PREVIOUS", raising=False)
+    with patched_embeddings(fake_embed):
+        from rag.app import create_app
+
+        app = create_app(str(rag_root), accnt_data_root=str(accnt_root))
+        with TestClient(app) as client:
+            assert client.get("/sync/v1/watermark").status_code == 404
+            assert (
+                client.get(
+                    "/sync/v1/watermark",
+                    headers={"Authorization": "Bearer anything"},
+                ).status_code
+                == 404
+            )
+
+
+def test_previous_sync_token_accepted(
+    reader_sync_client: TestClient, monkeypatch: MonkeyPatch
+) -> None:
+    """RAG_SYNC_TOKEN_PREVIOUS is accepted during rotation."""
+    monkeypatch.setenv("RAG_SYNC_TOKEN", "current-token")
+    monkeypatch.setenv("RAG_SYNC_TOKEN_PREVIOUS", "previous-token")
+    # Fixture already set SYNC_TOKEN; override takes effect on next request.
+    ok = reader_sync_client.get(
+        "/sync/v1/watermark",
+        headers={"Authorization": "Bearer previous-token"},
+    )
+    assert ok.status_code == 200
+    cur = reader_sync_client.get(
+        "/sync/v1/watermark",
+        headers={"Authorization": "Bearer current-token"},
+    )
+    assert cur.status_code == 200
+    bad = reader_sync_client.get(
+        "/sync/v1/watermark",
+        headers={"Authorization": "Bearer wrong"},
+    )
+    assert bad.status_code == 401
+
+
+def test_dry_run_commit_does_not_advance_watermark(
+    reader_sync_client: TestClient,
+    rag_root: Path,
+    tmp_path: Path,
+) -> None:
+    """dry_run assembles/validates but leaves release.json and catalog untouched."""
+    writer = tmp_path / "writer-dry"
+    w = RagStorage(str(writer))
+    w.ensure_layout()
+    doc_id = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+    content = b"dry run payload"
+    w.save_original(doc_id, "dry.txt", content)
+    digest = hashlib.sha256(content).hexdigest()
+    w.write_processed(
+        doc_id=doc_id,
+        filename="dry.txt",
+        mime="text/plain",
+        sha256=digest,
+        fulltext="dry run payload",
+        chunks=[{"index": 0, "page": 0, "text": "dry run payload"}],
+        images=[],
+        status="ready",
+    )
+    w_client = open_qdrant_for_sync(w.qdrant_dir)
+    try:
+        _upsert_chunk(w_client, doc_id=doc_id, text="dry run payload")
+        records, point_ids = export_points_for_docs(w_client, [doc_id])
+    finally:
+        w_client.close()
+
+    before = read_release_state(rag_root)
+    manifest = build_file_diff(w, parent_release_id=None, reader_catalog={})
+    manifest.qdrant_point_ids_upserted = point_ids
+
+    begin = reader_sync_client.post(
+        "/sync/v1/push/begin",
+        headers=SYNC_HEADERS,
+        json={"manifest": manifest.to_dict(), "dry_run": True},
+    )
+    assert begin.status_code == 200, begin.text
+    assert begin.json()["dry_run"] is True
+
+    blob_files = [
+        (change.path, (writer / change.path).read_bytes(), change.sha256)
+        for change in manifest.files_added
+    ]
+    for chunk in pack_blob_chunks(manifest.release_id, blob_files):
+        put = reader_sync_client.put(
+            f"/sync/v1/push/chunk?release_id={manifest.release_id}",
+            headers=SYNC_HEADERS,
+            content=chunk.encode(),
+        )
+        assert put.status_code == 200, put.text
+    for chunk in pack_points_chunks(manifest.release_id, records):
+        put = reader_sync_client.put(
+            f"/sync/v1/push/chunk?release_id={manifest.release_id}",
+            headers=SYNC_HEADERS,
+            content=chunk.encode(),
+        )
+        assert put.status_code == 200, put.text
+
+    validate = reader_sync_client.post(
+        "/sync/v1/push/validate",
+        headers=SYNC_HEADERS,
+        json={"release_id": manifest.release_id},
+    )
+    assert validate.status_code == 200, validate.text
+    assert validate.json()["validate"]["ok"] is True
+
+    commit = reader_sync_client.post(
+        "/sync/v1/push/commit",
+        headers=SYNC_HEADERS,
+        json={"release_id": manifest.release_id},
+    )
+    assert commit.status_code == 200, commit.text
+    assert commit.json()["status"] == "dry_run_ok"
+
+    after = read_release_state(rag_root)
+    assert after == before
+    assert RagStorage(str(rag_root)).read_fulltext(doc_id) is None
+
+
+def test_first_push_parent_null_ok(
+    reader_sync_client: TestClient,
+) -> None:
+    """Null watermark accepts parent_release_id=null on first begin."""
+    body = {
+        "manifest": {
+            "release_id": "first-baseline-rel",
+            "parent_release_id": None,
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "files_added": [],
+            "files_deleted": [],
+            "catalog_doc_ids_upserted": [],
+            "catalog_doc_ids_deleted": [],
+        }
+    }
+    response = reader_sync_client.post(
+        "/sync/v1/push/begin", headers=SYNC_HEADERS, json=body
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["parent_release_id"] is None
+
+
+def test_reader_health_exposes_sync_fields(reader_sync_client: TestClient) -> None:
+    """Health includes sync/catalog/qdrant additive fields."""
+    response = reader_sync_client.get("/health")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["app_mode"] == "reader"
+    assert body["writes_enabled"] is False
+    assert "release_id" in body
+    assert body["catalog_doc_count"] == 0
+    assert isinstance(body["qdrant_points"], dict)
+    assert body["sync_enabled"] is True
+    assert body["sync_push_on_ingest"] is False
 
 
 def test_apply_qdrant_with_existing_client(tmp_path: Path) -> None:

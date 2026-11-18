@@ -249,10 +249,30 @@ def resolve_mcp_token() -> str | None:
 def resolve_sync_token() -> str | None:
     """Bearer token for reader live sync API (``RAG_SYNC_TOKEN``).
 
-    Separate from MCP/API tokens. ``None`` means sync routes fail closed.
+    Separate from MCP/API tokens. ``None`` means sync routes are inactive (404).
     """
     value = (os.getenv("RAG_SYNC_TOKEN") or "").strip()
     return value or None
+
+
+def resolve_sync_token_previous() -> str | None:
+    """Previous sync Bearer for rotation (``RAG_SYNC_TOKEN_PREVIOUS``)."""
+    value = (os.getenv("RAG_SYNC_TOKEN_PREVIOUS") or "").strip()
+    return value or None
+
+
+def accepted_sync_tokens() -> tuple[str, ...]:
+    """Return current and previous sync tokens (deduped, non-empty)."""
+    tokens: list[str] = []
+    for value in (resolve_sync_token(), resolve_sync_token_previous()):
+        if value and value not in tokens:
+            tokens.append(value)
+    return tuple(tokens)
+
+
+def sync_api_enabled() -> bool:
+    """Return whether the reader sync API is configured (any accepted token)."""
+    return bool(accepted_sync_tokens())
 
 
 def resolve_sync_url() -> str | None:
@@ -262,6 +282,36 @@ def resolve_sync_url() -> str | None:
     """
     value = (os.getenv("RAG_SYNC_URL") or "").strip().rstrip("/")
     return value or None
+
+
+def _bool_env_default_false(name: str) -> bool:
+    """Return whether an env flag is enabled (default false)."""
+    raw = os.getenv(name, "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def sync_push_on_ingest_enabled() -> bool:
+    """Return whether post-ingest auto-push is opted in.
+
+    Default **off**. Enable with ``RAG_SYNC_PUSH_ENABLED=1`` or
+    ``RAG_SYNC_PUSH_ON_INGEST=1``. Still requires URL + token and is skipped
+    during nightly offline windows.
+    """
+    if _bool_env_default_false("RAG_SYNC_PUSH_ENABLED"):
+        return True
+    if _bool_env_default_false("RAG_SYNC_PUSH_ON_INGEST"):
+        return True
+    return False
+
+
+def sync_nightly_offline() -> bool:
+    """Return whether live push is suppressed (``RAG_SYNC_NIGHTLY_OFFLINE=1``)."""
+    return _bool_env_default_false("RAG_SYNC_NIGHTLY_OFFLINE")
+
+
+def sync_dry_run_only() -> bool:
+    """When true, reader forces every push session into dry-run mode."""
+    return _bool_env_default_false("RAG_SYNC_DRY_RUN_ONLY")
 
 
 FIGURE_INDEX_VERSION = 1
