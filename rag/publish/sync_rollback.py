@@ -1,8 +1,9 @@
 """Soft rollback snapshots for live sync applies (v1).
 
-Before applying a push, copy touched document trees and export their Qdrant
-points under ``.sync/rollback/<release_id>/``. Restore is optional (library /
-endpoint) and does not re-embed.
+Before applying a push, copy touched document trees, export their Qdrant
+points, and snapshot ``release.json`` under ``.sync/rollback/<release_id>/``.
+Restore puts docs, vectors, **and the previous watermark** back so the next
+push can continue from the pre-commit parent.
 """
 
 from __future__ import annotations
@@ -19,9 +20,11 @@ from rag.publish.qdrant_sync import (
     POINTS_REL_PATH,
     delete_points_for_docs,
     export_points_for_docs,
+    read_points_jsonl,
     upsert_point_records,
     write_points_jsonl,
 )
+from rag.publish.release_state import RELEASE_STATE_NAME, read_release_state
 from rag.publish.sync_constants import ROLLBACK_DIR_NAME, SYNC_DIR_NAME
 from rag.storage import RagStorage, utc_now_iso
 
@@ -42,10 +45,10 @@ def snapshot_touched_docs(
     release_id: str,
     doc_ids: Sequence[str],
 ) -> Path:
-    """Snapshot files + points for ``doc_ids`` before a sync apply.
+    """Snapshot files, points, and ``release.json`` before a sync apply.
 
-    Empty ``doc_ids`` still writes a meta marker so commit can record that no
-    snapshot was needed.
+    Empty ``doc_ids`` still writes a meta marker (and watermark snapshot) so
+    commit can record that no document trees needed copying.
     """
     root = Path(rag_root)
     dest = rollback_root(root, release_id)
@@ -76,6 +79,13 @@ def snapshot_touched_docs(
         shutil.copy2(index_src, files_root / "index.json")
         copied_paths.append("index.json")
 
+    # Capture pre-commit watermark so rollback can restore parent_release_id.
+    prior_release = read_release_state(root)
+    release_src = root / RELEASE_STATE_NAME
+    had_release_json = release_src.is_file()
+    if had_release_json:
+        shutil.copy2(release_src, dest / RELEASE_STATE_NAME)
+
     records, point_ids = export_points_for_docs(client, unique)
     write_points_jsonl(dest / POINTS_REL_PATH, records)
 
@@ -86,16 +96,24 @@ def snapshot_touched_docs(
         "files_copied": copied_paths,
         "point_ids": point_ids,
         "points_count": len(records),
+        "had_release_json": had_release_json,
+        "prior_release_id": (
+            prior_release.get("release_id") if prior_release else None
+        ),
+        "prior_parent_release_id": (
+            prior_release.get("parent_release_id") if prior_release else None
+        ),
     }
     (dest / META_NAME).write_text(
         json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
     logger.info(
-        "Rollback snapshot release=%s docs=%s files=%s points=%s",
+        "Rollback snapshot release=%s docs=%s files=%s points=%s prior_release=%s",
         release_id,
         len(unique),
         len(copied_paths),
         len(records),
+        meta["prior_release_id"],
     )
     return dest
 
@@ -106,10 +124,11 @@ def restore_rollback(
     client: QdrantClient,
     release_id: str,
 ) -> dict[str, Any]:
-    """Restore files + points from a soft rollback snapshot.
+    """Restore files, points, and ``release.json`` from a soft rollback snapshot.
 
-    Replaces current trees for snapshotted doc ids and re-upserts exported
-    points (after deleting current points for those docs).
+    Replaces current trees for snapshotted doc ids, re-upserts exported
+    points (after deleting current points for those docs), and restores the
+    pre-commit watermark atomically with the filesystem copy.
     """
     root = Path(rag_root)
     snap = rollback_root(root, release_id)
@@ -141,13 +160,25 @@ def restore_rollback(
         shutil.copy2(index_snap, root / "index.json")
 
     points_path = snap / POINTS_REL_PATH
-    records = []
+    records: list[dict[str, Any]] = []
     if points_path.is_file():
-        from rag.publish.qdrant_sync import read_points_jsonl
-
         records = read_points_jsonl(points_path)
     deleted = delete_points_for_docs(client, doc_ids) if doc_ids else 0
     written = upsert_point_records(client, records) if records else 0
+
+    # Restore pre-commit watermark (or clear it if the snapshot had none).
+    release_dest = root / RELEASE_STATE_NAME
+    release_snap = snap / RELEASE_STATE_NAME
+    had_release = bool(meta.get("had_release_json"))
+    if had_release and release_snap.is_file():
+        tmp = release_dest.with_suffix(".json.tmp")
+        tmp.write_bytes(release_snap.read_bytes())
+        tmp.replace(release_dest)
+        restored_wm = read_release_state(root)
+    else:
+        if release_dest.exists():
+            release_dest.unlink()
+        restored_wm = None
 
     # Refresh catalog from restored processed metas when possible.
     storage = RagStorage(str(root))
@@ -159,6 +190,11 @@ def restore_rollback(
         "points_deleted": deleted,
         "points_upserted": written,
         "restored_at": utc_now_iso(),
+        "watermark_restored": restored_wm is not None or not had_release,
+        "restored_release_id": (restored_wm.get("release_id") if restored_wm else None),
+        "restored_parent_release_id": (
+            restored_wm.get("parent_release_id") if restored_wm else None
+        ),
     }
     logger.info("Restored rollback %s: %s", release_id, result)
     return result

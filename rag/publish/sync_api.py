@@ -48,6 +48,7 @@ from rag.publish.sync_session import (
     STATUS_DRY_RUN_FAILED,
     STATUS_DRY_RUN_OK,
     STATUS_RECEIVING,
+    PushConflictError,
     abort_session,
     active_sessions,
     begin_session,
@@ -286,6 +287,14 @@ def push_begin(
             manifest=manifest,
             dry_run=effective_dry_run,
         )
+    except PushConflictError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": str(exc),
+                "active_release_id": exc.active_release_id,
+            },
+        ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
