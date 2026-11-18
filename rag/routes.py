@@ -48,7 +48,9 @@ from rag.document_replace import (
     restore_document_version,
 )
 from rag.document_supersede import supersede_document, unsupersede_document
+from rag.app_mode import app_mode_status
 from rag.embeddings import embedding_provider_status, validate_embedding_configuration
+from rag.publish.release_state import read_release_state
 from rag.google_oauth import current_user
 from rag.image_delivery import resolve_image_delivery
 from rag.image_embed import image_embedding_enabled
@@ -413,11 +415,15 @@ def health(request: Request) -> dict[str, object]:
     """Liveness probe for container orchestration."""
     try:
         validate_embedding_configuration()
+        storage = _storage(request)
+        release = read_release_state(storage.root)
         body: dict[str, object] = {
             "status": "ok",
             "rag_data_root": _rag_data_root(request),
             "embeddings": embedding_provider_status(),
             "image_embedding_enabled": image_embedding_enabled(),
+            **app_mode_status(),
+            "release_id": release.get("release_id") if release else None,
         }
         _record_http(route="health", ok=True)
         return body

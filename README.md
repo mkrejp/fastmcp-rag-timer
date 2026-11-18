@@ -34,11 +34,12 @@ in any backup or restore of `/data/rag`; there is no in-repo backup tooling.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `PORT` | `8080` | uvicorn listen port (`HOST` is always `0.0.0.0`) |
+| `APP_MODE` / `RAG_APP_MODE` | `all` | Process role: `all` (monolith), `reader` (ČTENÍ, writes blocked), `ingester` (ZÁPIS). Portable to Railway or VPS — see [Split deploy](docs/SPLIT_DEPLOY.md) |
 | `RAG_DATA_ROOT` | `/data/rag` | Persistent originals, processed text, Qdrant, upload staging |
 | `ACCNT_DATA_ROOT` | `/data/accnt` | Per-day token/comms accounting rollups and event logs |
 | `EMBEDDING_PROVIDER` | `novita` (when unset) | Default for ingest/query when the path-specific vars are unset |
 | `EMBEDDING_PROVIDER_INGEST` | falls back to `EMBEDDING_PROVIDER` | Ingest / OCR indexing (`novita` or `fastembed`, BGE-M3 1024) |
-| `EMBEDDING_PROVIDER_QUERY` | falls back to `EMBEDDING_PROVIDER` | Search paths only; **must be `fastembed`** (alias: `EMBEDDING_PROVIDER_SEARCH`) |
+| `EMBEDDING_PROVIDER_QUERY` | falls back to `EMBEDDING_PROVIDER` (reader → `novita`) | Search: `novita` or `fastembed` (alias: `EMBEDDING_PROVIDER_SEARCH`). Prefer `novita` on &lt;4GB readers |
 | `FASTEMBED_CACHE_PATH` | `{RAG_DATA_ROOT}/fastembed` | ONNX cache for local BGE-M3 (query always uses this backend) |
 | `IMAGE_EMBEDDING_ENABLED` | `false` | Load CLIP and index/search `image_vector` (adds RAM beside BGE-M3) |
 | `IMAGE_EMBEDDING_CACHE_PATH` | `{RAG_DATA_ROOT}/clip` | ONNX cache for CLIP ViT-B/32 vision + text towers |

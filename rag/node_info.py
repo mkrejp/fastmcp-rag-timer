@@ -163,10 +163,15 @@ def writes_allowed_for(roles: Iterable[str]) -> bool:
 
 
 def enforce_node_role() -> bool:
-    """Return whether write endpoints should honor ``RAG_NODE_ROLE``.
+    """Return whether write endpoints should honor node roles.
 
-    ``RAG_ENFORCE_NODE_ROLE`` is off by default so current behaviour is unchanged.
+    ``APP_MODE=reader`` always enforces ČTENÍ (writes blocked). Otherwise
+    ``RAG_ENFORCE_NODE_ROLE`` is off by default so monolith behaviour is unchanged.
     """
+    from rag.app_mode import is_reader_mode
+
+    if is_reader_mode():
+        return True
     raw = os.getenv("RAG_ENFORCE_NODE_ROLE", "").strip().lower()
     return raw in {"1", "true", "yes", "on"}
 
@@ -341,12 +346,24 @@ def parse_rag_nodes(raw: str | None = None) -> tuple[NodeSpec, ...]:
 
 
 def resolve_node_role_override() -> frozenset[str] | None:
-    """Return ``RAG_NODE_ROLE`` as canonical roles, or ``None`` if unset."""
+    """Return effective role override from env / ``APP_MODE``.
+
+    Explicit ``RAG_NODE_ROLE`` wins. ``APP_MODE=reader`` forces ČTENÍ when
+    unset. ``APP_MODE=ingester`` forces ZÁPIS+ČTENÍ when unset so publishes
+    and verification search both work on the writer process.
+    """
     raw = os.getenv("RAG_NODE_ROLE", "").strip()
-    if not raw:
-        return None
-    parsed = parse_roles(raw, default=frozenset())
-    return parsed or None
+    if raw:
+        parsed = parse_roles(raw, default=frozenset())
+        return parsed or None
+    from rag.app_mode import resolve_app_mode
+
+    mode = resolve_app_mode()
+    if mode == "reader":
+        return frozenset({ROLE_READ})
+    if mode == "ingester":
+        return frozenset({ROLE_WRITE, ROLE_READ})
+    return None
 
 
 def resolve_node_name_override() -> str | None:

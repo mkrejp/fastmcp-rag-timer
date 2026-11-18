@@ -1,0 +1,42 @@
+# Example VPS compose — either role can run here.
+# Copy and set env files; mount a host path at /data.
+services:
+  rag-reader:
+    image: ghcr.io/example/fastmcp-rag-timer:reader
+    build:
+      context: ../..
+      dockerfile: Dockerfile.reader
+    ports:
+      - "8080:8080"
+    environment:
+      APP_MODE: reader
+      RAG_DATA_ROOT: /data/rag
+      ACCNT_DATA_ROOT: /data/accnt
+      EMBEDDING_PROVIDER_QUERY: novita
+      IMAGE_EMBEDDING_ENABLED: "false"
+      PUBLIC_BASE_URL: https://art-nouveau-rag.animarium.ai
+      MCP_ALLOWED_HOSTS: art-nouveau-rag.animarium.ai,localhost,localhost:*,127.0.0.1,127.0.0.1:*
+      # BGE_M3_NOVITA_API_KEY / MCP_API_TOKEN from host env or secrets
+    volumes:
+      - /data:/data
+    restart: unless-stopped
+
+  rag-ingester:
+    image: ghcr.io/example/fastmcp-rag-timer:ingester
+    build:
+      context: ../..
+      dockerfile: Dockerfile.ingester
+    profiles: ["ingester"]
+    ports:
+      - "8081:8080"
+    environment:
+      APP_MODE: ingester
+      RAG_DATA_ROOT: /data/rag-ingest
+      ACCNT_DATA_ROOT: /data/accnt-ingest
+      EMBEDDING_PROVIDER_INGEST: novita
+      EMBEDDING_PROVIDER_QUERY: novita
+      PUBLIC_BASE_URL: https://art-nouveau-rag-ingest.animarium.ai
+      MCP_ALLOWED_HOSTS: art-nouveau-rag-ingest.animarium.ai,localhost,localhost:*,127.0.0.1,127.0.0.1:*
+    volumes:
+      - /data:/data
+    restart: "no"

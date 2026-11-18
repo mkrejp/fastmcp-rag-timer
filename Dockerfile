@@ -32,9 +32,10 @@ RUN uv pip install --system \
     itsdangerous \
     fastembed
 
-COPY main.py ./
+COPY main.py reader_main.py ingester_main.py ./
 COPY rag ./rag
 COPY static ./static
+COPY scripts ./scripts
 
 # HTTP + MCP listen port metadata (runtime PORT defaults to 8080)
 EXPOSE 8080
@@ -42,5 +43,7 @@ EXPOSE 8080
 # Railway mounts a volume at /data; RAG artifacts live under /data/rag at runtime.
 # Do not declare Docker VOLUME — Railway rejects it; use the service volume mount instead.
 ENV RAG_DATA_ROOT=/data/rag
+# Monolith default; override with APP_MODE=reader|ingester or use Dockerfile.reader/.ingester
+ENV APP_MODE=all
 
 CMD ["python", "main.py"]

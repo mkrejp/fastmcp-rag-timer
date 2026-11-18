@@ -11,6 +11,7 @@ from mcp.types import ImageContent, TextContent
 from qdrant_client import QdrantClient
 
 from rag.accounting import accounting_source, get_global_store
+from rag.app_mode import mcp_include_write_tools
 from rag.config import COLLECTION_NAME, resolve_public_base_url
 from rag.document_delete import DocumentNotFoundError
 from rag.document_patch import (
@@ -235,8 +236,28 @@ def register_mcp_tools(
     storage: RagStorage,
     qdrant: QdrantClient,
     collection_name: str = COLLECTION_NAME,
+    include_write_tools: bool | None = None,
 ) -> None:
-    """Register curated MCP tools against the given storage and vector index."""
+    """Register curated MCP tools against the given storage and vector index.
+
+    When ``include_write_tools`` is false (default for ``APP_MODE=reader``),
+    mutating tools are omitted from the MCP surface entirely.
+    """
+    register_writes = (
+        mcp_include_write_tools()
+        if include_write_tools is None
+        else include_write_tools
+    )
+
+    def write_tool() -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+        """Register ``fn`` as an MCP tool only when write tools are enabled."""
+
+        def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
+            if register_writes:
+                return mcp.tool()(fn)
+            return fn
+
+        return decorator
 
     @mcp.tool()
     def list_documents(since: str = "") -> str:
@@ -501,7 +522,7 @@ def register_mcp_tools(
             fn=_body,
         )
 
-    @mcp.tool()
+    @write_tool()
     def ingest_text(
         filename: str,
         content: str,
@@ -533,7 +554,7 @@ def register_mcp_tools(
             fn=_body,
         )
 
-    @mcp.tool()
+    @write_tool()
     def update_document(
         doc_id: str,
         filename: str = "",
@@ -576,7 +597,7 @@ def register_mcp_tools(
             fn=_body,
         )
 
-    @mcp.tool()
+    @write_tool()
     def update_document_metadata(
         doc_id: str,
         metadata: dict[str, Any] | None = None,
@@ -619,7 +640,7 @@ def register_mcp_tools(
             fn=_body,
         )
 
-    @mcp.tool()
+    @write_tool()
     def supersede_document(
         old_doc_id: str,
         new_doc_id: str,
@@ -659,7 +680,7 @@ def register_mcp_tools(
             fn=_body,
         )
 
-    @mcp.tool()
+    @write_tool()
     def unsupersede_document(old_doc_id: str) -> str:
         """Atomically remove a supersession link from ``old_doc_id``.
 
@@ -1001,7 +1022,7 @@ def register_mcp_tools(
             fn=_body,
         )
 
-    @mcp.tool()
+    @write_tool()
     def link_locality(links: list[dict[str, Any]]) -> str:
         """Upsert document-municipality links into the payload-only locality_links collection.
 
@@ -1091,7 +1112,7 @@ def register_mcp_tools(
             fn=_body,
         )
 
-    @mcp.tool()
+    @write_tool()
     def verify_link(
         link_id: str,
         status: str,
@@ -1156,7 +1177,7 @@ def register_mcp_tools(
             fn=_body,
         )
 
-    @mcp.tool()
+    @write_tool()
     def verify_image_record(
         point_id: str = "",
         doc_id: str = "",
@@ -1234,7 +1255,7 @@ def register_mcp_tools(
             fn=_body,
         )
 
-    @mcp.tool()
+    @write_tool()
     def refine_geo(
         doc_id: str,
         geo_refined: dict[str, Any],
@@ -1279,7 +1300,7 @@ def register_mcp_tools(
             fn=_body,
         )
 
-    @mcp.tool()
+    @write_tool()
     def refine_geo_batch(
         items: list[dict[str, Any]],
         dry_run: bool = True,
@@ -1385,7 +1406,7 @@ def register_mcp_tools(
             fn=_body,
         )
 
-    @mcp.tool()
+    @write_tool()
     def reindex_figures(
         doc_id: str = "",
         all: bool = False,
@@ -1444,7 +1465,7 @@ def register_mcp_tools(
             fn=_body,
         )
 
-    @mcp.tool()
+    @write_tool()
     def sync_links_to_trails(dry_run: bool = False) -> str:
         """Backfill all locality_links points to TrailsAssemblage (idempotent).
 

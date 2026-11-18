@@ -15,7 +15,7 @@ from rag.config import resolve_rag_data_root
 from rag.logging_setup import get_logger
 
 EmbeddingProvider = Literal["novita", "fastembed"]
-QueryEmbeddingProvider = Literal["fastembed"]
+QueryEmbeddingProvider = EmbeddingProvider
 
 DEFAULT_EMBEDDING_PROVIDER: EmbeddingProvider = "novita"
 SUPPORTED_EMBEDDING_PROVIDERS: tuple[EmbeddingProvider, ...] = ("novita", "fastembed")
@@ -76,39 +76,55 @@ def resolve_embedding_provider_ingest() -> EmbeddingProvider:
 
 
 def resolve_embedding_provider_query_unvalidated() -> EmbeddingProvider:
-    """Return the query provider before startup validation."""
+    """Return the query provider before startup validation.
+
+    Explicit ``EMBEDDING_PROVIDER_QUERY`` / ``SEARCH`` win. Otherwise a
+    ``reader`` process defaults to Novita (no local BGE-M3 RAM). Other modes
+    fall back to ``EMBEDDING_PROVIDER``.
+    """
     for name in ("EMBEDDING_PROVIDER_QUERY", "EMBEDDING_PROVIDER_SEARCH"):
         parsed = _parse_provider_env(name)
         if parsed is not None:
             return parsed
+    # Local import avoids a cycle: app_mode does not import embeddings.
+    from rag.app_mode import is_reader_mode
+
+    if is_reader_mode():
+        return "novita"
     return resolve_embedding_provider()
 
 
 def validate_embedding_configuration() -> None:
-    """Refuse startup when search would use a remote provider or text spaces mismatch."""
+    """Refuse startup when ingest/query dims mismatch or providers are unknown."""
     ingest = resolve_embedding_provider_ingest()
     query = resolve_embedding_provider_query_unvalidated()
-    if query != "fastembed":
+    if query not in SUPPORTED_EMBEDDING_PROVIDERS:
         raise ValueError(
-            "Search paths must use local fastembed (BAAI/bge-m3, 1024-dim). "
-            f"Resolved EMBEDDING_PROVIDER_QUERY/SEARCH={query!r}. "
-            "Set EMBEDDING_PROVIDER_QUERY=fastembed (ingest may stay novita)."
-        )
-    ingest_dim = provider_text_dim(ingest)
-    query_dim = provider_text_dim("fastembed")
-    if ingest_dim != query_dim:
-        raise ValueError(
-            f"Ingest provider {ingest!r} uses {ingest_dim}-dim text vectors but "
-            f"query fastembed uses {query_dim}-dim. Both must be BGE-M3 1024."
+            "Search paths must use novita or fastembed (BGE-M3, 1024-dim). "
+            f"Resolved EMBEDDING_PROVIDER_QUERY/SEARCH={query!r}."
         )
     if ingest not in SUPPORTED_EMBEDDING_PROVIDERS:
         raise ValueError(f"Unsupported ingest provider: {ingest!r}")
+    ingest_dim = provider_text_dim(ingest)
+    query_dim = provider_text_dim(query)
+    if ingest_dim != query_dim:
+        raise ValueError(
+            f"Ingest provider {ingest!r} uses {ingest_dim}-dim text vectors but "
+            f"query {query!r} uses {query_dim}-dim. Both must be BGE-M3 1024."
+        )
+    from rag.app_mode import is_reader_mode
+
+    if is_reader_mode() and query == "fastembed":
+        logger.warning(
+            "APP_MODE=reader with EMBEDDING_PROVIDER_QUERY=fastembed loads local "
+            "BGE-M3 (~4GB+ RAM peak); prefer novita on <4GB hosts."
+        )
 
 
 def resolve_embedding_provider_query() -> QueryEmbeddingProvider:
-    """Return the query embedding backend (always local fastembed after validation)."""
+    """Return the query embedding backend after validation."""
     validate_embedding_configuration()
-    return "fastembed"
+    return cast(QueryEmbeddingProvider, resolve_embedding_provider_query_unvalidated())
 
 
 def provider_text_dim(provider: EmbeddingProvider) -> int:
@@ -135,8 +151,8 @@ def embedding_provider_status() -> dict[str, str | int | None]:
         "ingest_model": provider_text_model(ingest),
         "ingest_dim": provider_text_dim(ingest),
         "query_provider": query,
-        "query_model": provider_text_model("fastembed"),
-        "query_dim": provider_text_dim("fastembed"),
+        "query_model": provider_text_model(query),
+        "query_dim": provider_text_dim(query),
         "text_model_family": BGE_M3_MODEL_FAMILY,
     }
 
@@ -444,16 +460,24 @@ def get_ingest_embedding(text: str, *, api_key: str | None = None) -> list[float
 
 
 def get_query_embeddings(texts: Sequence[str]) -> list[list[float]]:
-    """Embed ``texts`` on the search path (local fastembed only; no outbound tokens)."""
+    """Embed ``texts`` on the search path (``EMBEDDING_PROVIDER_QUERY``).
+
+    ``fastembed`` stays local (no outbound embedding tokens). ``novita`` uses
+    the HTTP API so low-RAM readers need not load BGE-M3 ONNX.
+    """
     if not texts:
         return []
-    validate_embedding_configuration()
-    expected = provider_text_dim("fastembed")
-    return _get_fastembed_embeddings(texts, expected_dim=expected)
+    provider = resolve_embedding_provider_query()
+    expected = provider_text_dim(provider)
+    if provider == "fastembed":
+        return _get_fastembed_embeddings(texts, expected_dim=expected)
+    return [
+        _get_novita_embedding(text, expected_dim=expected) for text in texts
+    ]
 
 
 def get_query_embedding(text: str) -> list[float]:
-    """Embed one query string with local fastembed (MCP/HTTP search)."""
+    """Embed one query string for MCP/HTTP search."""
     return get_query_embeddings([text])[0]
 
 
