@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from qdrant_client import QdrantClient
 from qdrant_client.models import PointStruct
 
 from rag.config import COLLECTION_NAME
@@ -25,7 +26,7 @@ from rag.vectorstore import IMAGE_VECTOR_NAME, TEXT_VECTOR_NAME
 
 
 def _upsert_chunk(
-    client: object,
+    client: QdrantClient,
     *,
     doc_id: str,
     text: str,

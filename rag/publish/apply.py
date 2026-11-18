@@ -54,21 +54,20 @@ def apply_file_release(
 
     qdrant_stats: dict[str, Any] = {}
     if sync_qdrant:
-        points_path = (
+        candidate = (
             Path(points_jsonl)
             if points_jsonl is not None
             else blobs.parent / POINTS_REL_PATH
         )
-        has_points = points_path.is_file()
-        if not has_points:
-            points_path = None
-            if manifest.catalog_doc_ids_upserted:
-                logger.warning(
-                    "Release %s has upserted docs but no %s; "
-                    "file/catalog applied without vector upsert",
-                    manifest.release_id,
-                    POINTS_REL_PATH,
-                )
+        has_points = candidate.is_file()
+        points_path: Path | None = candidate if has_points else None
+        if not has_points and manifest.catalog_doc_ids_upserted:
+            logger.warning(
+                "Release %s has upserted docs but no %s; "
+                "file/catalog applied without vector upsert",
+                manifest.release_id,
+                POINTS_REL_PATH,
+            )
         # Only purge upserted docs when we also have replacement points.
         upsert_ids = list(manifest.catalog_doc_ids_upserted) if has_points else []
         delete_ids = list(manifest.catalog_doc_ids_deleted)
