@@ -433,6 +433,253 @@ def test_reader_health_exposes_sync_fields(reader_sync_client: TestClient) -> No
     assert body["sync_push_on_ingest"] is False
 
 
+def test_second_begin_different_release_conflicts(
+    reader_sync_client: TestClient,
+) -> None:
+    """Global push mutex: second begin with another release_id returns 409."""
+    first: dict[str, Any] = {
+        "manifest": {
+            "release_id": "active-rel-1",
+            "parent_release_id": None,
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "files_added": [],
+            "files_deleted": [],
+            "catalog_doc_ids_upserted": [],
+            "catalog_doc_ids_deleted": [],
+        }
+    }
+    ok = reader_sync_client.post(
+        "/sync/v1/push/begin", headers=SYNC_HEADERS, json=first
+    )
+    assert ok.status_code == 200, ok.text
+
+    second: dict[str, Any] = {
+        "manifest": {
+            "release_id": "active-rel-2",
+            "parent_release_id": None,
+            "created_at": "2026-01-01T00:00:01+00:00",
+            "files_added": [],
+            "files_deleted": [],
+            "catalog_doc_ids_upserted": [],
+            "catalog_doc_ids_deleted": [],
+        }
+    }
+    conflict = reader_sync_client.post(
+        "/sync/v1/push/begin", headers=SYNC_HEADERS, json=second
+    )
+    assert conflict.status_code == 409, conflict.text
+    detail = conflict.json()["detail"]
+    assert detail["active_release_id"] == "active-rel-1"
+
+    # Same release_id remains idempotent.
+    resume = reader_sync_client.post(
+        "/sync/v1/push/begin", headers=SYNC_HEADERS, json=first
+    )
+    assert resume.status_code == 200, resume.text
+
+
+def test_rollback_restores_watermark_for_next_begin(
+    reader_sync_client: TestClient,
+    rag_root: Path,
+    tmp_path: Path,
+) -> None:
+    """After commit+rollback, release.json matches pre-commit parent."""
+    write_release_state(rag_root, release_id="prior-wm", parent_release_id=None)
+    writer = tmp_path / "writer-rb"
+    w = RagStorage(str(writer))
+    w.ensure_layout()
+    doc_id = "dddddddd-dddd-dddd-dddd-dddddddddddd"
+    content = b"rollback payload"
+    w.save_original(doc_id, "rb.txt", content)
+    digest = hashlib.sha256(content).hexdigest()
+    w.write_processed(
+        doc_id=doc_id,
+        filename="rb.txt",
+        mime="text/plain",
+        sha256=digest,
+        fulltext="rollback payload",
+        chunks=[{"index": 0, "page": 0, "text": "rollback payload"}],
+        images=[],
+        status="ready",
+    )
+    w_client = open_qdrant_for_sync(w.qdrant_dir)
+    try:
+        _upsert_chunk(w_client, doc_id=doc_id, text="rollback payload")
+        records, point_ids = export_points_for_docs(w_client, [doc_id])
+    finally:
+        w_client.close()
+
+    # Parent must match current watermark.
+    manifest = build_file_diff(
+        w,
+        parent_release_id="prior-wm",
+        reader_catalog=catalog_fingerprint(RagStorage(str(rag_root))),
+    )
+    manifest.qdrant_point_ids_upserted = point_ids
+    begin = reader_sync_client.post(
+        "/sync/v1/push/begin",
+        headers=SYNC_HEADERS,
+        json={"manifest": manifest.to_dict()},
+    )
+    assert begin.status_code == 200, begin.text
+    _upload_release_chunks(
+        reader_sync_client,
+        writer_root=writer,
+        manifest=manifest,
+        records=records,
+        expect_first_blob_unique=False,
+    )
+    commit = reader_sync_client.post(
+        "/sync/v1/push/commit",
+        headers=SYNC_HEADERS,
+        json={"release_id": manifest.release_id},
+    )
+    assert commit.status_code == 200, commit.text
+    assert read_release_state(rag_root)["release_id"] == manifest.release_id
+
+    rollback = reader_sync_client.post(
+        f"/sync/v1/rollback/{manifest.release_id}",
+        headers=SYNC_HEADERS,
+    )
+    assert rollback.status_code == 200, rollback.text
+    assert rollback.json()["restored_release_id"] == "prior-wm"
+    state = read_release_state(rag_root)
+    assert state is not None
+    assert state["release_id"] == "prior-wm"
+
+    # Next begin with parent=prior-wm succeeds (empty catalog on reader after restore).
+    follow: dict[str, Any] = {
+        "manifest": {
+            "release_id": "after-rollback-rel",
+            "parent_release_id": "prior-wm",
+            "created_at": "2026-01-02T00:00:00+00:00",
+            "files_added": [],
+            "files_deleted": [],
+            "catalog_doc_ids_upserted": [],
+            "catalog_doc_ids_deleted": [],
+        }
+    }
+    again = reader_sync_client.post(
+        "/sync/v1/push/begin", headers=SYNC_HEADERS, json=follow
+    )
+    assert again.status_code == 200, again.text
+
+
+def test_metadata_fingerprint_push_updates_reader_reliability(
+    reader_sync_client: TestClient,
+    rag_root: Path,
+    tmp_path: Path,
+) -> None:
+    """Metadata-only reliability change produces a push that updates the reader."""
+    from qdrant_client.models import PointIdsList
+
+    from rag.publish.diff import document_catalog_fingerprint
+
+    # Seed reader with a document at reliability=1 (reuse app Qdrant client).
+    r = RagStorage(str(rag_root))
+    doc_id = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
+    content = b"meta seed"
+    digest = hashlib.sha256(content).hexdigest()
+    r.save_original(doc_id, "m.txt", content)
+    r.write_processed(
+        doc_id=doc_id,
+        filename="m.txt",
+        mime="text/plain",
+        sha256=digest,
+        fulltext="meta seed",
+        chunks=[{"index": 0, "page": 0, "text": "meta seed"}],
+        images=[],
+        status="ready",
+    )
+    r_meta = r.read_meta(doc_id)
+    assert r_meta is not None
+    r_meta.extra["reliability"] = 1
+    r.write_meta(r_meta)
+    write_release_state(rag_root, release_id="seed-wm", parent_release_id=None)
+    app_qdrant = reader_sync_client.app.state.qdrant
+    _upsert_chunk(app_qdrant, doc_id=doc_id, text="meta seed")
+    points = scroll_points_for_doc(
+        app_qdrant, collection_name=COLLECTION_NAME, doc_id=doc_id
+    )
+    app_qdrant.set_payload(
+        collection_name=COLLECTION_NAME,
+        payload={"reliability": 1},
+        points=PointIdsList(points=[points[0].id]),
+        wait=True,
+    )
+
+    # Writer has same content sha but reliability=3.
+    writer = tmp_path / "writer-meta"
+    w = RagStorage(str(writer))
+    w.ensure_layout()
+    w.save_original(doc_id, "m.txt", content)
+    w.write_processed(
+        doc_id=doc_id,
+        filename="m.txt",
+        mime="text/plain",
+        sha256=digest,
+        fulltext="meta seed",
+        chunks=[{"index": 0, "page": 0, "text": "meta seed"}],
+        images=[],
+        status="ready",
+    )
+    w_meta = w.read_meta(doc_id)
+    assert w_meta is not None
+    w_meta.extra["reliability"] = 3
+    w.write_meta(w_meta)
+    w_client = open_qdrant_for_sync(w.qdrant_dir)
+    try:
+        _upsert_chunk(w_client, doc_id=doc_id, text="meta seed")
+        w_points = scroll_points_for_doc(
+            w_client, collection_name=COLLECTION_NAME, doc_id=doc_id
+        )
+        w_client.set_payload(
+            collection_name=COLLECTION_NAME,
+            payload={"reliability": 3},
+            points=PointIdsList(points=[w_points[0].id]),
+            wait=True,
+        )
+        records, point_ids = export_points_for_docs(w_client, [doc_id])
+    finally:
+        w_client.close()
+
+    assert document_catalog_fingerprint(w_meta) != document_catalog_fingerprint(r_meta)
+    reader_fp = catalog_fingerprint(r)
+    manifest = build_file_diff(w, parent_release_id="seed-wm", reader_catalog=reader_fp)
+    assert doc_id in manifest.catalog_doc_ids_upserted
+    manifest.qdrant_point_ids_upserted = point_ids
+
+    begin = reader_sync_client.post(
+        "/sync/v1/push/begin",
+        headers=SYNC_HEADERS,
+        json={"manifest": manifest.to_dict()},
+    )
+    assert begin.status_code == 200, begin.text
+    _upload_release_chunks(
+        reader_sync_client,
+        writer_root=writer,
+        manifest=manifest,
+        records=records,
+        expect_first_blob_unique=False,
+    )
+    commit = reader_sync_client.post(
+        "/sync/v1/push/commit",
+        headers=SYNC_HEADERS,
+        json={"release_id": manifest.release_id},
+    )
+    assert commit.status_code == 200, commit.text
+
+    updated = RagStorage(str(rag_root)).read_meta(doc_id)
+    assert updated is not None
+    assert updated.extra.get("reliability") == 3
+    points = scroll_points_for_doc(
+        reader_sync_client.app.state.qdrant,
+        collection_name=COLLECTION_NAME,
+        doc_id=doc_id,
+    )
+    assert points[0].payload.get("reliability") == 3
+
+
 def test_apply_qdrant_with_existing_client(tmp_path: Path) -> None:
     """In-process apply reuses the open client and does not close it."""
     from rag.publish.qdrant_sync import (

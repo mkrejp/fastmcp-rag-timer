@@ -369,6 +369,33 @@ def _parse_metadata_form(raw: str | None) -> dict[str, Any] | None:
     return loaded
 
 
+def _maybe_attach_sync_push(
+    request: Request,
+    result: dict[str, Any],
+    *,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Best-effort live diff push after a successful mutating write.
+
+    No-op unless ``RAG_SYNC_URL`` + token + opt-in flags are set. Never raises
+    into the HTTP path. Skipped for dry-run mutators.
+    """
+    if dry_run:
+        return result
+    try:
+        from rag.publish.diff_push import maybe_push_after_ingest
+
+        sync_result = maybe_push_after_ingest(
+            _storage(request),
+            _qdrant(request),
+        )
+        if sync_result is not None:
+            return {**result, "sync_push": sync_result}
+    except Exception:  # noqa: BLE001 - never fail writes on sync hook
+        logger.warning("Post-mutation sync hook crashed", exc_info=True)
+    return result
+
+
 def _ingest_upload(
     request: Request,
     filename: str,
@@ -394,19 +421,7 @@ def _ingest_upload(
     except Exception as exc:  # noqa: BLE001 - surface ingest failures to clients
         raise HTTPException(status_code=500, detail=f"Ingest failed: {exc}") from exc
 
-    # Best-effort live diff push to the reader (no-op unless RAG_SYNC_* set).
-    try:
-        from rag.publish.diff_push import maybe_push_after_ingest
-
-        sync_result = maybe_push_after_ingest(
-            _storage(request),
-            _qdrant(request),
-        )
-        if sync_result is not None:
-            result = {**result, "sync_push": sync_result}
-    except Exception:  # noqa: BLE001 - never fail ingest on sync hook
-        logger.warning("Post-ingest sync hook crashed", exc_info=True)
-    return result
+    return _maybe_attach_sync_push(request, result)
 
 
 @router.get("/node-info")
@@ -855,7 +870,7 @@ def replace_document_content_http(
         _record_http(route="documents_content_put", ok=False, error=str(exc))
         raise HTTPException(status_code=500, detail=f"Replace failed: {exc}") from exc
     _record_http(route="documents_content_put", ok=True)
-    return result
+    return _maybe_attach_sync_push(request, result, dry_run=do_dry_run)
 
 
 @router.get(
@@ -930,7 +945,7 @@ def restore_document_version_http(
         _record_http(route="documents_versions_restore", ok=False, error=str(exc))
         raise HTTPException(status_code=500, detail=f"Restore failed: {exc}") from exc
     _record_http(route="documents_versions_restore", ok=True)
-    return result
+    return _maybe_attach_sync_push(request, result, dry_run=do_dry_run)
 
 
 @router.patch(
@@ -971,7 +986,7 @@ def patch_document_metadata_http(
         _record_http(route="documents_metadata_patch", ok=False, error=str(exc))
         raise HTTPException(status_code=500, detail=f"Patch failed: {exc}") from exc
     _record_http(route="documents_metadata_patch", ok=True)
-    return result
+    return _maybe_attach_sync_push(request, result)
 
 
 def _supersede_http_error(exc: DocumentNotFoundError, *, path_doc_id: str) -> NoReturn:
@@ -1018,7 +1033,7 @@ def supersede_document_http(
         _record_http(route="documents_supersede", ok=False, error=str(exc))
         raise HTTPException(status_code=500, detail=f"Supersede failed: {exc}") from exc
     _record_http(route="documents_supersede", ok=True)
-    return result
+    return _maybe_attach_sync_push(request, result)
 
 
 @router.post(
@@ -1052,7 +1067,7 @@ def unsupersede_document_http(doc_id: str, request: Request) -> dict[str, Any]:
             status_code=500, detail=f"Unsupersede failed: {exc}"
         ) from exc
     _record_http(route="documents_unsupersede", ok=True)
-    return result
+    return _maybe_attach_sync_push(request, result)
 
 
 @router.patch(
@@ -1090,7 +1105,7 @@ def patch_document_http(
         _record_http(route="documents_patch", ok=False, error=str(exc))
         raise HTTPException(status_code=500, detail=f"Patch failed: {exc}") from exc
     _record_http(route="documents_patch", ok=True)
-    return result
+    return _maybe_attach_sync_push(request, result)
 
 
 @router.delete(
@@ -1126,4 +1141,4 @@ def delete_document_http(doc_id: str, request: Request) -> dict[str, Any]:
         _record_http(route="documents_delete", ok=False, error=str(exc))
         raise HTTPException(status_code=500, detail=f"Delete failed: {exc}") from exc
     _record_http(route="documents_delete", ok=True)
-    return result
+    return _maybe_attach_sync_push(request, result)
