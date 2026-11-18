@@ -520,6 +520,7 @@ Default `format=text` leaves legacy `Source:` / `Content:` blocks unchanged and 
 - [Connectivity](docs/CONNECTIVITY.md) — trust boundaries, clients vs modes, publish path, ports, auth, embedding egress.
 - [Embedding connectivity](docs/CONNECTIVITY.md#embedding-connectivity) — Novita embeddings API, auth, egress, timeouts, privacy, and cost.
 - [Embedding provider](docs/embedding-provider.md) — split ingest/query providers, named vectors, and Qdrant layout.
+- [AI agents](docs/AI_AGENTS.md) — Marek's agent roles, cooperation rules, and [agents.json](docs/agents.json) for cloud agents.
 
 ## Package layout
 

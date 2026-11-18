@@ -20,7 +20,8 @@ The service is a single-process **FastAPI + FastMCP** application per container.
 `mcp_tools.py`, `processing.py`, `routes.py`, `admin_routes.py`,
 `google_oauth.py`, `chunked_upload.py`, `asgi_shutdown.py`, `storage.py`,
 `vectorstore.py`, `auth.py`, `publish/`), `README.md`, `docs/SPLIT_DEPLOY.md`,
-`docs/embedding-provider.md`, `static/`, and `tests/`.
+`docs/embedding-provider.md`, `docs/AI_AGENTS.md`, `docs/agents.json`, `static/`, and `tests/`.
+Human/agent coordination (who may ingest in production vs `APP_MODE` in code): [AI_AGENTS.md](./AI_AGENTS.md).
 `pyproject.toml` lists runtime dependencies (including `fastembed`, `pymupdf`, `pillow`, `pytesseract`).
 There is no `requirements.txt`, lockfile, or `railway.toml`. Example VPS layout: `deploy/vps/docker-compose.yml`.
 CI lives under `.github/workflows/` (Super Linter, pytest on Python 3.11, and Docker image build).
