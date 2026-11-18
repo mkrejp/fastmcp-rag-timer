@@ -46,9 +46,9 @@ Coolify/VPS contract below stays valid for later migration; **do not** provision
 
 | Mode | Dockerfile | Build context | Entrypoint / CMD | Listen port | Health |
 | --- | --- | --- | --- | --- | --- |
-| Reader | `Dockerfile.reader` | repo root (`.`) | `python reader_main.py` | `8080` (`PORT` override) | `GET /health` |
-| Ingester | `Dockerfile.ingester` | repo root (`.`) | `python ingester_main.py` | `8080` (`PORT` override) | `GET /health` |
-| Monolith | `Dockerfile` | repo root (`.`) | `python main.py` | `8080` (`PORT` override) | `GET /health` |
+| Reader | `Dockerfile.reader` | repository root (`.`) | `python reader_main.py` | `8080` (`PORT` override) | `GET /health` |
+| Ingester | `Dockerfile.ingester` | repository root (`.`) | `python ingester_main.py` | `8080` (`PORT` override) | `GET /health` |
+| Monolith | `Dockerfile` | repository root (`.`) | `python main.py` | `8080` (`PORT` override) | `GET /health` |
 
 Examples: `deploy/vps/docker-compose.yml`, `deploy/railway/README.md`.
 
@@ -106,7 +106,7 @@ Volumes are independent. There is **no** live Qdrant share and **no** HTTP “pu
 - No WAL / incremental replication between two embedded stores — scroll+filter+upsert (our JSONL by `doc_id`) is the intended pattern.
 - Baseline / disaster recovery: **stop both processes**, then **rsync** the data dir (`meta.json`, `.lock`, `collection/*/storage.sqlite`, …). Never copy while a client is open.
 - Routine deltas: JSONL (`--stage-qdrant`). Upserts must resend every named vector present on the point (omitted named vector ⇒ nulled).
-- Lock: second opener gets `RuntimeError` … already accessed…; lock file `{qdrant_dir}/.lock`.
+- Lock: second opener gets `RuntimeError` … already accessed…; lockfile `{qdrant_dir}/.lock`.
 
 Practical sequence:
 
@@ -118,7 +118,17 @@ Practical sequence:
    `scripts/rag-apply-release.sh --release-dir /path/to/release --rag-root "$RAG_DATA_ROOT"` → start reader again.
 4. Optional on writer: `--mark-published` after a successful apply.
 
-**Railway volume ops caveat (2026-11-18):** `railway run` injects env only and **does not** mount the service volume. `railway ssh` needs a **running** container. Volumes are **1:1** with a service (no sharing). Stopping via UI “Remove” / `railway down` keeps the volume billed (~$0.15/GB/mo) but how to mount a **stopped** service’s volume for scripts is not clearly documented — practical pattern: temporarily run a hold command that mounts `/data` **without** opening Qdrant (e.g. `sleep infinity` / custom entrypoint), `railway ssh`, run publish/apply with `RAG_SKIP_DEFAULT_APP=1`, then restore the normal start command. Confirm plan volume size (≥ ~39 GB used; Hobby default 5 GB is too small).
+**Railway volume ops caveat (2026-11-18):**
+
+- `railway run` injects env only and **does not** mount the service volume.
+- `railway ssh` needs a **running** container.
+- Volumes are **1:1** with a service (no sharing).
+- Stopping via UI “Remove” / `railway down` keeps the volume billed (~$0.15/GB/mo);
+  how to mount a **stopped** service’s volume for scripts is not clearly documented.
+- Practical pattern: temporarily run a hold command that mounts `/data` **without**
+  opening Qdrant (e.g. `sleep infinity` / custom entrypoint), `railway ssh`, run
+  publish/apply with `RAG_SKIP_DEFAULT_APP=1`, then restore the normal start command.
+- Confirm plan volume size (≥ ~39 GB used; Hobby default 5 GB is too small).
 
 First-time seed (or disaster recovery): stop source → **rsync/copy entire** `/data/rag` (including `qdrant/`) onto the reader volume → start reader only. Prefer that over `--force-baseline` JSONL for ~39 GB trees.
 
@@ -249,11 +259,14 @@ MCP_ALLOWED_HOSTS=art-nouveau-rag.animarium.ai,localhost,localhost:*,127.0.0.1,1
 
 OAuth redirect: `https://art-nouveau-rag.animarium.ai/auth/callback`.
 
-Hostinger `A` → Hetzner IPv4 only after the VPS exists. Clients (e.g. **mcp-chat-tester**) must switch MCP base URL to the public reader; this repo does not own those clients.
+Hostinger `A` → Hetzner IPv4 only after the VPS exists. Clients (e.g. **mcp-chat-tester**)
+must switch MCP base URL to the public reader; this repository does not own those clients.
 
 ### CoolifyHoster action now
 
-**None.** No Coolify server, no apps, no DNS. Wait for Marek. Railway service changes are owned by the repo/Railway operator (Marek / this project agent), not CoolifyHoster, unless Marek explicitly asks.
+**None.** No Coolify server, no apps, no DNS. Wait for Marek. Railway service changes are
+owned by the repository/Railway operator (Marek / this project agent), not CoolifyHoster,
+unless Marek explicitly asks.
 
 ---
 
