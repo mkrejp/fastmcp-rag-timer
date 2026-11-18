@@ -237,8 +237,13 @@ def build_and_push(
     )
 
     summary = summarize_diff(manifest)
+    # index.json alone is not a catalog change — ignore it for the no-op gate
+    # so a parity/cron run never opens a release (V2).
+    meaningful_files = [
+        change for change in manifest.files_added if change.path != "index.json"
+    ]
     if (
-        not manifest.files_added
+        not meaningful_files
         and not manifest.files_deleted
         and not manifest.catalog_doc_ids_upserted
         and not manifest.catalog_doc_ids_deleted

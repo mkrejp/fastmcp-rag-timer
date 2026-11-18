@@ -54,6 +54,11 @@ def test_baseline_then_incremental_diff(tmp_path: Path) -> None:
     assert empty.full_baseline is False
     assert empty.catalog_doc_ids_upserted == []
     assert empty.catalog_doc_ids_deleted == []
+    # V2: catalog parity must not list index.json (or any file) as a change.
+    assert empty.files_added == []
+    assert empty.files_deleted == []
+    assert summarize_diff(empty)["files_added"] == 0
+    assert summarize_diff(empty)["bytes_added"] == 0
 
     storage.save_original(doc_b, "b.txt", b"beta")
     storage.write_processed(
@@ -74,6 +79,49 @@ def test_baseline_then_incremental_diff(tmp_path: Path) -> None:
     )
     assert delta.catalog_doc_ids_upserted == [doc_b]
     assert all((f.doc_id == doc_b) or f.path == "index.json" for f in delta.files_added)
+
+
+def test_v2_catalog_parity_excludes_index_json(tmp_path: Path) -> None:
+    """V2 regression: parity with index.json on disk must yield an empty diff.
+
+    Incremental ``build_file_diff`` used to always append ``index.json``, so
+    ``files_added=1`` / ``bytes_added>0`` even when catalogs matched — which
+    made a no-change cron open a new release.
+    """
+    root = tmp_path / "rag"
+    storage = RagStorage(str(root))
+    storage.ensure_layout()
+    doc_id = "dddddddd-dddd-dddd-dddd-dddddddddddd"
+    storage.save_original(doc_id, "d.txt", b"delta")
+    storage.write_processed(
+        doc_id=doc_id,
+        filename="d.txt",
+        mime="text/plain",
+        sha256="ddd",
+        fulltext="delta",
+        chunks=[{"index": 0, "page": 0, "text": "delta"}],
+        images=[],
+        status="ready",
+    )
+    assert (root / "index.json").is_file()
+    reader_fp = catalog_fingerprint(storage)
+
+    parity = build_file_diff(
+        storage,
+        parent_release_id="rel-parity",
+        reader_catalog=reader_fp,
+    )
+    assert parity.full_baseline is False
+    assert parity.catalog_doc_ids_upserted == []
+    assert parity.catalog_doc_ids_deleted == []
+    assert parity.files_added == []
+    assert parity.files_deleted == []
+    assert not any(f.path == "index.json" for f in parity.files_added)
+    summary = summarize_diff(parity)
+    assert summary["files_added"] == 0
+    assert summary["bytes_added"] == 0
+    assert summary["docs_upserted"] == 0
+    assert summary["docs_deleted"] == 0
 
 
 def test_metadata_only_change_produces_catalog_diff(tmp_path: Path) -> None:
