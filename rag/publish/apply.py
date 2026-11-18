@@ -6,6 +6,8 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+from qdrant_client import QdrantClient
+
 from rag.logging_setup import get_logger
 from rag.publish.manifest import ReleaseManifest, load_manifest
 from rag.publish.qdrant_sync import POINTS_REL_PATH, apply_qdrant_release
@@ -23,11 +25,15 @@ def apply_file_release(
     source: str | None = None,
     points_jsonl: Path | str | None = None,
     sync_qdrant: bool = True,
+    client: QdrantClient | None = None,
 ) -> dict[str, Any]:
     """Apply file add/delete ops from ``manifest`` using blobs under ``blob_root``.
 
     Expected layout: ``blob_root/<relative path>`` matches ``FileChange.path``.
-    Caller must stop the reader app first (embedded Qdrant single-writer lock).
+    When ``client`` is ``None`` (CLI stop-apply), the caller must stop the reader
+    first (embedded Qdrant single-writer lock). When ``client`` is the live
+    reader's open handle, apply runs in-process and does not open a second
+    ``QdrantClient(path=)``.
     When ``sync_qdrant`` is true, points for deleted/upserted docs are synced
     from ``points_jsonl`` (default: sibling ``qdrant/points.jsonl``).
     """
@@ -79,6 +85,7 @@ def apply_file_release(
                 upsert_doc_ids=upsert_ids,
                 delete_doc_ids=delete_ids,
                 points_jsonl=points_path,
+                client=client,
             )
 
     state = write_release_state(

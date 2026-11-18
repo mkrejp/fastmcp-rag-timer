@@ -1,0 +1,299 @@
+"""Ingester-side live diff push client (Option A).
+
+Uses the reader's sync API: watermark → catalog → begin → chunks → commit.
+Vectors are exported from the already-open writer Qdrant client (no re-embed
+on the reader).
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import urllib.error
+import urllib.request
+from pathlib import Path
+from typing import Any, Mapping
+from urllib.parse import urlencode, urljoin
+
+from qdrant_client import QdrantClient
+
+from rag.config import resolve_sync_token, resolve_sync_url
+from rag.logging_setup import get_logger
+from rag.publish.diff import build_file_diff, catalog_fingerprint, summarize_diff
+from rag.publish.manifest import ReleaseManifest
+from rag.publish.qdrant_sync import export_points_for_docs
+from rag.publish.release_state import write_release_state
+from rag.publish.sync_chunk import PackedChunk, pack_blob_chunks, pack_points_chunks
+from rag.storage import RagStorage
+
+logger = get_logger("rag.publish.diff_push")
+
+
+class DiffPushError(RuntimeError):
+    """Raised when a live sync push fails."""
+
+
+def sync_push_enabled() -> bool:
+    """Return whether auto/manual push should run (URL + token present)."""
+    if resolve_sync_url() is None:
+        return False
+    if resolve_sync_token() is None:
+        return False
+    raw = os.getenv("RAG_SYNC_PUSH_ENABLED", "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def _request_json(
+    method: str,
+    url: str,
+    *,
+    token: str,
+    body: Mapping[str, Any] | None = None,
+    raw_body: bytes | None = None,
+    content_type: str | None = None,
+    timeout: float = 120.0,
+) -> Any:
+    """HTTP JSON helper with Bearer auth. Never logs the token."""
+    data: bytes | None
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    if raw_body is not None:
+        data = raw_body
+        headers["Content-Type"] = content_type or "application/octet-stream"
+    elif body is not None:
+        data = json.dumps(body).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    else:
+        data = None
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            payload = resp.read()
+            if not payload:
+                return {}
+            return json.loads(payload.decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise DiffPushError(f"{method} {url} -> HTTP {exc.code}: {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise DiffPushError(f"{method} {url} failed: {exc}") from exc
+
+
+class DiffPushClient:
+    """Push incremental releases to a reader sync API."""
+
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        token: str,
+        timeout: float = 120.0,
+    ) -> None:
+        """Configure reader origin and sync bearer token."""
+        self.base_url = base_url.rstrip("/") + "/"
+        self.token = token
+        self.timeout = timeout
+
+    def _url(self, path: str, query: Mapping[str, str] | None = None) -> str:
+        """Build an absolute URL under the sync API."""
+        joined = urljoin(self.base_url, path.lstrip("/"))
+        if query:
+            return f"{joined}?{urlencode(query)}"
+        return joined
+
+    def get_watermark(self) -> dict[str, Any]:
+        """GET /sync/v1/watermark."""
+        return _request_json(
+            "GET",
+            self._url("sync/v1/watermark"),
+            token=self.token,
+            timeout=self.timeout,
+        )
+
+    def get_catalog(self) -> dict[str, str]:
+        """GET /sync/v1/catalog → doc_id→sha256 map."""
+        body = _request_json(
+            "GET",
+            self._url("sync/v1/catalog"),
+            token=self.token,
+            timeout=self.timeout,
+        )
+        docs = body.get("documents") or {}
+        return {str(k): str(v) for k, v in docs.items()}
+
+    def begin(self, manifest: ReleaseManifest) -> dict[str, Any]:
+        """POST /sync/v1/push/begin."""
+        return _request_json(
+            "POST",
+            self._url("sync/v1/push/begin"),
+            token=self.token,
+            body={"manifest": manifest.to_dict()},
+            timeout=self.timeout,
+        )
+
+    def put_chunk(self, release_id: str, chunk: PackedChunk) -> dict[str, Any]:
+        """PUT /sync/v1/push/chunk?release_id=…"""
+        return _request_json(
+            "PUT",
+            self._url("sync/v1/push/chunk", {"release_id": release_id}),
+            token=self.token,
+            raw_body=chunk.encode(),
+            timeout=max(self.timeout, 300.0),
+        )
+
+    def commit(self, release_id: str, *, source: str | None = None) -> dict[str, Any]:
+        """POST /sync/v1/push/commit."""
+        body: dict[str, Any] = {"release_id": release_id}
+        if source:
+            body["source"] = source
+        return _request_json(
+            "POST",
+            self._url("sync/v1/push/commit"),
+            token=self.token,
+            body=body,
+            timeout=max(self.timeout, 300.0),
+        )
+
+    def abort(self, release_id: str) -> dict[str, Any]:
+        """POST /sync/v1/push/abort."""
+        return _request_json(
+            "POST",
+            self._url("sync/v1/push/abort"),
+            token=self.token,
+            body={"release_id": release_id},
+            timeout=self.timeout,
+        )
+
+    def status(self, release_id: str | None = None) -> dict[str, Any]:
+        """GET /sync/v1/push/status."""
+        query = {"release_id": release_id} if release_id else None
+        return _request_json(
+            "GET",
+            self._url("sync/v1/push/status", query),
+            token=self.token,
+            timeout=self.timeout,
+        )
+
+
+def build_and_push(
+    storage: RagStorage,
+    *,
+    qdrant: QdrantClient,
+    client: DiffPushClient | None = None,
+    writer_host: str | None = None,
+    mark_published: bool = True,
+    force_baseline: bool = False,
+) -> dict[str, Any]:
+    """Diff against the reader, push chunks, commit. Returns a summary dict.
+
+    No-op summary when there is nothing to publish. Raises ``DiffPushError`` on
+    transport/API failures.
+    """
+    push = client
+    if push is None:
+        url = resolve_sync_url()
+        token = resolve_sync_token()
+        if not url or not token:
+            raise DiffPushError("RAG_SYNC_URL and RAG_SYNC_TOKEN are required")
+        push = DiffPushClient(url, token=token)
+
+    watermark = push.get_watermark()
+    parent = watermark.get("release_id")
+    reader_catalog = push.get_catalog()
+    manifest = build_file_diff(
+        storage,
+        parent_release_id=parent if isinstance(parent, str) else None,
+        reader_catalog=reader_catalog,
+        writer_host=writer_host,
+        force_baseline=force_baseline,
+    )
+
+    summary = summarize_diff(manifest)
+    if (
+        not manifest.files_added
+        and not manifest.files_deleted
+        and not manifest.catalog_doc_ids_upserted
+        and not manifest.catalog_doc_ids_deleted
+    ):
+        logger.info("Live sync: nothing to push (empty diff)")
+        return {**summary, "pushed": False, "reason": "empty_diff"}
+
+    records: list[dict[str, Any]] = []
+    if manifest.catalog_doc_ids_upserted:
+        records, point_ids = export_points_for_docs(
+            qdrant, manifest.catalog_doc_ids_upserted
+        )
+        manifest.qdrant_point_ids_upserted = point_ids
+        manifest.qdrant_point_ids_deleted = list(manifest.catalog_doc_ids_deleted)
+
+    push.begin(manifest)
+
+    root = Path(storage.root)
+    blob_files: list[tuple[str, bytes, str]] = []
+    for change in manifest.files_added:
+        data = (root / change.path).read_bytes()
+        blob_files.append((change.path, data, change.sha256))
+
+    try:
+        for chunk in pack_blob_chunks(manifest.release_id, blob_files):
+            push.put_chunk(manifest.release_id, chunk)
+        for chunk in pack_points_chunks(manifest.release_id, records):
+            push.put_chunk(manifest.release_id, chunk)
+        commit = push.commit(
+            manifest.release_id, source=writer_host or "diff-push"
+        )
+    except DiffPushError:
+        try:
+            push.abort(manifest.release_id)
+        except DiffPushError:
+            logger.warning(
+                "Failed to abort release %s after push error",
+                manifest.release_id,
+                exc_info=True,
+            )
+        raise
+
+    if mark_published:
+        write_release_state(
+            storage.root,
+            release_id=manifest.release_id,
+            parent_release_id=manifest.parent_release_id,
+            source=writer_host or "diff-push",
+            extra=summarize_diff(manifest),
+        )
+
+    logger.info(
+        "Live sync pushed release=%s files=%s docs_upserted=%s",
+        manifest.release_id,
+        len(manifest.files_added),
+        len(manifest.catalog_doc_ids_upserted),
+    )
+    return {
+        **summarize_diff(manifest),
+        "pushed": True,
+        "commit": commit,
+        "writer_catalog_count": len(catalog_fingerprint(storage)),
+    }
+
+
+def maybe_push_after_ingest(
+    storage: RagStorage,
+    qdrant: QdrantClient,
+    *,
+    writer_host: str | None = None,
+) -> dict[str, Any] | None:
+    """Best-effort post-ingest push when sync env is configured.
+
+    Failures are logged and returned; they never raise into the ingest path.
+    """
+    if not sync_push_enabled():
+        return None
+    try:
+        return build_and_push(
+            storage,
+            qdrant=qdrant,
+            writer_host=writer_host,
+            mark_published=True,
+        )
+    except Exception as exc:  # noqa: BLE001 - never fail ingest on sync
+        logger.warning("Post-ingest live sync push failed: %s", exc, exc_info=True)
+        return {"pushed": False, "error": str(exc)}

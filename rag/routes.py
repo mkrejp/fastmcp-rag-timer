@@ -380,7 +380,7 @@ def _ingest_upload(
     """Shared ingest path for HTTP uploads."""
     try:
         with accounting_source("ingest_http"):
-            return ingest_bytes(
+            result = ingest_bytes(
                 storage=_storage(request),
                 qdrant=_qdrant(request),
                 collection_name=COLLECTION_NAME,
@@ -393,6 +393,20 @@ def _ingest_upload(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001 - surface ingest failures to clients
         raise HTTPException(status_code=500, detail=f"Ingest failed: {exc}") from exc
+
+    # Best-effort live diff push to the reader (no-op unless RAG_SYNC_* set).
+    try:
+        from rag.publish.diff_push import maybe_push_after_ingest
+
+        sync_result = maybe_push_after_ingest(
+            _storage(request),
+            _qdrant(request),
+        )
+        if sync_result is not None:
+            result = {**result, "sync_push": sync_result}
+    except Exception:  # noqa: BLE001 - never fail ingest on sync hook
+        logger.warning("Post-ingest sync hook crashed", exc_info=True)
+    return result
 
 
 @router.get("/node-info")

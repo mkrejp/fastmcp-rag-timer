@@ -321,38 +321,84 @@ def upsert_point_records(
     return written
 
 
+def apply_qdrant_release_with_client(
+    client: QdrantClient,
+    *,
+    upsert_doc_ids: Sequence[str],
+    delete_doc_ids: Sequence[str],
+    points_jsonl: Path | str | None = None,
+    records: Sequence[Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Delete then upsert points using an already-open ``client``.
+
+    Does **not** close ``client`` (safe for the live reader process). Prefer this
+    over :func:`apply_qdrant_release` whenever a Qdrant handle is already held.
+    """
+    loaded: list[Mapping[str, Any]]
+    if records is not None:
+        loaded = list(records)
+    elif points_jsonl:
+        loaded = read_points_jsonl(points_jsonl)
+    else:
+        loaded = []
+    touch_ids = sorted(
+        {str(d) for d in list(upsert_doc_ids) + list(delete_doc_ids) if d}
+    )
+    deleted = delete_points_for_docs(client, touch_ids)
+    written = upsert_point_records(client, loaded) if loaded else 0
+    logger.info(
+        "Qdrant sync (in-process) docs=%s points_deleted=%s points_upserted=%s",
+        len(touch_ids),
+        deleted,
+        written,
+    )
+    return {
+        "docs_touched": len(touch_ids),
+        "points_deleted": deleted,
+        "points_upserted": written,
+        "records_in_bundle": len(loaded),
+    }
+
+
 def apply_qdrant_release(
     qdrant_dir: Path | str,
     *,
     upsert_doc_ids: Sequence[str],
     delete_doc_ids: Sequence[str],
     points_jsonl: Path | str | None,
+    client: QdrantClient | None = None,
 ) -> dict[str, Any]:
     """Delete then upsert points for a release onto ``qdrant_dir``.
 
     For upserted docs, existing points are removed first so replacements do not
     leave stale chunk/image ids. Deleted docs only remove points.
+
+    When ``client`` is provided it is reused and **not** closed (live reader).
+    Otherwise opens a temporary client on ``qdrant_dir`` and closes it (CLI
+    stop-apply path).
     """
-    client = open_qdrant_for_sync(qdrant_dir)
-    try:
-        records = read_points_jsonl(points_jsonl) if points_jsonl else []
-        touch_ids = sorted(
-            {str(d) for d in list(upsert_doc_ids) + list(delete_doc_ids) if d}
+    if client is not None:
+        return apply_qdrant_release_with_client(
+            client,
+            upsert_doc_ids=upsert_doc_ids,
+            delete_doc_ids=delete_doc_ids,
+            points_jsonl=points_jsonl,
         )
-        deleted = delete_points_for_docs(client, touch_ids)
-        written = upsert_point_records(client, records) if records else 0
+    owned = open_qdrant_for_sync(qdrant_dir)
+    try:
+        stats = apply_qdrant_release_with_client(
+            owned,
+            upsert_doc_ids=upsert_doc_ids,
+            delete_doc_ids=delete_doc_ids,
+            points_jsonl=points_jsonl,
+        )
         logger.info(
             "Qdrant sync qdrant_dir=%s docs=%s points_deleted=%s points_upserted=%s",
             qdrant_dir,
-            len(touch_ids),
-            deleted,
-            written,
+            stats["docs_touched"],
+            stats["points_deleted"],
+            stats["points_upserted"],
         )
-        return {
-            "docs_touched": len(touch_ids),
-            "points_deleted": deleted,
-            "points_upserted": written,
-            "records_in_bundle": len(records),
-        }
+        return stats
     finally:
-        client.close()
+        owned.close()

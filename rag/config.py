@@ -246,6 +246,24 @@ def resolve_mcp_token() -> str | None:
     return None
 
 
+def resolve_sync_token() -> str | None:
+    """Bearer token for reader live sync API (``RAG_SYNC_TOKEN``).
+
+    Separate from MCP/API tokens. ``None`` means sync routes fail closed.
+    """
+    value = (os.getenv("RAG_SYNC_TOKEN") or "").strip()
+    return value or None
+
+
+def resolve_sync_url() -> str | None:
+    """Reader base URL for ingester live push (``RAG_SYNC_URL``).
+
+    Example: ``https://reader.example.com`` (no path suffix required).
+    """
+    value = (os.getenv("RAG_SYNC_URL") or "").strip().rstrip("/")
+    return value or None
+
+
 FIGURE_INDEX_VERSION = 1
 
 
