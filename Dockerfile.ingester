@@ -1,0 +1,43 @@
+# Ingester image — Tesseract OCR for PDF ingest; portable to Railway or VPS.
+FROM python:3.11-slim-bookworm
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+WORKDIR /app
+
+# hadolint ignore=DL3008
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    tesseract-ocr \
+    tesseract-ocr-ces \
+    tesseract-ocr-eng \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN uv pip install --system \
+    fastapi \
+    uvicorn \
+    "mcp[cli]<2" \
+    pypdf \
+    pymupdf \
+    pillow \
+    pytesseract \
+    "qdrant-client>=1.12,<2" \
+    requests \
+    python-multipart \
+    itsdangerous \
+    fastembed
+
+COPY main.py reader_main.py ingester_main.py ./
+COPY rag ./rag
+COPY static ./static
+COPY scripts ./scripts
+
+EXPOSE 8080
+
+ENV RAG_DATA_ROOT=/data/rag
+ENV APP_MODE=ingester
+ENV EMBEDDING_PROVIDER_INGEST=novita
+ENV EMBEDDING_PROVIDER_QUERY=novita
+ENV IMAGE_EMBEDDING_ENABLED=false
+
+CMD ["python", "ingester_main.py"]

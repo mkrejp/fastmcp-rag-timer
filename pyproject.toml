@@ -17,6 +17,10 @@ dependencies = [
     "fastembed",
 ]
 
+[tool.setuptools.packages.find]
+include = ["rag*"]
+exclude = ["deploy*", "static*", "tests*"]
+
 [tool.black]
 line-length = 88
 

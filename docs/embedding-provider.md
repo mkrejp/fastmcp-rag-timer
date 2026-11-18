@@ -7,17 +7,25 @@ Runtime defaults: **`EMBEDDING_PROVIDER`** is `novita` when unset. **`EMBEDDING_
 | Path | Env | Allowed values | Model family |
 | --- | --- | --- | --- |
 | Ingest / OCR indexing | `EMBEDDING_PROVIDER_INGEST` → else `EMBEDDING_PROVIDER` | `novita`, `fastembed` | BGE-M3, 1024-dim |
-| Search (`search_domain_knowledge`, hybrid text leg of `search_images`) | `EMBEDDING_PROVIDER_QUERY` → else `EMBEDDING_PROVIDER` | **`fastembed` only** | BGE-M3, 1024-dim |
+| Search (`search_domain_knowledge`, hybrid text leg of `search_images`) | `EMBEDDING_PROVIDER_QUERY` → else mode default / `EMBEDDING_PROVIDER` | `novita` or `fastembed` | BGE-M3, 1024-dim |
 
-Startup calls `validate_embedding_configuration()`: a query provider that is not FastEmbed (including an unset default of `novita` without `EMBEDDING_PROVIDER_QUERY=fastembed`) **refuses to start**. Typical production split:
+Startup calls `validate_embedding_configuration()`: ingest and query must both be BGE-M3 **1024-dim**. `APP_MODE=reader` defaults query to **novita** when unset (no local ONNX). Low-RAM hosts should keep query on Novita; local FastEmbed still needs ~4GB+ peak. Typical portable split:
 
 ```bash
+APP_MODE=reader   # or ingester
 EMBEDDING_PROVIDER=novita
+EMBEDDING_PROVIDER_INGEST=novita
+EMBEDDING_PROVIDER_QUERY=novita
+```
+
+Legacy local-search layout (heavier RAM):
+
+```bash
 EMBEDDING_PROVIDER_INGEST=novita
 EMBEDDING_PROVIDER_QUERY=fastembed
 ```
 
-Search never issues Novita HTTP requests (zero embedding tokens on query). Ingest may still use Novita when configured.
+See [Split deploy](./SPLIT_DEPLOY.md).
 
 Novita HTTP vs local ONNX BGE-M3 vectors can **drift slightly**. After changing ingest provider, re-ingest and optionally run `scripts/golden_recall_smoke.py` on golden phrases.
 

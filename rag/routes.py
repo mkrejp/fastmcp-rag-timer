@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from qdrant_client import QdrantClient
 
 from rag.accounting import accounting_source, get_global_store
+from rag.app_mode import app_mode_status
 from rag.auth import require_api_token, require_embed_access
 from rag.chunked_upload import (
     ChunkConflictError,
@@ -57,6 +58,7 @@ from rag.logging_setup import get_logger
 from rag.node_info import node_info_payload
 from rag.page_ids import parse_page_image_id
 from rag.processing import is_supported_filename
+from rag.publish.release_state import read_release_state
 from rag.remote import (
     RemoteFetchError,
     RemoteTooLargeError,
@@ -413,11 +415,15 @@ def health(request: Request) -> dict[str, object]:
     """Liveness probe for container orchestration."""
     try:
         validate_embedding_configuration()
+        storage = _storage(request)
+        release = read_release_state(storage.root)
         body: dict[str, object] = {
             "status": "ok",
             "rag_data_root": _rag_data_root(request),
             "embeddings": embedding_provider_status(),
             "image_embedding_enabled": image_embedding_enabled(),
+            **app_mode_status(),
+            "release_id": release.get("release_id") if release else None,
         }
         _record_http(route="health", ok=True)
         return body

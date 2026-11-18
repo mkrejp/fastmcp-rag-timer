@@ -15,6 +15,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from rag.accounting import AccountingStore, set_global_store
 from rag.admin_routes import router as admin_router
+from rag.app_mode import mcp_include_write_tools, resolve_app_mode
 from rag.asgi_shutdown import CompleteResponseOnExit
 from rag.auth import McpBearerAuth
 from rag.chunked_upload import ChunkedUploadStore
@@ -38,7 +39,7 @@ from rag.google_oauth import router as auth_router
 from rag.image_embed import image_embedding_enabled
 from rag.logging_setup import configure_logging, get_logger
 from rag.mcp_tools import register_mcp_tools
-from rag.node_info import NodeWriteGuard
+from rag.node_info import MCP_WRITE_TOOLS, NodeWriteGuard
 from rag.routes import router
 from rag.storage import RagStorage
 from rag.trails_sync import maybe_drain_on_startup
@@ -83,6 +84,7 @@ def create_app(
     """Build the FastAPI application with MCP mounted at ``/mcp``."""
     configure_logging()
     logger = get_logger("rag.app")
+    mode = resolve_app_mode()
     validate_embedding_configuration()
     root = resolve_rag_data_root(rag_data_root)
     storage = RagStorage(root)
@@ -96,12 +98,14 @@ def create_app(
     qdrant = open_qdrant(storage.qdrant_dir, collection_name=COLLECTION_NAME)
     maybe_drain_on_startup(qdrant, storage.trails_outbox_path)
     providers = embedding_provider_status()
+    include_writes = mcp_include_write_tools()
     logger.info(
-        "Opened RAG data root=%s accnt_root=%s collection=%s ingest=%s query=%s dim=%s "
-        "image_embedding=%s",
+        "Opened RAG data root=%s accnt_root=%s collection=%s app_mode=%s "
+        "ingest=%s query=%s dim=%s image_embedding=%s",
         root,
         accnt_root,
         COLLECTION_NAME,
+        mode,
         providers.get("ingest_provider"),
         providers.get("query_provider"),
         embedding_dim(),
@@ -111,6 +115,11 @@ def create_app(
         logger.warning(
             "IMAGE_EMBEDDING_ENABLED loads CLIP beside BGE-M3 fastembed; on 8GB hosts "
             "consider extra RAM or disable visual search."
+        )
+    if mode == "reader" and providers.get("query_provider") == "fastembed":
+        logger.warning(
+            "Reader mode with local fastembed query is RAM-heavy; prefer "
+            "EMBEDDING_PROVIDER_QUERY=novita on <4GB hosts."
         )
 
     mcp = FastMCP(
@@ -129,9 +138,15 @@ def create_app(
         storage=storage,
         qdrant=qdrant,
         collection_name=COLLECTION_NAME,
+        include_write_tools=include_writes,
     )
     mcp_app = mcp.streamable_http_app()
-    mcp_tool_names = sorted(MCP_TOOL_DOCS.keys())
+    mcp_tool_docs = {
+        name: docs
+        for name, docs in MCP_TOOL_DOCS.items()
+        if include_writes or name not in MCP_WRITE_TOOLS
+    }
+    mcp_tool_names = sorted(mcp_tool_docs.keys())
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -166,7 +181,8 @@ def create_app(
     app.state.accnt_data_root = accnt_root
     app.state.mcp_mounted = True
     app.state.mcp_tools = mcp_tool_names
-    app.state.mcp_tool_docs = MCP_TOOL_DOCS
+    app.state.mcp_tool_docs = mcp_tool_docs
+    app.state.app_mode = mode
 
     app.include_router(router)
     app.include_router(auth_router)

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 from _pytest.monkeypatch import MonkeyPatch
 
 from rag.embeddings import (
@@ -38,22 +37,23 @@ def test_query_search_alias(monkeypatch: MonkeyPatch) -> None:
     assert resolve_embedding_provider_query_unvalidated() == "fastembed"
 
 
-def test_validate_refuses_remote_query(monkeypatch: MonkeyPatch) -> None:
-    """QUERY=novita must fail validation (zero tokens on search)."""
+def test_validate_allows_remote_query(monkeypatch: MonkeyPatch) -> None:
+    """QUERY=novita is valid for low-RAM readers (same 1024-dim space)."""
+    monkeypatch.setenv("APP_MODE", "all")
     monkeypatch.setenv("EMBEDDING_PROVIDER", "novita")
     monkeypatch.setenv("EMBEDDING_PROVIDER_QUERY", "novita")
-    with pytest.raises(ValueError, match="fastembed"):
-        validate_embedding_configuration()
+    validate_embedding_configuration()
 
 
-def test_validate_requires_explicit_query_when_default_is_novita(
+def test_validate_accepts_novita_default_query_in_monolith(
     monkeypatch: MonkeyPatch,
 ) -> None:
-    """Novita default without QUERY override is rejected."""
+    """Monolith may resolve query to novita when EMBEDDING_PROVIDER=novita."""
+    monkeypatch.setenv("APP_MODE", "all")
     monkeypatch.setenv("EMBEDDING_PROVIDER", "novita")
     monkeypatch.delenv("EMBEDDING_PROVIDER_QUERY", raising=False)
-    with pytest.raises(ValueError, match="fastembed"):
-        validate_embedding_configuration()
+    monkeypatch.delenv("EMBEDDING_PROVIDER_SEARCH", raising=False)
+    validate_embedding_configuration()
 
 
 def test_validate_accepts_novita_ingest_fastembed_query(
