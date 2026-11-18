@@ -28,26 +28,31 @@ Related: [ARCHITECTURE.md](./ARCHITECTURE.md), [SPLIT_DEPLOY.md](./SPLIT_DEPLOY.
 
 ## Writer → reader data flow
 
+**Happy path (live):** ingester → `POST /sync/v1/*` with Bearer `RAG_SYNC_TOKEN` (see [SPLIT_DEPLOY.md](./SPLIT_DEPLOY.md)) → reader applies files + `points.jsonl` in-process.
+
+**DR path (CLI):** stop reader → `rag-publish.py` / transport → `rag-apply-release.sh` → start reader.
+
+```mermaid
+sequenceDiagram
+  participant Ing as Ingester
+  participant Sync as Reader /sync/v1
+  participant R as Reader Qdrant in-process
+
+  Ing->>Sync: push/begin chunk commit (RAG_SYNC_TOKEN)
+  Sync->>R: apply files + upsert points (live path)
+```
+
 ```mermaid
 sequenceDiagram
   participant Op as Operator
-  participant W as Ingester volume
   participant Pub as rag-publish.py
-  participant T as Transport
   participant A as rag-apply-release.sh
   participant R as Reader volume
-  participant S as Reader process
 
-  Op->>W: ingest documents on writer
-  Op->>Pub: build manifest + optional blobs
-  Pub->>W: read catalog/processed diff
-  Op->>T: copy release directory
-  Op->>S: stop reader service
-  Op->>A: apply manifest to RAG_DATA_ROOT
-  A->>R: copy files delete paths write release.json
-  Note over A,R: Qdrant directory not updated by apply.py
-  Op->>S: start reader
-  S->>R: search using local qdrant path
+  Note over Op,R: DR only — reader stopped
+  Op->>Pub: --stage-blobs --stage-qdrant
+  Op->>A: apply manifest + points.jsonl
+  A->>R: files + qdrant point upsert via CLI client
 ```
 
 ## Trust boundaries
