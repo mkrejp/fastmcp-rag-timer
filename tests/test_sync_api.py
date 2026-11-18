@@ -96,6 +96,59 @@ def _upsert_chunk(
     return point_id
 
 
+def _seed_plain_doc(
+    storage: RagStorage,
+    *,
+    doc_id: str,
+    filename: str,
+    content: bytes,
+    fulltext: str,
+) -> str:
+    """Write original + processed plaintext doc; return sha256 hex digest."""
+    digest = hashlib.sha256(content).hexdigest()
+    storage.save_original(doc_id, filename, content)
+    storage.write_processed(
+        doc_id=doc_id,
+        filename=filename,
+        mime="text/plain",
+        sha256=digest,
+        fulltext=fulltext,
+        chunks=[{"index": 0, "page": 0, "text": fulltext}],
+        images=[],
+        status="ready",
+    )
+    return digest
+
+
+def _begin_upload_and_commit(
+    client: TestClient,
+    *,
+    writer_root: Path,
+    manifest: ReleaseManifest,
+    records: Sequence[Mapping[str, Any]],
+) -> None:
+    """Begin → upload chunks → commit; assert each step returns HTTP 200."""
+    begin = client.post(
+        "/sync/v1/push/begin",
+        headers=SYNC_HEADERS,
+        json={"manifest": manifest.to_dict()},
+    )
+    assert begin.status_code == 200, begin.text
+    _upload_release_chunks(
+        client,
+        writer_root=writer_root,
+        manifest=manifest,
+        records=records,
+        expect_first_blob_unique=False,
+    )
+    commit = client.post(
+        "/sync/v1/push/commit",
+        headers=SYNC_HEADERS,
+        json={"release_id": manifest.release_id},
+    )
+    assert commit.status_code == 200, commit.text
+
+
 @pytest.fixture()
 def reader_sync_client(
     rag_root: Path,
@@ -489,18 +542,12 @@ def test_rollback_restores_watermark_for_next_begin(
     w = RagStorage(str(writer))
     w.ensure_layout()
     doc_id = "dddddddd-dddd-dddd-dddd-dddddddddddd"
-    content = b"rollback payload"
-    w.save_original(doc_id, "rb.txt", content)
-    digest = hashlib.sha256(content).hexdigest()
-    w.write_processed(
+    _seed_plain_doc(
+        w,
         doc_id=doc_id,
         filename="rb.txt",
-        mime="text/plain",
-        sha256=digest,
+        content=b"rollback payload",
         fulltext="rollback payload",
-        chunks=[{"index": 0, "page": 0, "text": "rollback payload"}],
-        images=[],
-        status="ready",
     )
     w_client = open_qdrant_for_sync(w.qdrant_dir)
     try:
@@ -516,26 +563,15 @@ def test_rollback_restores_watermark_for_next_begin(
         reader_catalog=catalog_fingerprint(RagStorage(str(rag_root))),
     )
     manifest.qdrant_point_ids_upserted = point_ids
-    begin = reader_sync_client.post(
-        "/sync/v1/push/begin",
-        headers=SYNC_HEADERS,
-        json={"manifest": manifest.to_dict()},
-    )
-    assert begin.status_code == 200, begin.text
-    _upload_release_chunks(
+    _begin_upload_and_commit(
         reader_sync_client,
         writer_root=writer,
         manifest=manifest,
         records=records,
-        expect_first_blob_unique=False,
     )
-    commit = reader_sync_client.post(
-        "/sync/v1/push/commit",
-        headers=SYNC_HEADERS,
-        json={"release_id": manifest.release_id},
-    )
-    assert commit.status_code == 200, commit.text
-    assert read_release_state(rag_root)["release_id"] == manifest.release_id
+    committed = read_release_state(rag_root)
+    assert committed is not None
+    assert committed["release_id"] == manifest.release_id
 
     rollback = reader_sync_client.post(
         f"/sync/v1/rollback/{manifest.release_id}",
@@ -579,17 +615,8 @@ def test_metadata_fingerprint_push_updates_reader_reliability(
     r = RagStorage(str(rag_root))
     doc_id = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
     content = b"meta seed"
-    digest = hashlib.sha256(content).hexdigest()
-    r.save_original(doc_id, "m.txt", content)
-    r.write_processed(
-        doc_id=doc_id,
-        filename="m.txt",
-        mime="text/plain",
-        sha256=digest,
-        fulltext="meta seed",
-        chunks=[{"index": 0, "page": 0, "text": "meta seed"}],
-        images=[],
-        status="ready",
+    _seed_plain_doc(
+        r, doc_id=doc_id, filename="m.txt", content=content, fulltext="meta seed"
     )
     r_meta = r.read_meta(doc_id)
     assert r_meta is not None
@@ -612,16 +639,8 @@ def test_metadata_fingerprint_push_updates_reader_reliability(
     writer = tmp_path / "writer-meta"
     w = RagStorage(str(writer))
     w.ensure_layout()
-    w.save_original(doc_id, "m.txt", content)
-    w.write_processed(
-        doc_id=doc_id,
-        filename="m.txt",
-        mime="text/plain",
-        sha256=digest,
-        fulltext="meta seed",
-        chunks=[{"index": 0, "page": 0, "text": "meta seed"}],
-        images=[],
-        status="ready",
+    _seed_plain_doc(
+        w, doc_id=doc_id, filename="m.txt", content=content, fulltext="meta seed"
     )
     w_meta = w.read_meta(doc_id)
     assert w_meta is not None
@@ -648,26 +667,12 @@ def test_metadata_fingerprint_push_updates_reader_reliability(
     manifest = build_file_diff(w, parent_release_id="seed-wm", reader_catalog=reader_fp)
     assert doc_id in manifest.catalog_doc_ids_upserted
     manifest.qdrant_point_ids_upserted = point_ids
-
-    begin = reader_sync_client.post(
-        "/sync/v1/push/begin",
-        headers=SYNC_HEADERS,
-        json={"manifest": manifest.to_dict()},
-    )
-    assert begin.status_code == 200, begin.text
-    _upload_release_chunks(
+    _begin_upload_and_commit(
         reader_sync_client,
         writer_root=writer,
         manifest=manifest,
         records=records,
-        expect_first_blob_unique=False,
     )
-    commit = reader_sync_client.post(
-        "/sync/v1/push/commit",
-        headers=SYNC_HEADERS,
-        json={"release_id": manifest.release_id},
-    )
-    assert commit.status_code == 200, commit.text
 
     updated = RagStorage(str(rag_root)).read_meta(doc_id)
     assert updated is not None
