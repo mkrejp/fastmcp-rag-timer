@@ -4,6 +4,9 @@ Before applying a push, copy touched document trees, export their Qdrant
 points, and snapshot ``release.json`` under ``.sync/rollback/<release_id>/``.
 Restore puts docs, vectors, **and the previous watermark** back so the next
 push can continue from the pre-commit parent.
+
+After a successful commit, :func:`prune_rollback_snapshots` retains only the
+newest ``RAG_SYNC_ROLLBACK_KEEP`` directories (default 1).
 """
 
 from __future__ import annotations
@@ -15,6 +18,7 @@ from typing import Any, Sequence
 
 from qdrant_client import QdrantClient
 
+from rag.config import resolve_sync_rollback_keep
 from rag.logging_setup import get_logger
 from rag.publish.qdrant_sync import (
     POINTS_REL_PATH,
@@ -36,6 +40,91 @@ META_NAME = "rollback.json"
 def rollback_root(rag_root: Path | str, release_id: str) -> Path:
     """Return ``.sync/rollback/<release_id>`` under ``rag_root``."""
     return Path(rag_root) / SYNC_DIR_NAME / ROLLBACK_DIR_NAME / release_id
+
+
+def rollback_base(rag_root: Path | str) -> Path:
+    """Return ``.sync/rollback`` under ``rag_root``."""
+    return Path(rag_root) / SYNC_DIR_NAME / ROLLBACK_DIR_NAME
+
+
+def list_rollback_snapshots(rag_root: Path | str) -> list[dict[str, Any]]:
+    """Return rollback snapshot dirs newest-first (by ``created_at``, then name)."""
+    base = rollback_base(rag_root)
+    if not base.is_dir():
+        return []
+    entries: list[dict[str, Any]] = []
+    for path in base.iterdir():
+        if not path.is_dir():
+            continue
+        meta_path = path / META_NAME
+        created_at = ""
+        release_id = path.name
+        if meta_path.is_file():
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                meta = {}
+            created_at = str(meta.get("created_at") or "")
+            if meta.get("release_id"):
+                release_id = str(meta["release_id"])
+        if not created_at:
+            try:
+                # Sortable proxy when meta is missing / unreadable.
+                created_at = f"mtime:{path.stat().st_mtime_ns:020d}"
+            except OSError:
+                created_at = f"name:{path.name}"
+        entries.append(
+            {
+                "path": path,
+                "release_id": release_id,
+                "created_at": created_at,
+            }
+        )
+    entries.sort(key=lambda item: (str(item["created_at"]), str(item["release_id"])))
+    entries.reverse()  # newest first
+    return entries
+
+
+def prune_rollback_snapshots(
+    rag_root: Path | str,
+    *,
+    keep: int | None = None,
+) -> dict[str, Any]:
+    """Delete older rollback snapshots, keeping the newest ``keep`` directories.
+
+    ``keep`` defaults to :func:`resolve_sync_rollback_keep` (env
+    ``RAG_SYNC_ROLLBACK_KEEP``, default 1). ``keep=0`` removes all snapshots.
+    """
+    retain = resolve_sync_rollback_keep() if keep is None else keep
+    if retain < 0:
+        retain = 0
+    snapshots = list_rollback_snapshots(rag_root)
+    kept = snapshots[:retain]
+    doomed = snapshots[retain:]
+    pruned: list[str] = []
+    for item in doomed:
+        path = Path(item["path"])
+        release_id = str(item["release_id"])
+        try:
+            shutil.rmtree(path, ignore_errors=False)
+            pruned.append(release_id)
+        except OSError:
+            logger.exception("Failed to prune rollback snapshot %s", path)
+            shutil.rmtree(path, ignore_errors=True)
+            pruned.append(release_id)
+    result = {
+        "keep": retain,
+        "kept": [str(item["release_id"]) for item in kept],
+        "pruned": pruned,
+    }
+    if pruned:
+        logger.info(
+            "Pruned rollback snapshots keep=%s kept=%s pruned=%s",
+            retain,
+            result["kept"],
+            pruned,
+        )
+    return result
 
 
 def snapshot_touched_docs(

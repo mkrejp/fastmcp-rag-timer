@@ -40,7 +40,11 @@ from rag.publish.qdrant_sync import POINTS_REL_PATH
 from rag.publish.release_state import read_release_state
 from rag.publish.sync_chunk import assemble_blob_files, assemble_points_jsonl
 from rag.publish.sync_constants import ASSEMBLED_DIR_NAME, BLOBS_STAGE, POINTS_STAGE
-from rag.publish.sync_rollback import restore_rollback, snapshot_touched_docs
+from rag.publish.sync_rollback import (
+    prune_rollback_snapshots,
+    restore_rollback,
+    snapshot_touched_docs,
+)
 from rag.publish.sync_session import (
     STATUS_ABORTED,
     STATUS_COMMITTED,
@@ -552,6 +556,8 @@ def push_commit(
                 "points_deleted": state.get("points_deleted"),
             }
         )
+        # R2: retain only the newest N rollback epochs (default 1).
+        commit_info["rollback_retention"] = prune_rollback_snapshots(root)
         mark_status(
             root,
             release_id,
