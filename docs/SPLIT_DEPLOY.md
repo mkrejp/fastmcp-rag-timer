@@ -46,9 +46,9 @@ Coolify/VPS contract below stays valid for later migration; **do not** provision
 
 | Mode | Dockerfile | Build context | Entrypoint / CMD | Listen port | Health |
 | --- | --- | --- | --- | --- | --- |
-| Reader | `Dockerfile.reader` | repo root (`.`) | `python reader_main.py` | `8080` (`PORT` override) | `GET /health` |
-| Ingester | `Dockerfile.ingester` | repo root (`.`) | `python ingester_main.py` | `8080` (`PORT` override) | `GET /health` |
-| Monolith | `Dockerfile` | repo root (`.`) | `python main.py` | `8080` (`PORT` override) | `GET /health` |
+| Reader | `Dockerfile.reader` | repository root (`.`) | `python reader_main.py` | `8080` (`PORT` override) | `GET /health` |
+| Ingester | `Dockerfile.ingester` | repository root (`.`) | `python ingester_main.py` | `8080` (`PORT` override) | `GET /health` |
+| Monolith | `Dockerfile` | repository root (`.`) | `python main.py` | `8080` (`PORT` override) | `GET /health` |
 
 Examples: `deploy/vps/docker-compose.yml`, `deploy/railway/README.md`.
 
@@ -100,17 +100,72 @@ Volumes are independent. There is **no** live Qdrant share and **no** HTTP “pu
 
 **Reader does not expose** an authenticated “apply release” HTTP route. It exposes normal read paths (`/health`, `/mcp`, search tools, `/node-info`, static/UI). Release apply is CLI: `scripts/rag-apply-release.sh`.
 
+**Qdrant sync design (verified against Qdrant 1.20 / qdrant-client 1.20 local mode):**
+
+- Snapshots are **not** available for `QdrantClient(path=…)` (`NotImplementedError`).
+- No WAL / incremental replication between two embedded stores — scroll+filter+upsert (our JSONL by `doc_id`) is the intended pattern.
+- Baseline / disaster recovery: **stop both processes**, then **rsync** the data dir (`meta.json`, `.lock`, `collection/*/storage.sqlite`, …). Never copy while a client is open.
+- Routine deltas: JSONL (`--stage-qdrant`). Upserts must resend every named vector present on the point (omitted named vector ⇒ nulled).
+- Lock: second opener gets `RuntimeError` … already accessed…; lockfile `{qdrant_dir}/.lock`.
+
 Practical sequence:
 
-1. On **ingester** (app **stopped** so Qdrant unlocks):  
+1. On **ingester**, free the Qdrant lock (HTTP app must not hold `path=`). Then:  
    `RAG_SKIP_DEFAULT_APP=1 python scripts/rag-publish.py --rag-root "$RAG_DATA_ROOT" --out /tmp/release --reader-catalog /path/to/reader-fp.json --stage-blobs --stage-qdrant`  
    (`reader-fp.json` = reader `doc_id→sha256` catalog snapshot; baseline if omitted / empty.)
-2. **Transport** `/tmp/release` (contains `manifest.json`, `blobs/`, `qdrant/points.jsonl`) to the reader host: Railway one-off / SSH / object store / `railway run` + volume access — whatever ops use. Auth for transport is infrastructure (SSH keys, bucket credentials), **not** app Bearer tokens.
-3. On **reader**: stop the reader service →  
-   `scripts/rag-apply-release.sh --release-dir /path/to/release --rag-root "$RAG_DATA_ROOT"` → start reader.
+2. **Transport** `/tmp/release` (`manifest.json`, `blobs/`, `qdrant/points.jsonl`) to the reader volume. Prefer object store or `scp` between hosts. Auth is infrastructure (SSH keys / bucket credentials), **not** app Bearer tokens.
+3. On **reader**: free Qdrant lock →  
+   `scripts/rag-apply-release.sh --release-dir /path/to/release --rag-root "$RAG_DATA_ROOT"` → start reader again.
 4. Optional on writer: `--mark-published` after a successful apply.
 
-First-time seed (or disaster recovery): stop source → **rsync/copy entire** `/data/rag` (including `qdrant/`) onto the reader volume → start reader only. Prefer that over `--force-baseline` JSONL for ~39 GB trees.
+**Railway volume limits (verified 2026-11-18):**
+
+- Hobby volume max is **5 GB** — a ~39 GB tree needs **Pro** (default 50 GB, resize up to 1 TB).
+- Volume storage bills ~$0.15/GB/mo even when the service is stopped.
+- One volume ↔ one service; replicas cannot use volumes.
+- Does **not** work for `/data` scripts: `railway run` (local env only), pre-deploy,
+  `railway ssh` / `railway volume files` against a **stopped** deployment.
+
+**Preferred ops recipe: temporary `sleep infinity` + `railway ssh`**
+
+1. Clear / disable the HTTP healthcheck first (`sleep` never returns 2xx; default
+   healthcheck timeout is 300 s). Ensure `railway.json` does not pin
+   `deploy.startCommand` / `healthcheckPath` (config-as-code overrides the UI).
+2. Set Custom Start Command to `sleep infinity` (UI Settings, or
+   `railway environment edit --service-config <svc> deploy.startCommand "sleep infinity"`)
+   and redeploy. There is no `RAILWAY_START_COMMAND` env var.
+3. `railway ssh --service <svc> -- <cmd>` with `RAG_SKIP_DEFAULT_APP=1` for
+   publish/apply (Qdrant unlocked because the HTTP app is not running).
+4. Restore the normal start command + healthcheck and redeploy.
+5. For the cold ingester, finish with `railway down --service <ingester> --yes`
+   (volume stays attached and billed).
+
+Caveat: volume services take cutover downtime on every deploy, so the **warm reader
+is down for the whole sleep window**. Keep that window short.
+
+**Alternatives (ranked):**
+
+| Rank | Approach | When |
+| --- | --- | --- |
+| 2 | One-shot start command = the script; restart policy not Always | Ingester publish when inputs already on `/data` |
+| 3 | Cron service (`railway cron run`) with volume | Not on the warm reader |
+| 4 | Detach/attach volume to a temporary ops service | Same region; original service loses the volume |
+| 5 | Backups/restore | Recovery only; manual backup cap is 50% of volume size |
+
+**Suggested publish/apply runbook (deltas):**
+
+1. Put **both** services on `sleep infinity` (healthchecks cleared) so volumes mount
+   and Qdrant locks are free.
+2. On ingester: run `rag-publish.py --stage-blobs --stage-qdrant`.
+3. Copy the release dir to the reader (`scp` via `ssh.railway.com`, or
+   `railway volume files` download/upload through local disk).
+4. On reader: run `rag-apply-release.sh`.
+5. Restore reader start command + healthcheck → redeploy (warm again).
+6. `railway down` the ingester (cold).
+
+First-time seed (or disaster recovery): stop source → copy entire `/data/rag`
+(including `qdrant/`) onto the reader volume → start reader only.
+Prefer that over `--force-baseline` JSONL for ~39 GB trees.
 
 ### (c) Reader survival across restarts
 
@@ -239,11 +294,14 @@ MCP_ALLOWED_HOSTS=art-nouveau-rag.animarium.ai,localhost,localhost:*,127.0.0.1,1
 
 OAuth redirect: `https://art-nouveau-rag.animarium.ai/auth/callback`.
 
-Hostinger `A` → Hetzner IPv4 only after the VPS exists. Clients (e.g. **mcp-chat-tester**) must switch MCP base URL to the public reader; this repo does not own those clients.
+Hostinger `A` → Hetzner IPv4 only after the VPS exists. Clients (e.g. **mcp-chat-tester**)
+must switch MCP base URL to the public reader; this repository does not own those clients.
 
 ### CoolifyHoster action now
 
-**None.** No Coolify server, no apps, no DNS. Wait for Marek. Railway service changes are owned by the repo/Railway operator (Marek / this project agent), not CoolifyHoster, unless Marek explicitly asks.
+**None.** No Coolify server, no apps, no DNS. Wait for Marek. Railway service changes are
+owned by the repository/Railway operator (Marek / this project agent), not CoolifyHoster,
+unless Marek explicitly asks.
 
 ---
 
@@ -264,6 +322,8 @@ Apply deletes then upserts points for touched `doc_id`s in `client_domain_knowle
 | `fastembed` | Local ONNX (~4GB+ peak); 8GB preferred |
 
 Ingest may stay on Novita independently via `EMBEDDING_PROVIDER_INGEST`.
+
+**Consistency:** prefer **Novita ingest + Novita query** on the warm reader. Mixing Novita ingest with local FastEmbed query is **unsafe until measured** (BGE-M3 is 1024-d, but bit-exact / cross-runtime parity is not guaranteed; FastEmbed’s built-in catalog may not list `BAAI/bge-m3`). Point sync copies existing vectors — it does not re-embed.
 
 ## Reader context search tools
 
