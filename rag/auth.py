@@ -23,9 +23,7 @@ McpAuthRole = Literal["write", "read"]
 
 # JSON-RPC server-error range; paired with HTTP 403 for read-token write calls.
 JSONRPC_FORBIDDEN = -32003
-_READ_TOKEN_WRITE_TOOL_MESSAGE = (
-    "Read-only token cannot call write tools"
-)
+_READ_TOKEN_WRITE_TOOL_MESSAGE = "Read-only token cannot call write tools"
 
 
 def require_api_token(
@@ -129,7 +127,9 @@ def _forbidden_write_call(payload: object) -> dict[str, Any] | None:
 
 def _is_tools_list(payload: object) -> bool:
     """Return whether the JSON-RPC payload lists tools."""
-    return any(item.get("method") == "tools/list" for item in _iter_rpc_objects(payload))
+    return any(
+        item.get("method") == "tools/list" for item in _iter_rpc_objects(payload)
+    )
 
 
 def _filter_tools_list_payload(payload: object) -> object:
@@ -237,9 +237,7 @@ async def _read_http_body(receive: Receive) -> tuple[bytes, list[Message]]:
     return b"".join(chunks), extras
 
 
-def _replay_receive(
-    body: bytes, extras: list[Message], receive: Receive
-) -> Receive:
+def _replay_receive(body: bytes, extras: list[Message], receive: Receive) -> Receive:
     """Replay a buffered request body, then continue with the original receive."""
     queued: list[Message] = [
         {"type": "http.request", "body": body, "more_body": False},
