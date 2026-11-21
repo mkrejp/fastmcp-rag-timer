@@ -432,7 +432,8 @@ Streamable HTTP MCP is mounted at **`/mcp`** (`stateless_http=True`, `streamable
 - `verify_link` (set `verification_status` / verifier / notes on an existing locality_links point; forwards to Trails when configured)
 - `link_stats` (counts by status, method, obec, ambiguous, locality_level)
 - `sync_links_to_trails` (idempotent backfill of `locality_links` to TrailsAssemblage; `dry_run` option)
-- `refine_geo` (`doc_id`, optional `chunk_index` / `image_id`, `geo_refined`, `dry_run=true`) — store refined GPS **beside** original `lat`/`lon` (never overwritten); writes append `geo_refined_history` and are idempotent
+- `sync_layer_objects_to_trails` (idempotent backfill of curated Trails `layer_objects` from `geo_refined` metadata; `dry_run` option; needs `TRAILS_LAYER_OBJECTS_FORWARD=1`)
+- `refine_geo` (`doc_id`, optional `chunk_index` / `image_id`, `geo_refined`, `dry_run=true`) — store refined GPS **beside** original `lat`/`lon` (never overwritten); writes append `geo_refined_history` and are idempotent; on write, best-effort Diff Push + Trails layer_objects forward (parallel)
 - `refine_geo_batch` (`items: [{doc_id, chunk_index?, image_id?, geo_refined}]`, `dry_run=true`) — same guarantees, per-item `ok` / `would_change` / `changed` / `error`; max **200** items per call
 - `list_image_records` (optional `doc_id` / verification `status` / geo filters; optional `include_superseded=true`)
 - `list_geo_refinements` (`filter` or individual `precision` / `status` / `confidence_level` / `needs_refinement` / `verified` / `doc_id`, paginated; optional `include_superseded=true`)
@@ -467,7 +468,17 @@ Original coordinates stay on the record (`lat`/`lon`, or a GeoJSON `geom` Point)
 
 Search hits, `list_image_records`, and `get_document_images` / `get_document_chunks` prefer `geo_refined` when present, else original, and expose both plus `geo_source: refined|original`. `list_image_records` and `search_images` accept optional `precision` and `needs_refinement` filters.
 
-Backfill after deploy: call `refine_geo_batch` in pages of ≤200 (try `dry_run=true` first). Same bearer auth as `link_locality`. Geo refinements are **not** forwarded to Trails.
+Backfill after deploy: call `refine_geo_batch` in pages of ≤200 (try `dry_run=true` first). Same bearer auth as `link_locality`.
+
+### Trails curated `layer_objects` (opt-in)
+
+When `TRAILS_API_URL`, `TRAILS_API_TOKEN`, and **`TRAILS_LAYER_OBJECTS_FORWARD=1`** are set on an **ingester** (never on a reader), post-mutate hooks call `maybe_forward_layer_objects` **in parallel with Diff Push** (neither waits on the other). Payload is metadata-only (no Qdrant vector export):
+
+- Qualify: `geo_refined.status ∈ {overeno, zpresneno}`, `confidence >= 0.8`, `precision ∈ {building, street}`, v1 content = secese buildings + facades
+- Buildings → `pr_stav_nazev=budova` (doc-level); facades → one object per image (`rag_doc_id` + `rag_image_id`, `fasáda`)
+- `POST /catalog/objects` body `{items:[{op, rag_doc_id, rag_image_id?, lon, lat, hlavni_prvek, pr_stav_nazev, geo_*, fingerprint}]}` (Trails #44); ack per `items[].status`; failures → `{RAG_DATA_ROOT}/trails_objects_outbox.json` (separate lock)
+- Soft-absent (`op=absent`) when deleted/retracted/superseded/falls below gate; Trails home map must hide soft-removed rows
+- Backfill: MCP `sync_layer_objects_to_trails(dry_run=true|false)` or `python scripts/rag-sync-layer-objects.py --dry-run`
 
 ### Frontend contract (`fastmcp-rag-timer-frontend`)
 
@@ -571,10 +582,12 @@ rag/
   ingest.py             # persist + index pipeline
   vectorstore.py        # local Qdrant named vectors
   trails_sync.py        # TrailsAssemblage locality-link HTTP forward + outbox
+  trails_layer_objects.py  # curated layer_objects forward (parallel to Diff Push)
   logging_setup.py      # rag logger + in-memory ring buffer
   config.py             # env defaults
 static/                 # RAG console (index.html, app.js, styles.css)
 scripts/golden_recall_smoke.py
+scripts/rag-sync-layer-objects.py
 ```
 
 ## Local run
@@ -594,6 +607,8 @@ python main.py
 # Optional TrailsAssemblage locality-link forward (both required; unset = off):
 # export TRAILS_API_URL=https://trail.animarium.ai
 # export TRAILS_API_TOKEN=...
+# Optional curated layer_objects forward (default off; ingester only):
+# export TRAILS_LAYER_OBJECTS_FORWARD=1
 ```
 
 ## Tests

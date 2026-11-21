@@ -70,6 +70,7 @@ MCP_TOOL_DOCS = {
     "verify_link": "Set verification_status on an existing locality_links point.",
     "link_stats": "Aggregate locality_links counts by status, obec, method, ambiguous.",
     "sync_links_to_trails": "Backfill locality_links to TrailsAssemblage (optional dry_run).",
+    "sync_layer_objects_to_trails": "Backfill curated layer_objects to Trails (optional dry_run).",
     "verify_image_record": "Set verification on a pdf_figure point.",
     "list_image_records": "List pdf_figure records; optional precision/needs_refinement.",
     "image_record_stats": "Aggregate pdf_figure verification counts for one document.",
@@ -101,6 +102,9 @@ def create_app(
     set_global_store(accounting)
     qdrant = open_qdrant(storage.qdrant_dir, collection_name=COLLECTION_NAME)
     maybe_drain_on_startup(qdrant, storage.trails_outbox_path)
+    from rag.trails_sync import maybe_drain_objects_on_startup
+
+    maybe_drain_objects_on_startup(storage)
     providers = embedding_provider_status()
     include_writes = mcp_include_write_tools()
     logger.info(

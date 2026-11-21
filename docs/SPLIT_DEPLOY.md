@@ -317,6 +317,7 @@ Public hostname: **`art-nouveau-rag.animarium.ai`** → Coolify reader. Ingester
 | `SESSION_SECRET` | recommended | **yes** | Cookie sessions |
 | `GOOGLE_CLIENT_SECRET` | if Google UI | **yes** | With `GOOGLE_CLIENT_ID` |
 | `TRAILS_API_TOKEN` | if Trails sync | **yes** | With `TRAILS_API_URL` |
+| `TRAILS_LAYER_OBJECTS_FORWARD` | optional | no | Default off; set `1` on **ingester** only for curated `layer_objects` |
 
 **Non-secret:**
 

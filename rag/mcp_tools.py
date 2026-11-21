@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.utilities.types import Image
@@ -65,6 +65,7 @@ from rag.search_hits import (
 )
 from rag.storage import ImageMeta, RagStorage
 from rag.trails_sync import forward_locality_links
+from rag.trails_sync import sync_layer_objects_to_trails as run_sync_layer_objects
 from rag.trails_sync import sync_links_to_trails as run_sync_links_to_trails
 from rag.vectorstore import (
     IMAGE_VECTOR_NAME,
@@ -98,10 +99,12 @@ def _safe_trails_forward(
 def _safe_sync_push_after_links(
     storage: RagStorage,
     qdrant: QdrantClient,
+    *,
+    doc_ids: list[str] | None = None,
 ) -> dict[str, Any] | None:
-    """Best-effort live diff push after locality_links mutation (MCP).
+    """Best-effort Diff Push after locality_links mutation (MCP).
 
-    Mirrors REST ``_maybe_attach_sync_push``. Never raises into the tool path.
+    Mirrors REST ``_maybe_attach_sync_push`` push half. Never raises.
     """
     try:
         from rag.publish.diff_push import maybe_push_after_ingest
@@ -110,6 +113,47 @@ def _safe_sync_push_after_links(
     except Exception:  # noqa: BLE001 - never fail MCP writes on sync hook
         logger.warning("Post-link_locality sync hook crashed", exc_info=True)
         return {"pushed": False, "error": "sync_hook_crashed"}
+
+
+def _safe_trails_objects_forward(
+    storage: RagStorage,
+    *,
+    doc_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    """Best-effort Trails layer_objects forward; never raises into MCP."""
+    try:
+        from rag.trails_sync import maybe_forward_layer_objects
+
+        return maybe_forward_layer_objects(storage, doc_ids=doc_ids or [])
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Trails layer_objects forward wrapper failed: %s", exc)
+        return {"enabled": True, "ok": False, "error": str(exc)[:300]}
+
+
+def _safe_post_mutate_hooks(
+    storage: RagStorage,
+    qdrant: QdrantClient,
+    *,
+    doc_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    """Run Diff Push and Trails layer_objects concurrently (isolated failures)."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    out: dict[str, Any] = {}
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        push_future = pool.submit(
+            _safe_sync_push_after_links, storage, qdrant, doc_ids=doc_ids
+        )
+        objects_future = pool.submit(
+            _safe_trails_objects_forward, storage, doc_ids=doc_ids
+        )
+        sync_result = push_future.result()
+        trails_objects = objects_future.result()
+    if sync_result is not None:
+        out["sync_push"] = sync_result
+    if trails_objects.get("enabled"):
+        out["trails_objects"] = trails_objects
+    return out
 
 
 MAX_MCP_IMAGE_BYTES = 5 * 1024 * 1024
@@ -565,6 +609,15 @@ def register_mcp_tools(
                     data=content.encode("utf-8"),
                     metadata=metadata,
                 )
+                from rag.trails_sync import doc_ids_from_mutate_result
+
+                result.update(
+                    _safe_post_mutate_hooks(
+                        storage,
+                        qdrant,
+                        doc_ids=doc_ids_from_mutate_result(result),
+                    )
+                )
                 return json.dumps(result, ensure_ascii=False)
             except Exception as exc:  # noqa: BLE001 - return tool-visible error text
                 return f"Error ingesting text: {exc}"
@@ -644,6 +697,15 @@ def register_mcp_tools(
                     doc_id=doc_id,
                     metadata=metadata,
                 )
+                from rag.trails_sync import doc_ids_from_mutate_result
+
+                result.update(
+                    _safe_post_mutate_hooks(
+                        storage,
+                        qdrant,
+                        doc_ids=doc_ids_from_mutate_result(result) or [doc_id],
+                    )
+                )
                 return json.dumps(result, ensure_ascii=False)
             except DocumentNotFoundError as exc:
                 return f"Error update_document_metadata: {exc}"
@@ -686,6 +748,16 @@ def register_mcp_tools(
                     old_doc_id=old_doc_id,
                     new_doc_id=new_doc_id,
                     correction_note=note,
+                )
+                from rag.trails_sync import doc_ids_from_mutate_result
+
+                result.update(
+                    _safe_post_mutate_hooks(
+                        storage,
+                        qdrant,
+                        doc_ids=doc_ids_from_mutate_result(result)
+                        or [old_doc_id, new_doc_id],
+                    )
                 )
                 return json.dumps(result, ensure_ascii=False)
             except DocumentNotFoundError as exc:
@@ -1266,9 +1338,14 @@ def register_mcp_tools(
                     list(result.get("ids") or []),
                     outbox_path=storage.trails_outbox_path,
                 )
-                sync_result = _safe_sync_push_after_links(storage, qdrant)
-                if sync_result is not None:
-                    result["sync_push"] = sync_result
+                doc_ids = sorted(
+                    {
+                        str(item.get("doc_id") or "").strip()
+                        for item in items
+                        if str(item.get("doc_id") or "").strip()
+                    }
+                )
+                result.update(_safe_post_mutate_hooks(storage, qdrant, doc_ids=doc_ids))
                 return json.dumps(result, ensure_ascii=False)
             except LocalityLinkPayloadError as exc:
                 return f"Error link_locality: {exc}"
@@ -1363,9 +1440,11 @@ def register_mcp_tools(
                     [trails_id],
                     outbox_path=storage.trails_outbox_path,
                 )
-                sync_result = _safe_sync_push_after_links(storage, qdrant)
-                if sync_result is not None:
-                    result["sync_push"] = sync_result
+                link_raw = result.get("link")
+                link: dict[str, Any] = link_raw if isinstance(link_raw, dict) else {}
+                doc_ids = [str(link.get("doc_id") or "").strip()]
+                doc_ids = [item for item in doc_ids if item]
+                result.update(_safe_post_mutate_hooks(storage, qdrant, doc_ids=doc_ids))
                 return json.dumps(result, ensure_ascii=False)
             except LocalityLinkPayloadError as exc:
                 return f"Error verify_link: {exc}"
@@ -1507,6 +1586,12 @@ def register_mcp_tools(
                     image_id=image_id.strip() or None,
                     dry_run=bool(dry_run),
                 )
+                if result.get("written"):
+                    result.update(
+                        _safe_post_mutate_hooks(
+                            storage, qdrant, doc_ids=[str(doc_id).strip()]
+                        )
+                    )
                 return json.dumps(result, ensure_ascii=False)
             except GeoRefinedNotFoundError as exc:
                 return f"Error refine_geo: {exc}"
@@ -1545,6 +1630,20 @@ def register_mcp_tools(
                     items=items,
                     dry_run=bool(dry_run),
                 )
+                written_ids: list[str] = []
+                for item in result.get("items") or []:
+                    if not isinstance(item, Mapping):
+                        continue
+                    if item.get("written") or item.get("changed"):
+                        doc = str(item.get("doc_id") or "").strip()
+                        if doc:
+                            written_ids.append(doc)
+                if written_ids and not dry_run:
+                    result.update(
+                        _safe_post_mutate_hooks(
+                            storage, qdrant, doc_ids=sorted(set(written_ids))
+                        )
+                    )
                 return json.dumps(result, ensure_ascii=False)
             except GeoRefinedPayloadError as exc:
                 return f"Error refine_geo_batch: {exc}"
@@ -1711,6 +1810,32 @@ def register_mcp_tools(
 
         return _run_mcp_tool(
             "sync_links_to_trails",
+            request_chars=len(str(dry_run)),
+            source=None,
+            fn=_body,
+        )
+
+    @write_tool()
+    def sync_layer_objects_to_trails(dry_run: bool = False) -> str:
+        """Backfill curated ``layer_objects`` to TrailsAssemblage (idempotent).
+
+        Scans document/image ``geo_refined`` metadata (no Qdrant vector scroll).
+        Qualifies secese buildings + facades with status overeno|zpresneno,
+        confidence >= 0.8, precision building|street. ``dry_run=true`` lists
+        would-be ops without HTTP. Live mode needs ``TRAILS_LAYER_OBJECTS_FORWARD=1``
+        plus ``TRAILS_API_URL`` / ``TRAILS_API_TOKEN``. Failures queue to
+        ``trails_objects_outbox.json``. Readers never forward.
+        """
+
+        def _body() -> str:
+            try:
+                result = run_sync_layer_objects(storage, dry_run=bool(dry_run))
+                return json.dumps(result, ensure_ascii=False)
+            except Exception as exc:  # noqa: BLE001
+                return f"Error sync_layer_objects_to_trails: {exc}"
+
+        return _run_mcp_tool(
+            "sync_layer_objects_to_trails",
             request_chars=len(str(dry_run)),
             source=None,
             fn=_body,

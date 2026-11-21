@@ -203,7 +203,7 @@ Runtime network clients in application code:
 4. Hugging Face Hub download for CLIP vision/text towers when `IMAGE_EMBEDDING_ENABLED=true`, cached under `{RAG_DATA_ROOT}/clip` or `IMAGE_EMBEDDING_CACHE_PATH`.
 5. `requests.get` in `rag.remote.fetch_remote_bytes()` — used by `POST /ingest-json` to download public http(s) JSON/GeoJSON (GitHub blob URLs rewritten to `raw.githubusercontent.com`). Private/loopback/link-local/metadata destinations are rejected. Max 5 redirects; size cap `RAG_MAX_REMOTE_JSON_BYTES`.
 6. `requests.post` / `requests.get` in `rag.google_oauth` to `oauth2.googleapis.com/token` and `openidconnect.googleapis.com/v1/userinfo` during console sign-in. The browser is redirected to `accounts.google.com/o/oauth2/v2/auth`.
-7. Optional `requests` to TrailsAssemblage when `TRAILS_API_URL` and `TRAILS_API_TOKEN` are set (locality links; write MCP tools / ingester only).
+7. Optional `requests` to TrailsAssemblage when `TRAILS_API_URL` and `TRAILS_API_TOKEN` are set (locality links; write MCP tools / ingester only). With `TRAILS_LAYER_OBJECTS_FORWARD=1`, also `POST /catalog/objects` for curated layer_objects (parallel to Diff Push; separate `trails_objects_outbox.json`).
 
 No code talks to a remote Qdrant URL, PostgreSQL, Redis, SMTP, or webhooks.
 
@@ -291,7 +291,7 @@ Auth points that do not exist: JWT (other than Google session cookie), mTLS, MCP
 | Inbound `/mcp` | Tool arguments and return strings (including document text/chunks); optional inline image bytes up to 5 MiB |
 | Inbound `/ui` and `/api/admin` | Google profile in session; volume listings, log buffer, accounting rollups |
 | Outbound Novita embedding | Chunk **plaintext** plus the API key — ingest only; see [Embedding connectivity](#embedding-connectivity) |
-| Outbound TrailsAssemblage | Locality-link JSON to `TRAILS_API_URL` (`POST /locality-links`, `PATCH /locality-links/{id}/verify`) with Bearer `TRAILS_API_TOKEN` when both env vars are set. Token is never logged. Failures retry then persist to `{RAG_DATA_ROOT}/trails_outbox.json`. |
+| Outbound TrailsAssemblage | Locality links: `POST /locality-links` / verify PATCH with Bearer `TRAILS_API_TOKEN`. Failures → `trails_outbox.json`. Opt-in `TRAILS_LAYER_OBJECTS_FORWARD=1` → `POST /catalog/objects` `{items:[…]}`; failures → `trails_objects_outbox.json`. Readers never forward. |
 | Outbound FastEmbed/CLIP | Model weights from Hugging Face; query plaintext stays local after download |
 | Disk Qdrant | Named vectors and payloads (`source_type`, `text`/`content_summary`, `source`/`parent_document`, `doc_id`, `page_number`, `chunk_index`, `image_id`, `file_path`, `sha256`) |
 

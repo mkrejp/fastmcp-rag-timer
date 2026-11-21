@@ -53,6 +53,7 @@ MCP_WRITE_TOOLS = frozenset(
         "link_locality",
         "verify_link",
         "sync_links_to_trails",
+        "sync_layer_objects_to_trails",
         "verify_image_record",
         "reindex_figures",
         "refine_geo",
