@@ -389,37 +389,54 @@ def _maybe_attach_sync_push(
 ) -> dict[str, Any]:
     """Best-effort Diff Push + Trails layer_objects after a mutating write.
 
-    Diff Push and Trails ``layer_objects`` run in parallel (neither awaits the
-    other). No-op unless each path's env flags are set. Never raises into the
-    HTTP path. Skipped for dry-run mutators.
+    Diff Push and Trails ``layer_objects`` start concurrently (ThreadPoolExecutor);
+    neither waits on the other's result before starting. Failures are isolated.
+    Never raises into the HTTP path. Skipped for dry-run mutators.
     """
     if dry_run:
         return result
+    from concurrent.futures import ThreadPoolExecutor
+
     storage = _storage(request)
     qdrant = _qdrant(request)
     out = dict(result)
-    try:
-        from rag.publish.diff_push import maybe_push_after_ingest
 
-        sync_result = maybe_push_after_ingest(storage, qdrant)
-        if sync_result is not None:
-            out["sync_push"] = sync_result
-    except Exception:  # noqa: BLE001 - never fail writes on sync hook
-        logger.warning("Post-mutation sync hook crashed", exc_info=True)
-    try:
-        from rag.trails_sync import (
-            doc_ids_from_mutate_result,
-            maybe_forward_layer_objects,
-        )
+    def _run_push() -> dict[str, Any] | None:
+        try:
+            from rag.publish.diff_push import maybe_push_after_ingest
 
-        trails_objects = maybe_forward_layer_objects(
-            storage,
-            doc_ids=doc_ids_from_mutate_result(result),
-        )
-        if trails_objects.get("enabled"):
-            out["trails_objects"] = trails_objects
-    except Exception:  # noqa: BLE001 - never fail writes on Trails objects hook
-        logger.warning("Post-mutation Trails layer_objects hook crashed", exc_info=True)
+            return maybe_push_after_ingest(storage, qdrant)
+        except Exception:  # noqa: BLE001 - never fail writes on sync hook
+            logger.warning("Post-mutation sync hook crashed", exc_info=True)
+            return {"pushed": False, "error": "sync_hook_crashed"}
+
+    def _run_objects() -> dict[str, Any] | None:
+        try:
+            from rag.trails_sync import (
+                doc_ids_from_mutate_result,
+                maybe_forward_layer_objects,
+            )
+
+            return maybe_forward_layer_objects(
+                storage,
+                doc_ids=doc_ids_from_mutate_result(result),
+            )
+        except Exception:  # noqa: BLE001 - never fail writes on Trails objects hook
+            logger.warning(
+                "Post-mutation Trails layer_objects hook crashed",
+                exc_info=True,
+            )
+            return None
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        push_future = pool.submit(_run_push)
+        objects_future = pool.submit(_run_objects)
+        sync_result = push_future.result()
+        trails_objects = objects_future.result()
+    if sync_result is not None:
+        out["sync_push"] = sync_result
+    if trails_objects is not None and trails_objects.get("enabled"):
+        out["trails_objects"] = trails_objects
     return out
 
 

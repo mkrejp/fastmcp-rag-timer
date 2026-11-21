@@ -145,12 +145,21 @@ def _safe_post_mutate_hooks(
     *,
     doc_ids: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Run Diff Push and Trails layer_objects independently (parallel)."""
+    """Run Diff Push and Trails layer_objects concurrently (isolated failures)."""
+    from concurrent.futures import ThreadPoolExecutor
+
     out: dict[str, Any] = {}
-    sync_result = _safe_sync_push_after_links(storage, qdrant, doc_ids=doc_ids)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        push_future = pool.submit(
+            _safe_sync_push_after_links, storage, qdrant, doc_ids=doc_ids
+        )
+        objects_future = pool.submit(
+            _safe_trails_objects_forward, storage, doc_ids=doc_ids
+        )
+        sync_result = push_future.result()
+        trails_objects = objects_future.result()
     if sync_result is not None:
         out["sync_push"] = sync_result
-    trails_objects = _safe_trails_objects_forward(storage, doc_ids=doc_ids)
     if trails_objects.get("enabled"):
         out["trails_objects"] = trails_objects
     return out
@@ -669,6 +678,15 @@ def register_mcp_tools(
                     data=content.encode("utf-8"),
                     metadata=metadata,
                 )
+                from rag.trails_sync import doc_ids_from_mutate_result
+
+                result.update(
+                    _safe_post_mutate_hooks(
+                        storage,
+                        qdrant,
+                        doc_ids=doc_ids_from_mutate_result(result),
+                    )
+                )
                 return json.dumps(result, ensure_ascii=False)
             except Exception as exc:  # noqa: BLE001 - return tool-visible error text
                 return f"Error ingesting text: {exc}"
@@ -748,6 +766,15 @@ def register_mcp_tools(
                     doc_id=doc_id,
                     metadata=metadata,
                 )
+                from rag.trails_sync import doc_ids_from_mutate_result
+
+                result.update(
+                    _safe_post_mutate_hooks(
+                        storage,
+                        qdrant,
+                        doc_ids=doc_ids_from_mutate_result(result) or [doc_id],
+                    )
+                )
                 return json.dumps(result, ensure_ascii=False)
             except DocumentNotFoundError as exc:
                 return f"Error update_document_metadata: {exc}"
@@ -790,6 +817,16 @@ def register_mcp_tools(
                     old_doc_id=old_doc_id,
                     new_doc_id=new_doc_id,
                     correction_note=note,
+                )
+                from rag.trails_sync import doc_ids_from_mutate_result
+
+                result.update(
+                    _safe_post_mutate_hooks(
+                        storage,
+                        qdrant,
+                        doc_ids=doc_ids_from_mutate_result(result)
+                        or [old_doc_id, new_doc_id],
+                    )
                 )
                 return json.dumps(result, ensure_ascii=False)
             except DocumentNotFoundError as exc:
@@ -1433,9 +1470,7 @@ def register_mcp_tools(
                         if str(item.get("doc_id") or "").strip()
                     }
                 )
-                result.update(
-                    _safe_post_mutate_hooks(storage, qdrant, doc_ids=doc_ids)
-                )
+                result.update(_safe_post_mutate_hooks(storage, qdrant, doc_ids=doc_ids))
                 return json.dumps(result, ensure_ascii=False)
             except LocalityLinkPayloadError as exc:
                 return f"Error link_locality: {exc}"
@@ -1530,14 +1565,11 @@ def register_mcp_tools(
                     [trails_id],
                     outbox_path=storage.trails_outbox_path,
                 )
-                link = result.get("link") if isinstance(result.get("link"), dict) else {}
-                doc_ids = [
-                    str(link.get("doc_id") or "").strip()
-                ]
-                doc_ids = [doc_id for doc_id in doc_ids if doc_id]
-                result.update(
-                    _safe_post_mutate_hooks(storage, qdrant, doc_ids=doc_ids)
-                )
+                link_raw = result.get("link")
+                link: dict[str, Any] = link_raw if isinstance(link_raw, dict) else {}
+                doc_ids = [str(link.get("doc_id") or "").strip()]
+                doc_ids = [item for item in doc_ids if item]
+                result.update(_safe_post_mutate_hooks(storage, qdrant, doc_ids=doc_ids))
                 return json.dumps(result, ensure_ascii=False)
             except LocalityLinkPayloadError as exc:
                 return f"Error verify_link: {exc}"
