@@ -387,25 +387,40 @@ def _maybe_attach_sync_push(
     *,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Best-effort live diff push after a successful mutating write.
+    """Best-effort Diff Push + Trails layer_objects after a mutating write.
 
-    No-op unless ``RAG_SYNC_URL`` + token + opt-in flags are set. Never raises
-    into the HTTP path. Skipped for dry-run mutators.
+    Diff Push and Trails ``layer_objects`` run in parallel (neither awaits the
+    other). No-op unless each path's env flags are set. Never raises into the
+    HTTP path. Skipped for dry-run mutators.
     """
     if dry_run:
         return result
+    storage = _storage(request)
+    qdrant = _qdrant(request)
+    out = dict(result)
     try:
         from rag.publish.diff_push import maybe_push_after_ingest
 
-        sync_result = maybe_push_after_ingest(
-            _storage(request),
-            _qdrant(request),
-        )
+        sync_result = maybe_push_after_ingest(storage, qdrant)
         if sync_result is not None:
-            return {**result, "sync_push": sync_result}
+            out["sync_push"] = sync_result
     except Exception:  # noqa: BLE001 - never fail writes on sync hook
         logger.warning("Post-mutation sync hook crashed", exc_info=True)
-    return result
+    try:
+        from rag.trails_sync import (
+            doc_ids_from_mutate_result,
+            maybe_forward_layer_objects,
+        )
+
+        trails_objects = maybe_forward_layer_objects(
+            storage,
+            doc_ids=doc_ids_from_mutate_result(result),
+        )
+        if trails_objects.get("enabled"):
+            out["trails_objects"] = trails_objects
+    except Exception:  # noqa: BLE001 - never fail writes on Trails objects hook
+        logger.warning("Post-mutation Trails layer_objects hook crashed", exc_info=True)
+    return out
 
 
 def _ingest_upload(

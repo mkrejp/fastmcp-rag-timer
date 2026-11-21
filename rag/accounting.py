@@ -31,6 +31,7 @@ MCP_TOOLS = (
     "verify_link",
     "link_stats",
     "sync_links_to_trails",
+    "sync_layer_objects_to_trails",
     "refine_geo",
     "refine_geo_batch",
     "list_geo_refinements",
