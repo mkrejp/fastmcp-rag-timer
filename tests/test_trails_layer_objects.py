@@ -369,12 +369,10 @@ def test_drain_merges_enqueue_during_http(
         "geo_precision": "building",
         "fingerprint": "fp-a",
     }
-    body_b = {
-        **body_a,
-        "rag_doc_id": "doc-b",
-        "hlavni_prvek": "b",
-        "fingerprint": "fp-b-new",
-    }
+    body_b: dict[str, Any] = dict(body_a)
+    body_b["rag_doc_id"] = "doc-b"
+    body_b["hlavni_prvek"] = "b"
+    body_b["fingerprint"] = "fp-b-new"
     enqueue_objects_outbox(outbox, [body_a], error="seed")
     http_started = threading.Event()
     allow_finish = threading.Event()
