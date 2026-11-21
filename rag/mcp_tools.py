@@ -156,6 +156,30 @@ def _safe_post_mutate_hooks(
     return out
 
 
+def _merge_mutate_hooks(
+    result: dict[str, Any],
+    storage: RagStorage,
+    qdrant: QdrantClient,
+    *,
+    fallback_doc_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    """Attach Diff Push + layer_objects forward onto a mutator result.
+
+    Parallel, non-blocking relative to each other, gated by env flags
+    (``TRAILS_LAYER_OBJECTS_FORWARD`` default off). Never raises into MCP.
+    """
+    from rag.trails_sync import doc_ids_from_mutate_result
+
+    doc_ids = doc_ids_from_mutate_result(result)
+    if not doc_ids and fallback_doc_ids:
+        doc_ids = [str(item).strip() for item in fallback_doc_ids if str(item).strip()]
+    try:
+        result.update(_safe_post_mutate_hooks(storage, qdrant, doc_ids=doc_ids))
+    except Exception:  # noqa: BLE001 - never fail MCP writes on hooks
+        logger.warning("Post-mutation hooks merge crashed", exc_info=True)
+    return result
+
+
 MAX_MCP_IMAGE_BYTES = 5 * 1024 * 1024
 RRF_K = 60
 
@@ -609,15 +633,7 @@ def register_mcp_tools(
                     data=content.encode("utf-8"),
                     metadata=metadata,
                 )
-                from rag.trails_sync import doc_ids_from_mutate_result
-
-                result.update(
-                    _safe_post_mutate_hooks(
-                        storage,
-                        qdrant,
-                        doc_ids=doc_ids_from_mutate_result(result),
-                    )
-                )
+                _merge_mutate_hooks(result, storage, qdrant)
                 return json.dumps(result, ensure_ascii=False)
             except Exception as exc:  # noqa: BLE001 - return tool-visible error text
                 return f"Error ingesting text: {exc}"
@@ -654,6 +670,7 @@ def register_mcp_tools(
                     filename=filename.strip() or None,
                     extra=extra,
                 )
+                _merge_mutate_hooks(result, storage, qdrant, fallback_doc_ids=[doc_id])
                 return json.dumps(result, ensure_ascii=False)
             except DocumentNotFoundError as exc:
                 return f"Error update_document: {exc}"
@@ -697,15 +714,7 @@ def register_mcp_tools(
                     doc_id=doc_id,
                     metadata=metadata,
                 )
-                from rag.trails_sync import doc_ids_from_mutate_result
-
-                result.update(
-                    _safe_post_mutate_hooks(
-                        storage,
-                        qdrant,
-                        doc_ids=doc_ids_from_mutate_result(result) or [doc_id],
-                    )
-                )
+                _merge_mutate_hooks(result, storage, qdrant, fallback_doc_ids=[doc_id])
                 return json.dumps(result, ensure_ascii=False)
             except DocumentNotFoundError as exc:
                 return f"Error update_document_metadata: {exc}"
@@ -749,15 +758,11 @@ def register_mcp_tools(
                     new_doc_id=new_doc_id,
                     correction_note=note,
                 )
-                from rag.trails_sync import doc_ids_from_mutate_result
-
-                result.update(
-                    _safe_post_mutate_hooks(
-                        storage,
-                        qdrant,
-                        doc_ids=doc_ids_from_mutate_result(result)
-                        or [old_doc_id, new_doc_id],
-                    )
+                _merge_mutate_hooks(
+                    result,
+                    storage,
+                    qdrant,
+                    fallback_doc_ids=[old_doc_id, new_doc_id],
                 )
                 return json.dumps(result, ensure_ascii=False)
             except DocumentNotFoundError as exc:
@@ -791,6 +796,9 @@ def register_mcp_tools(
                     qdrant=qdrant,
                     collection_name=collection_name,
                     old_doc_id=old_doc_id,
+                )
+                _merge_mutate_hooks(
+                    result, storage, qdrant, fallback_doc_ids=[old_doc_id]
                 )
                 return json.dumps(result, ensure_ascii=False)
             except DocumentNotFoundError as exc:
@@ -1505,6 +1513,8 @@ def register_mcp_tools(
                     caption=caption.strip() or None,
                     summary=summary.strip() or None,
                 )
+                fallback = [doc_id.strip()] if doc_id.strip() else []
+                _merge_mutate_hooks(result, storage, qdrant, fallback_doc_ids=fallback)
                 return json.dumps(result, ensure_ascii=False)
             except ImageRecordPayloadError as exc:
                 return f"Error verify_image_record: {exc}"
