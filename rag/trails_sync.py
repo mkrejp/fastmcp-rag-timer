@@ -443,6 +443,7 @@ def _post_links(items: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     token = resolve_trails_api_token()
     if not base or not token:
         raise TrailsSyncError("Trails forwarding is not configured")
+    auth_token: str = token
     url = f"{base}/locality-links"
     inserted = 0
     updated = 0
@@ -451,7 +452,7 @@ def _post_links(items: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     def _flush(batch: list[Mapping[str, Any]]) -> None:
         nonlocal inserted, updated
         result = _http_request(
-            "POST", url, json_body={"links": list(batch)}, token=token
+            "POST", url, json_body={"links": list(batch)}, token=auth_token
         )
         inserted += int(result.get("inserted") or 0)
         updated += int(result.get("updated") or 0)
