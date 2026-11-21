@@ -710,6 +710,7 @@ def _post_objects(bodies: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         raise TrailsLayerObjectsError(
             "Trails layer_objects forwarding is not configured"
         )
+    auth_token: str = token
     url = f"{base}/catalog/objects"
     acked_all: list[dict[str, Any]] = []
     retry_all: list[dict[str, Any]] = []
@@ -721,7 +722,7 @@ def _post_objects(bodies: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             "POST",
             url,
             json_body={"items": [dict(item) for item in batch]},
-            token=token,
+            token=auth_token,
         )
         payload = result if isinstance(result, dict) else {}
         acked, retry, invalid = classify_catalog_response(batch, payload)

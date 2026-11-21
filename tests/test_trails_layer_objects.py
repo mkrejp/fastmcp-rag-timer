@@ -356,7 +356,7 @@ def test_drain_merges_enqueue_during_http(
     _enable_forward(monkeypatch)
     outbox = tmp_path / "trails_objects_outbox.json"
     ack = tmp_path / "trails_objects_ack.json"
-    body_a = {
+    body_a: dict[str, Any] = {
         "op": "upsert",
         "rag_doc_id": "doc-a",
         "rag_image_id": None,
@@ -369,7 +369,7 @@ def test_drain_merges_enqueue_during_http(
         "geo_precision": "building",
         "fingerprint": "fp-a",
     }
-    body_b = {
+    body_b: dict[str, Any] = {
         **body_a,
         "rag_doc_id": "doc-b",
         "hlavni_prvek": "b",
