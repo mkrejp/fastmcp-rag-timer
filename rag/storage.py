@@ -293,6 +293,8 @@ class RagStorage:
         self.versions_dir = self.root / "versions"
         self.index_path = self.root / "index.json"
         self.trails_outbox_path = self.root / "trails_outbox.json"
+        self.trails_objects_outbox_path = self.root / "trails_objects_outbox.json"
+        self.trails_objects_ack_path = self.root / "trails_objects_ack.json"
 
     def ensure_layout(self) -> None:
         """Create the persistent directory tree if it does not exist."""

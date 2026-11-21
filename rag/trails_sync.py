@@ -1,10 +1,14 @@
-"""Forward locality_links to TrailsAssemblage PostGIS over HTTP.
+"""Forward locality_links (and re-export layer_objects) to TrailsAssemblage.
 
 Enabled only when ``TRAILS_API_URL`` and ``TRAILS_API_TOKEN`` are both set.
 The token is sent as ``Authorization: Bearer`` and is never written to logs.
 HTTP failures are retried with backoff, then persisted to a JSON outbox on
 the RAG data volume and drained on later calls and startup. MCP tools must
 not fail because Trails is down.
+
+Curated ``layer_objects`` forward lives in :mod:`rag.trails_layer_objects`
+and is re-exported here as :func:`maybe_forward_layer_objects` (parallel to
+Diff Push; opt-in ``TRAILS_LAYER_OBJECTS_FORWARD``).
 """
 
 from __future__ import annotations
@@ -32,6 +36,12 @@ from rag.config import (
 )
 from rag.logging_setup import get_logger
 from rag.payloads import chunk_text_sha256
+from rag.trails_layer_objects import (  # noqa: F401 - public re-export
+    doc_ids_from_mutate_result,
+    maybe_drain_objects_on_startup,
+    maybe_forward_layer_objects,
+    sync_layer_objects_to_trails,
+)
 
 logger = get_logger("rag.trails_sync")
 
@@ -738,3 +748,19 @@ def maybe_drain_on_startup(client: QdrantClient, outbox_path: Path) -> None:
             "Trails outbox drain on startup failed: %s",
             _safe_error_text(exc),
         )
+
+
+__all__ = [
+    "TRAILS_DISABLED",
+    "TrailsSyncError",
+    "doc_ids_from_mutate_result",
+    "drain_trails_outbox",
+    "enqueue_trails_outbox",
+    "forward_locality_links",
+    "locality_payload_to_trails_upsert",
+    "maybe_drain_objects_on_startup",
+    "maybe_drain_on_startup",
+    "maybe_forward_layer_objects",
+    "sync_layer_objects_to_trails",
+    "sync_links_to_trails",
+]
