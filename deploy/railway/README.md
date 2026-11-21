@@ -14,6 +14,7 @@ Typical split:
 Shared:
 
 - `MCP_API_TOKEN` / `RAG_API_TOKEN`
+- `MCP_READ_TOKEN` (optional; read-only `/mcp`)
 - `BGE_M3_NOVITA_API_KEY` (when query or ingest uses Novita)
 - `RAG_DATA_ROOT=/data/rag` + volume mount at `/data`
 - `RAG_NODES` JSON with write + read URLs

@@ -120,6 +120,7 @@ def test_supersede_document_requires_bearer(client):
 def test_fail_closed_without_token(client, monkeypatch):
     monkeypatch.delenv("MCP_API_TOKEN", raising=False)
     monkeypatch.delenv("RAG_API_TOKEN", raising=False)
+    monkeypatch.delenv("MCP_READ_TOKEN", raising=False)
     assert client.post("/mcp/", json=INIT, headers={**HDRS, **AUTH}).status_code == 503
     assert (
         client.post(

@@ -32,6 +32,7 @@ SECRET_ENV = {
     "SESSION_SECRET": "session-secret",
     "NOVITA_API_KEY": "novita-secret",
     "MCP_API_TOKEN": "mcp-secret-should-not-leak",
+    "MCP_READ_TOKEN": "mcp-read-secret-should-not-leak",
 }
 
 

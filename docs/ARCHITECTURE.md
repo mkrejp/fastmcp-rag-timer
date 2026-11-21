@@ -312,7 +312,7 @@ PATCH /documents/{doc_id}/metadata
 
 ## Exposed MCP tools, resources, and prompts
 
-From `rag/mcp_tools.py`, registered in `create_app()` and served at **`/mcp`** (Streamable HTTP). `streamable_http_path="/"` so the MCP endpoint is the mount root `/mcp`, not `/mcp/mcp`. Every `/mcp` HTTP request requires Bearer `MCP_API_TOKEN` or fallback `RAG_API_TOKEN` (`McpBearerAuth`; 401 invalid, 503 unset).
+From `rag/mcp_tools.py`, registered in `create_app()` and served at **`/mcp`** (Streamable HTTP). `streamable_http_path="/"` so the MCP endpoint is the mount root `/mcp`, not `/mcp/mcp`. Every `/mcp` HTTP request requires Bearer `MCP_API_TOKEN` or fallback `RAG_API_TOKEN` (`McpBearerAuth`; 401 invalid, 503 unset). When `MCP_READ_TOKEN` is set, that Bearer is also accepted as read-only: `tools/list` matches the Reader column below and write `tools/call` is a JSON-RPC error with HTTP 403 (even if `APP_MODE` is `ingester` / `all`). `MCP_READ_TOKEN` never authorizes HTTP write routes.
 
 `register_mcp_tools(..., include_write_tools=...)` omits write tools entirely when `APP_MODE=reader` (`mcp_include_write_tools()`). `/api/admin/mcp` and `app.state.mcp_tools` list only registered names.
 
@@ -570,6 +570,7 @@ See the table in [README.md](../README.md#configuration) for every env var and d
 | `APP_MODE` / `RAG_APP_MODE` | `all` | `all` \| `reader` \| `ingester` (see [Process roles](#process-roles-app_mode)) |
 | `RAG_API_TOKEN` | unset | Required for `/ingest-json`; fallback MCP/embed token |
 | `MCP_API_TOKEN` | unset | Preferred token for `/mcp` and embedding REST |
+| `MCP_READ_TOKEN` | unset | Optional read-only Bearer for `/mcp` only |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | unset | Enable `/ui` and `/api/admin` |
 
 Not configurable without code changes:
@@ -591,7 +592,7 @@ Not configurable without code changes:
 
 There is no `.env` file, `.env.example`, or secret manager integration in the repository.
 
-**Assumption:** If deployed on Railway, `PORT` is injected and honored, `BGE_M3_NOVITA_API_KEY` / `RAG_API_TOKEN` / `MCP_API_TOKEN` / Google OAuth vars are service variables, a volume is mounted at `/data`, and public HTTPS is mapped to the container port.
+**Assumption:** If deployed on Railway, `PORT` is injected and honored, `BGE_M3_NOVITA_API_KEY` / `RAG_API_TOKEN` / `MCP_API_TOKEN` / `MCP_READ_TOKEN` / Google OAuth vars are service variables, a volume is mounted at `/data`, and public HTTPS is mapped to the container port.
 
 ## Build and deployment
 
@@ -632,7 +633,7 @@ Local run and pytest install lines: [README.md](../README.md#local-run).
 | Topic | What the code does |
 | --- | --- |
 | HTTP auth | `POST /ingest-json` needs Bearer `RAG_API_TOKEN` (503 if unset). Uploads, images, document PATCH/DELETE, content PUT, version restore: MCP/RAG bearer or Google session. Catalog, `/health`, `/node-info` unauthenticated. `APP_MODE=reader` returns 403 on HTTP writes. `RAG_ENFORCE_NODE_ROLE=1` can 403 writes for node modes on `all`/`ingester`. |
-| MCP auth | Bearer on every `/mcp` request (`McpBearerAuth`). Host allow-list via FastMCP `TransportSecuritySettings` (`MCP_ALLOWED_HOSTS`). |
+| MCP auth | Bearer on every `/mcp` request (`McpBearerAuth`): `MCP_API_TOKEN` / fallback `RAG_API_TOKEN` for full access; optional `MCP_READ_TOKEN` is read-only (filtered `tools/list`, write `tools/call` → JSON-RPC 403). Host allow-list via FastMCP `TransportSecuritySettings` (`MCP_ALLOWED_HOSTS`). |
 | Console auth | `/ui/` and `/api/admin/*` require Google OAuth (`GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET`) and optional email/domain allow-lists. Cookie session via `SESSION_SECRET`. |
 | Secrets | Embedding key from `BGE_M3_NOVITA_API_KEY`, then `NOVITA_API_KEY`, `OPENAI_TOKEN`, `OPENAI_API_KEY`; sent as `Authorization: Bearer` to Novita. Inbound tokens compared with `hmac.compare_digest`. Not read from a file or vault. |
 | TLS | Not implemented in-app. uvicorn `proxy_headers=True` + `forwarded_allow_ips=*`. |
