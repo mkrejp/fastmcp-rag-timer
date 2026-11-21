@@ -312,7 +312,9 @@ PATCH /documents/{doc_id}/metadata
 
 ## Exposed MCP tools, resources, and prompts
 
-From `rag/mcp_tools.py`, registered in `create_app()` and served at **`/mcp`** (Streamable HTTP). `streamable_http_path="/"` so the MCP endpoint is the mount root `/mcp`, not `/mcp/mcp`. Every `/mcp` HTTP request requires Bearer `MCP_API_TOKEN` or fallback `RAG_API_TOKEN` (`McpBearerAuth`; 401 invalid, 503 unset). When `MCP_READ_TOKEN` is set, that Bearer is also accepted as read-only: `tools/list` matches the Reader column below and write `tools/call` is a JSON-RPC error with HTTP 403 (even if `APP_MODE` is `ingester` / `all`). `MCP_READ_TOKEN` never authorizes HTTP write routes.
+From `rag/mcp_tools.py`, registered in `create_app()` and served at **`/mcp`** (Streamable HTTP). `streamable_http_path="/"` so the MCP endpoint is the mount root `/mcp`, not `/mcp/mcp`. Every `/mcp` HTTP request requires Bearer `MCP_API_TOKEN` or fallback `RAG_API_TOKEN` (`McpBearerAuth`; 401 invalid, 503 unset).
+
+When `MCP_READ_TOKEN` is set, that Bearer is also accepted as read-only: `tools/list` matches the Reader column below and write `tools/call` is a JSON-RPC error with HTTP 403 (even if `APP_MODE` is `ingester` / `all`). `MCP_READ_TOKEN` never authorizes HTTP write routes.
 
 `register_mcp_tools(..., include_write_tools=...)` omits write tools entirely when `APP_MODE=reader` (`mcp_include_write_tools()`). `/api/admin/mcp` and `app.state.mcp_tools` list only registered names.
 
