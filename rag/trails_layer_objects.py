@@ -7,6 +7,7 @@ plus ``TRAILS_API_URL`` / ``TRAILS_API_TOKEN``. Readers must not call this.
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
@@ -14,9 +15,10 @@ import threading
 import time
 import unicodedata
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Iterator, Mapping, Sequence
 
 import requests
 
@@ -38,8 +40,33 @@ _RETRY_DELAYS = (0.25, 0.75, 2.0)
 _RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
 _OUTBOX_MAX_DELAY_SECONDS = 300
 _HTTP_TIMEOUT = DEFAULT_TRAILS_API_TIMEOUT_SECONDS
-_objects_outbox_lock = threading.Lock()
+_objects_outbox_thread_lock = threading.Lock()
 _ack_lock = threading.Lock()
+
+
+@contextmanager
+def objects_outbox_lock(path: Path) -> Iterator[None]:
+    """Exclusive lock for ``trails_objects_outbox.json`` (cross-process + threads).
+
+    Uses ``fcntl.flock`` on a sibling ``.lock`` file so concurrent processes
+    serialize read-modify-write, plus an in-process threading lock so nested
+    same-thread callers still coalesce safely. Callers must keep the atomic
+    temp+rename write path.
+    """
+    outbox = Path(path)
+    outbox.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = Path(str(outbox) + ".lock")
+    fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        with _objects_outbox_thread_lock:
+            yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
 
 TRAILS_OBJECTS_DISABLED: dict[str, Any] = {"enabled": False}
 
@@ -507,7 +534,7 @@ def enqueue_objects_outbox(
         ): dict(body)
         for body in wanted
     }
-    with _objects_outbox_lock:
+    with objects_outbox_lock(path):
         items = _read_objects_outbox(path)
         cleaned: list[dict[str, Any]] = []
         for item in items:
@@ -768,7 +795,7 @@ def drain_objects_outbox(
     """
     if not trails_layer_objects_forwarding_enabled() or is_reader_mode():
         return {"drained": 0, "remaining": 0}
-    with _objects_outbox_lock:
+    with objects_outbox_lock(outbox_path):
         items = _read_objects_outbox(outbox_path)
         due, later = _due_items(items)
         _write_objects_outbox(outbox_path, later)
@@ -817,7 +844,7 @@ def drain_objects_outbox(
                 attempts,
                 error,
             )
-    with _objects_outbox_lock:
+    with objects_outbox_lock(outbox_path):
         current = _read_objects_outbox(outbox_path)
         remaining_items = coalesce_outbox_items(list(current) + still_due)
         _write_objects_outbox(outbox_path, remaining_items)
@@ -1061,6 +1088,11 @@ def doc_ids_from_mutate_result(result: Mapping[str, Any] | None) -> list[str]:
         for item in raw_ids:
             if isinstance(item, str) and item.strip():
                 found.append(item.strip())
+    figure = result.get("figure")
+    if isinstance(figure, Mapping):
+        fig_doc = figure.get("doc_id")
+        if isinstance(fig_doc, str) and fig_doc.strip():
+            found.append(fig_doc.strip())
     # Dedupe preserve order.
     seen: set[str] = set()
     out: list[str] = []
