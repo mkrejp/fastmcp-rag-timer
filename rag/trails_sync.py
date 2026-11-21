@@ -40,6 +40,7 @@ from rag.trails_layer_objects import (  # noqa: F401 - public re-export
     doc_ids_from_mutate_result,
     maybe_drain_objects_on_startup,
     maybe_forward_layer_objects,
+    objects_outbox_lock,
     sync_layer_objects_to_trails,
 )
 
@@ -761,6 +762,7 @@ __all__ = [
     "maybe_drain_objects_on_startup",
     "maybe_drain_on_startup",
     "maybe_forward_layer_objects",
+    "objects_outbox_lock",
     "sync_layer_objects_to_trails",
     "sync_links_to_trails",
 ]

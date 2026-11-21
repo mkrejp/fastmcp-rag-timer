@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import ast
+import multiprocessing
 import threading
 from pathlib import Path
+from queue import Empty
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -16,12 +19,14 @@ from rag.trails_layer_objects import (
     ack_key,
     build_layer_object_ops,
     classify_catalog_response,
+    doc_ids_from_mutate_result,
     drain_objects_outbox,
     enqueue_objects_outbox,
     geo_qualifies,
     has_secese_signal,
     maybe_forward_layer_objects,
     object_fingerprint,
+    objects_outbox_lock,
     sync_layer_objects_to_trails,
 )
 
@@ -516,3 +521,127 @@ def test_post_mutate_hooks_when_push_fails(
         out = _safe_post_mutate_hooks(storage, MagicMock(), doc_ids=["doc-1"])
     assert out["sync_push"].get("error") == "sync_hook_crashed"
     assert out["trails_objects"].get("forwarded") == 1
+
+
+def test_doc_ids_from_figure_payload() -> None:
+    """verify_image_record results expose doc_id under ``figure``."""
+    assert doc_ids_from_mutate_result(
+        {"status": "ok", "figure": {"doc_id": "fig-doc", "image_id": "i1"}}
+    ) == ["fig-doc"]
+
+
+def test_merge_mutate_hooks_uses_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``_merge_mutate_hooks`` forwards with fallback doc ids when result lacks them."""
+    _enable_forward(monkeypatch)
+    storage = RagStorage(tmp_path)
+    _store_secese(tmp_path, storage)
+    from rag.mcp_tools import _merge_mutate_hooks
+
+    calls: list[list[str] | None] = []
+
+    def capture(
+        _storage: RagStorage,
+        _qdrant: Any,
+        *,
+        doc_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
+        calls.append(doc_ids)
+        return {"trails_objects": {"enabled": True, "forwarded": 0}}
+
+    with patch("rag.mcp_tools._safe_post_mutate_hooks", side_effect=capture):
+        out = _merge_mutate_hooks(
+            {"status": "updated"},
+            storage,
+            MagicMock(),
+            fallback_doc_ids=["doc-1"],
+        )
+    assert calls == [["doc-1"]]
+    assert out["trails_objects"]["enabled"] is True
+
+
+def test_mcp_tools_wire_hooks_for_update_unsupersede_verify() -> None:
+    """AST: update_document / unsupersede_document / verify_image_record call hooks."""
+    source = Path("rag/mcp_tools.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    wanted = {
+        "update_document",
+        "unsupersede_document",
+        "verify_image_record",
+    }
+    found: dict[str, bool] = {name: False for name in wanted}
+
+    class Visitor(ast.NodeVisitor):
+        """Find nested tool defs and whether they call ``_merge_mutate_hooks``."""
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            """Record hook calls inside the three MCP write tools."""
+            if node.name in wanted:
+                text = ast.dump(node)
+                found[node.name] = "_merge_mutate_hooks" in text
+            self.generic_visit(node)
+
+    Visitor().visit(tree)
+    assert found == {name: True for name in wanted}
+
+
+def _cross_process_hold_lock(outbox_str: str, ready: Any, release: Any) -> None:
+    """Child: hold the outbox fcntl lock until told to release."""
+    path = Path(outbox_str)
+    with objects_outbox_lock(path):
+        ready.put("held")
+        release.get()
+
+
+def _cross_process_enqueue(
+    outbox_str: str, started: Any, finished: Any, body: dict[str, Any]
+) -> None:
+    """Child: enqueue one op (blocks while lock is held by peer)."""
+    started.put("start")
+    enqueue_objects_outbox(Path(outbox_str), [body], error="cross-process")
+    finished.put("done")
+
+
+def test_outbox_lock_blocks_second_process(tmp_path: Path) -> None:
+    """Two processes: second enqueue waits until the first releases fcntl lock."""
+    outbox = tmp_path / "trails_objects_outbox.json"
+    body: dict[str, Any] = {
+        "op": "upsert",
+        "rag_doc_id": "doc-x",
+        "rag_image_id": None,
+        "lon": 14.4,
+        "lat": 50.0,
+        "hlavni_prvek": "x",
+        "pr_stav_nazev": PR_STAV_BUDOVA,
+        "geo_status": "overeno",
+        "geo_confidence": 0.9,
+        "geo_precision": "building",
+        "fingerprint": "fp-x",
+    }
+    ctx = multiprocessing.get_context("spawn")
+    ready: Any = ctx.Queue()
+    release: Any = ctx.Queue()
+    started: Any = ctx.Queue()
+    finished: Any = ctx.Queue()
+    holder = ctx.Process(
+        target=_cross_process_hold_lock, args=(str(outbox), ready, release)
+    )
+    enqueuer = ctx.Process(
+        target=_cross_process_enqueue,
+        args=(str(outbox), started, finished, body),
+    )
+    holder.start()
+    assert ready.get(timeout=10) == "held"
+    enqueuer.start()
+    assert started.get(timeout=10) == "start"
+    with pytest.raises(Empty):
+        finished.get(timeout=0.4)
+    release.put("go")
+    assert finished.get(timeout=10) == "done"
+    holder.join(timeout=10)
+    enqueuer.join(timeout=10)
+    assert holder.exitcode == 0
+    assert enqueuer.exitcode == 0
+    assert "doc-x" in outbox.read_text(encoding="utf-8")
+    assert Path(str(outbox) + ".lock").is_file()
