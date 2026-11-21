@@ -66,6 +66,7 @@ in any backup or restore of `/data/rag`; there is no in-repo backup tooling.
 | `RAG_SKIP_DEFAULT_APP` | unset | Set to `1` to skip module-level `create_app()` (used by tests) |
 | `RAG_API_TOKEN` | unset | Required Bearer token for `POST /ingest-json`; fallback token for `/mcp` and embedding REST routes |
 | `MCP_API_TOKEN` | unset | Preferred Bearer token for `/mcp` and embedding REST routes (wins over `RAG_API_TOKEN`) |
+| `MCP_READ_TOKEN` | unset | Optional read-only Bearer for `/mcp` only (`tools/list` omits write tools; write `tools/call` is JSON-RPC 403). Does not authorize HTTP write routes |
 | `RAG_SYNC_TOKEN` | unset | Bearer for reader live diff-push API (`/sync/v1/*`); unset → routes return 404 |
 | `RAG_SYNC_TOKEN_PREVIOUS` | unset | Optional previous Bearer accepted during token rotation |
 | `RAG_SYNC_URL` | unset | Reader origin for ingester live push (e.g. `https://reader.example.com`) |
@@ -611,10 +612,11 @@ CI (`.github/workflows/`) runs Super Linter on changed files, pytest on Python 3
 Endpoint: `https://rag-timer-00001-production.up.railway.app/mcp/` (Streamable HTTP, stateless; keep the trailing slash).
 
 Auth: the **whole `/mcp` endpoint** requires `Authorization: Bearer <token>`.
-The token comes from `MCP_API_TOKEN`; if that is unset, `RAG_API_TOKEN` is used.
-If neither is set, `/mcp` and the embedding REST routes (`/upload`, chunked upload, `/upload-pdf`, `GET /images/...`, `PATCH`/`DELETE /documents/{doc_id}`, `PUT /documents/{doc_id}/content`, versions) fail closed with 503 and log a warning.
+The write token comes from `MCP_API_TOKEN`; if that is unset, `RAG_API_TOKEN` is used.
+When `MCP_READ_TOKEN` is set, `/mcp` also accepts that token as **read-only**: `tools/list` returns only read tools, and `tools/call` of any write tool is a JSON-RPC error with HTTP **403**, including on `APP_MODE=ingester`. `MCP_READ_TOKEN` does not authorize HTTP write routes (`/upload`, `/upload-pdf`, document mutations, `/ingest-json`, `/sync/v1/*`, `/api/admin/*`).
+If neither write token is set and `MCP_READ_TOKEN` is also unset, `/mcp` and the embedding REST routes (`/upload`, chunked upload, `/upload-pdf`, `GET /images/...`, `PATCH`/`DELETE /documents/{doc_id}`, `PUT /documents/{doc_id}/content`, versions) fail closed with 503 and log a warning.
 Those embedding REST routes also accept a signed-in Google session, which the console uses.
-`POST /ingest-json` requires `RAG_API_TOKEN` specifically (not the MCP token, unless they are the same value). Tokens are compared in constant time.
+`POST /ingest-json` requires `RAG_API_TOKEN` specifically (not the MCP token, unless they are the same value). Tokens are compared in constant time and are never logged.
 
 Host allow-list (MCP DNS-rebinding protection): `MCP_ALLOWED_HOSTS` takes a comma-separated list. The default is `rag-timer-00001-production.up.railway.app` plus localhost/127.0.0.1 (including `localhost:*` / `127.0.0.1:*`). Set `MCP_DISABLE_DNS_REBINDING_PROTECTION=1` to accept any Host.
 

@@ -16,7 +16,7 @@ Related: [ARCHITECTURE.md](./ARCHITECTURE.md), [SPLIT_DEPLOY.md](./SPLIT_DEPLOY.
 
 | Client | Typical target | Auth | Reader | Ingester / `all` |
 | --- | --- | --- | --- | --- |
-| MCP search agents | Reader URL | Bearer `MCP_API_TOKEN` or `RAG_API_TOKEN` | Read MCP tools + search embeddings (Novita default) | Same |
+| MCP search agents | Reader URL | Bearer `MCP_API_TOKEN` or `RAG_API_TOKEN` (or `MCP_READ_TOKEN` for read-only `/mcp`) | Read MCP tools + search embeddings (Novita default) | Same |
 | MCP / HTTP ingest | Ingester URL | Bearer or Google session | **403** / write tools absent | Upload, ingest, MCP writes |
 | `POST /ingest-json` | Ingester | Bearer `RAG_API_TOKEN` only | **403** | Fetch remote JSON + index |
 | Catalog `GET /documents*` | Reader (often) | None | OK | OK |
@@ -123,10 +123,10 @@ Trust notes from code:
 
 - Catalog (`GET /documents*`), `/upload-media`, `/health`, FastAPI OpenAPI UI, and `/auth/status` have **no authentication**.
 - `POST /ingest-json` requires inbound `Authorization: Bearer` matching `RAG_API_TOKEN` (503 if that env var is unset).
-- `/mcp` requires Bearer `MCP_API_TOKEN` or fallback `RAG_API_TOKEN` (401 invalid, 503 unset). FastMCP also checks `Host` against `MCP_ALLOWED_HOSTS` (421 on mismatch) unless `MCP_DISABLE_DNS_REBINDING_PROTECTION` is set.
+- `/mcp` requires Bearer `MCP_API_TOKEN` or fallback `RAG_API_TOKEN` (401 invalid, 503 unset). Optional `MCP_READ_TOKEN` is also accepted on `/mcp` as read-only (write `tools/call` → JSON-RPC 403). FastMCP also checks `Host` against `MCP_ALLOWED_HOSTS` (421 on mismatch) unless `MCP_DISABLE_DNS_REBINDING_PROTECTION` is set.
 - `POST /upload`, chunked upload routes, `POST /upload-pdf`, `GET /images/...`, and `PATCH`/`DELETE /documents/{doc_id}` require that same MCP/RAG bearer **or** a signed-in Google session.
 - `/ui/` and `/api/admin/*` require Google OAuth (`GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET`) and optional email/domain allow-lists.
-- Secrets: outbound Novita embedding key (`BGE_M3_NOVITA_API_KEY`, then `NOVITA_API_KEY`, `OPENAI_TOKEN`, `OPENAI_API_KEY`); inbound `RAG_API_TOKEN` / `MCP_API_TOKEN`; Google client secret; `SESSION_SECRET`; optional Trails Bearer `TRAILS_API_TOKEN` (never logged).
+- Secrets: outbound Novita embedding key (`BGE_M3_NOVITA_API_KEY`, then `NOVITA_API_KEY`, `OPENAI_TOKEN`, `OPENAI_API_KEY`); inbound `RAG_API_TOKEN` / `MCP_API_TOKEN` / `MCP_READ_TOKEN`; Google client secret; `SESSION_SECRET`; optional Trails Bearer `TRAILS_API_TOKEN` (never logged).
 - Embedded Qdrant does **not** listen on a network port; it uses `{RAG_DATA_ROOT}/qdrant`.
 - The process binds `0.0.0.0`, so it is reachable on every container/host interface.
 
@@ -245,7 +245,7 @@ No second container is required for the vector store.
 | `POST /ingest-json` | HTTP/1.1 via uvicorn | `PORT` | Bearer `RAG_API_TOKEN` |
 | `/ui/` and `/api/admin/*` | HTTP | `PORT` | Google session |
 | `/auth/*` | HTTP | `PORT` | Public login/status; `/auth/me` requires session |
-| MCP Streamable HTTP | HTTP on `/mcp` | `PORT` | Bearer `MCP_API_TOKEN`/`RAG_API_TOKEN`; Host allow-list |
+| MCP Streamable HTTP | HTTP on `/mcp` | `PORT` | Bearer `MCP_API_TOKEN`/`RAG_API_TOKEN`, or read-only `MCP_READ_TOKEN`; Host allow-list |
 | MCP stdio | — | — | Not started |
 | Embedded Qdrant | in-process + disk | no listen port | n/a |
 | Novita embeddings | HTTPS | 443 | Bearer `BGE_M3_NOVITA_API_KEY` or fallbacks (outbound; **ingest and/or query** when provider is `novita`) |

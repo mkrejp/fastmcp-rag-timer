@@ -306,6 +306,7 @@ Public hostname: **`art-nouveau-rag.animarium.ai`** → Coolify reader. Ingester
 | Name | Required? | Secret? | Notes |
 | --- | --- | --- | --- |
 | `MCP_API_TOKEN` | **yes** (or `RAG_API_TOKEN`) | **yes** | Preferred Bearer for `/mcp` + embed REST |
+| `MCP_READ_TOKEN` | optional | **yes** | Read-only Bearer for `/mcp` only (not HTTP writes, not sync) |
 | `RAG_API_TOKEN` | **yes** if MCP unset | **yes** | `POST /ingest-json`; MCP fallback |
 | `RAG_SYNC_TOKEN` | **yes** for live push | **yes** | Bearer for reader `/sync/v1/*` (not MCP); unset → 404 |
 | `RAG_SYNC_TOKEN_PREVIOUS` | optional (rotation) | **yes** | Previous sync Bearer |
@@ -391,6 +392,7 @@ Compact index; full sync env tables are in §(b) and Coolify §4 above.
 | `RAG_SYNC_TOKEN` / `RAG_SYNC_URL` | token on reader; URL n/a | URL + token for live push | optional |
 | `BGE_M3_NOVITA_API_KEY` | when query=novita | when ingest/query=novita | as configured |
 | `MCP_API_TOKEN` / `RAG_API_TOKEN` | MCP + optional Google UI | ingest + MCP writes | both |
+| `MCP_READ_TOKEN` | optional read-only `/mcp` | optional read-only `/mcp` | optional |
 | `RAG_ENFORCE_NODE_ROLE` | implicit (always on) | optional extra guard | optional |
 | `PUBLIC_BASE_URL` / `MCP_ALLOWED_HOSTS` | reader hostname | ingester hostname | service URL |
 

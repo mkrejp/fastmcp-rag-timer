@@ -235,15 +235,27 @@ def trails_forwarding_enabled() -> bool:
 
 
 def resolve_mcp_token() -> str | None:
-    """Bearer token for ``/mcp`` and embedding REST routes.
+    """Bearer token for ``/mcp`` writes and embedding REST routes.
 
-    ``MCP_API_TOKEN`` wins; falls back to ``RAG_API_TOKEN``. ``None`` means fail closed.
+    ``MCP_API_TOKEN`` wins; falls back to ``RAG_API_TOKEN``. ``None`` means fail closed
+    for write-capable MCP and HTTP embed routes.
     """
     for name in ("MCP_API_TOKEN", "RAG_API_TOKEN"):
         value = (os.getenv(name) or "").strip()
         if value:
             return value
     return None
+
+
+def resolve_mcp_read_token() -> str | None:
+    """Optional read-only Bearer for ``/mcp`` (``MCP_READ_TOKEN``).
+
+    When set, ``/mcp`` also accepts this token with tools/list limited to read
+    tools and tools/call of write tools rejected. It never authorizes HTTP
+    write routes. Callers must never log the return value.
+    """
+    value = (os.getenv("MCP_READ_TOKEN") or "").strip()
+    return value or None
 
 
 def resolve_sync_token() -> str | None:
