@@ -476,7 +476,7 @@ When `TRAILS_API_URL`, `TRAILS_API_TOKEN`, and **`TRAILS_LAYER_OBJECTS_FORWARD=1
 
 - Qualify: `geo_refined.status ∈ {overeno, zpresneno}`, `confidence >= 0.8`, `precision ∈ {building, street}`, v1 content = secese buildings + facades
 - Buildings → `pr_stav_nazev=budova` (doc-level); facades → one object per image (`rag_doc_id` + `rag_image_id`, `fasáda`)
-- `POST /catalog/objects` batch `{op: upsert|absent, …, fingerprint}`; failures → `{RAG_DATA_ROOT}/trails_objects_outbox.json` (separate lock from locality outbox)
+- `POST /catalog/objects` body `{items:[{op, rag_doc_id, rag_image_id?, lon, lat, hlavni_prvek, pr_stav_nazev, geo_*, fingerprint}]}` (Trails #44); ack per `items[].status`; failures → `{RAG_DATA_ROOT}/trails_objects_outbox.json` (separate lock)
 - Soft-absent (`op=absent`) when deleted/retracted/superseded/falls below gate; Trails home map must hide soft-removed rows
 - Backfill: MCP `sync_layer_objects_to_trails(dry_run=true|false)` or `python scripts/rag-sync-layer-objects.py --dry-run`
 

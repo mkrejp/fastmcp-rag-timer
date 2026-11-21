@@ -222,8 +222,11 @@ def geo_qualifies(geo: Mapping[str, Any] | None) -> bool:
     precision = str(geo.get("precision") or "").strip()
     if precision not in _GEO_OK_PRECISION:
         return False
+    raw_confidence = geo.get("confidence")
+    if raw_confidence is None or raw_confidence == "":
+        return False
     try:
-        confidence = float(geo.get("confidence"))
+        confidence = float(raw_confidence)
     except (TypeError, ValueError):
         return False
     return confidence >= _MIN_CONFIDENCE
@@ -302,9 +305,11 @@ def _upsert_body(
         "lat": float(geo["lat"]),
         "hlavni_prvek": _label_for(
             meta,
-            next((img for img in meta.images if img.image_id == rag_image_id), None)
-            if rag_image_id
-            else None,
+            (
+                next((img for img in meta.images if img.image_id == rag_image_id), None)
+                if rag_image_id
+                else None
+            ),
         ),
         "pr_stav_nazev": pr_stav_nazev,
         "geo_status": str(geo.get("status") or ""),
@@ -590,36 +595,163 @@ def _filter_unchanged(
     return out
 
 
+# TrailsAssemblage #44 docs/catalog-rag-objects.md per-item statuses.
+_ACK_OK_STATUSES = frozenset(
+    {
+        "inserted",
+        "updated",
+        "unchanged",
+        "marked_absent",
+        "already_absent",
+        "not_found",
+    }
+)
+
+
+def _body_object_key(body: Mapping[str, Any]) -> str:
+    """Ack / coalesce key for one catalog object body."""
+    return ack_key(
+        str(body.get("rag_doc_id") or ""),
+        str(body.get("rag_image_id") or "") or None,
+    )
+
+
+def coalesce_outbox_items(
+    items: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Merge outbox rows; last body per object key wins (fingerprint order)."""
+    by_key: dict[str, dict[str, Any]] = {}
+    max_attempts = 0
+    last_error: str | None = None
+    next_attempt_at: str | None = None
+    for item in items:
+        if not isinstance(item, Mapping):
+            continue
+        try:
+            max_attempts = max(max_attempts, int(item.get("attempts") or 0))
+        except (TypeError, ValueError):
+            pass
+        err = item.get("last_error")
+        if isinstance(err, str) and err.strip():
+            last_error = err.strip()
+        nat = item.get("next_attempt_at")
+        if isinstance(nat, str) and nat.strip():
+            next_attempt_at = nat.strip()
+        for body in item.get("objects") or []:
+            if isinstance(body, Mapping) and body.get("rag_doc_id"):
+                by_key[_body_object_key(body)] = dict(body)
+    if not by_key:
+        return []
+    return [
+        {
+            "id": str(uuid.uuid4()),
+            "objects": list(by_key.values()),
+            "created_at": _utc_now_iso(),
+            "attempts": max_attempts,
+            "next_attempt_at": next_attempt_at or _utc_now_iso(),
+            "last_error": last_error,
+        }
+    ]
+
+
+def classify_catalog_response(
+    sent: Sequence[Mapping[str, Any]],
+    response: Mapping[str, Any] | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Split a Trails batch response into acked / retry / invalid bodies.
+
+    Ack only ``items[].status`` in :data:`_ACK_OK_STATUSES`. ``invalid`` is
+    logged and dropped (not acked, not requeued — retry will not help).
+    Missing or unknown statuses are retried via outbox.
+    """
+    acked: list[dict[str, Any]] = []
+    retry: list[dict[str, Any]] = []
+    invalid: list[dict[str, Any]] = []
+    raw_items = response.get("items") if isinstance(response, Mapping) else None
+    if not isinstance(raw_items, list):
+        return [], [dict(body) for body in sent], []
+    for idx, body in enumerate(sent):
+        entry = raw_items[idx] if idx < len(raw_items) else None
+        if not isinstance(entry, Mapping):
+            retry.append(dict(body))
+            continue
+        status = str(entry.get("status") or "").strip()
+        if status in _ACK_OK_STATUSES:
+            acked.append(dict(body))
+            continue
+        if status == "invalid":
+            invalid.append(dict(body))
+            detail = entry.get("detail")
+            logger.warning(
+                "Trails catalog object invalid rag_doc_id=%s rag_image_id=%s detail=%s",
+                body.get("rag_doc_id"),
+                body.get("rag_image_id"),
+                detail,
+            )
+            continue
+        retry.append(dict(body))
+        logger.warning(
+            "Trails catalog object unexpected status=%s rag_doc_id=%s; will retry",
+            status or "(missing)",
+            body.get("rag_doc_id"),
+        )
+    return acked, retry, invalid
+
+
 def _post_objects(bodies: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    """POST /catalog/objects batch."""
+    """POST ``/catalog/objects`` with ``{items:[...]}`` (Trails #44 contract).
+
+    Returns acked / retry / invalid partitions plus status counts. Raises on
+    transport or non-2xx after retries (caller enqueues the whole batch).
+    """
     base = resolve_trails_api_url()
     token = resolve_trails_api_token()
     if not base or not token:
-        raise TrailsLayerObjectsError("Trails layer_objects forwarding is not configured")
+        raise TrailsLayerObjectsError(
+            "Trails layer_objects forwarding is not configured"
+        )
     url = f"{base}/catalog/objects"
-    inserted = 0
-    updated = 0
-    absent = 0
+    acked_all: list[dict[str, Any]] = []
+    retry_all: list[dict[str, Any]] = []
+    invalid_all: list[dict[str, Any]] = []
+    status_counts: dict[str, int] = {}
+
+    def _flush(batch: list[Mapping[str, Any]]) -> None:
+        result = _http_request(
+            "POST",
+            url,
+            json_body={"items": [dict(item) for item in batch]},
+            token=token,
+        )
+        payload = result if isinstance(result, dict) else {}
+        acked, retry, invalid = classify_catalog_response(batch, payload)
+        acked_all.extend(acked)
+        retry_all.extend(retry)
+        invalid_all.extend(invalid)
+        for entry in payload.get("items") or []:
+            if not isinstance(entry, Mapping):
+                continue
+            status = str(entry.get("status") or "").strip() or "unknown"
+            status_counts[status] = status_counts.get(status, 0) + 1
+
     batch: list[Mapping[str, Any]] = []
     for body in bodies:
         batch.append(body)
         if len(batch) < TRAILS_OBJECTS_BATCH_MAX:
             continue
-        result = _http_request(
-            "POST", url, json_body={"objects": list(batch)}, token=token
-        )
-        inserted += int(result.get("inserted") or 0)
-        updated += int(result.get("updated") or 0)
-        absent += int(result.get("absent") or result.get("soft_absent") or 0)
+        _flush(batch)
         batch = []
     if batch:
-        result = _http_request(
-            "POST", url, json_body={"objects": list(batch)}, token=token
-        )
-        inserted += int(result.get("inserted") or 0)
-        updated += int(result.get("updated") or 0)
-        absent += int(result.get("absent") or result.get("soft_absent") or 0)
-    return {"inserted": inserted, "updated": updated, "absent": absent}
+        _flush(batch)
+    return {
+        "acked": acked_all,
+        "retry": retry_all,
+        "invalid": invalid_all,
+        "statuses": status_counts,
+        "forwarded": len(acked_all),
+        "queued": len(retry_all),
+        "dropped_invalid": len(invalid_all),
+    }
 
 
 def drain_objects_outbox(
@@ -627,12 +759,18 @@ def drain_objects_outbox(
     outbox_path: Path,
     ack_path: Path,
 ) -> dict[str, int]:
-    """Attempt due object outbox items. Returns drained/remaining counts."""
+    """Attempt due object outbox items with concurrency-safe RMW merge.
+
+    Claims due items under the lock (leaves non-due on disk), POSTs without
+    holding the lock, then re-reads and coalesces with anything enqueued
+    during the HTTP call (last fingerprint per object key wins).
+    """
     if not trails_layer_objects_forwarding_enabled() or is_reader_mode():
         return {"drained": 0, "remaining": 0}
     with _objects_outbox_lock:
         items = _read_objects_outbox(outbox_path)
         due, later = _due_items(items)
+        _write_objects_outbox(outbox_path, later)
     drained = 0
     still_due: list[dict[str, Any]] = []
     for item in due:
@@ -645,24 +783,42 @@ def drain_objects_outbox(
             drained += 1
             continue
         try:
-            _post_objects(bodies)
-            _update_acks_after_success(ack_path, bodies)
-            drained += 1
+            outcome = _post_objects(bodies)
+            acked = outcome.get("acked") or []
+            if acked:
+                _update_acks_after_success(ack_path, acked)
+            retry_bodies = list(outcome.get("retry") or [])
+            if retry_bodies:
+                attempts = int(item.get("attempts") or 0) + 1
+                still_due.append(
+                    {
+                        "id": str(item.get("id") or uuid.uuid4()),
+                        "objects": retry_bodies,
+                        "created_at": item.get("created_at") or _utc_now_iso(),
+                        "attempts": attempts,
+                        "next_attempt_at": _next_attempt_at(attempts),
+                        "last_error": "retry_after_partial_or_unknown_status",
+                    }
+                )
+            else:
+                drained += 1
         except Exception as exc:  # noqa: BLE001
             error = _safe_error_text(exc)
             attempts = int(item.get("attempts") or 0) + 1
-            item["attempts"] = attempts
-            item["last_error"] = error
-            item["next_attempt_at"] = _next_attempt_at(attempts)
-            still_due.append(item)
+            failed = dict(item)
+            failed["attempts"] = attempts
+            failed["last_error"] = error
+            failed["next_attempt_at"] = _next_attempt_at(attempts)
+            still_due.append(failed)
             logger.warning(
                 "Trails objects outbox item %s failed attempt %s: %s",
                 item.get("id"),
                 attempts,
                 error,
             )
-    remaining_items = later + still_due
     with _objects_outbox_lock:
+        current = _read_objects_outbox(outbox_path)
+        remaining_items = coalesce_outbox_items(list(current) + still_due)
         _write_objects_outbox(outbox_path, remaining_items)
     remaining_ops = 0
     for item in remaining_items:
@@ -729,9 +885,7 @@ def maybe_forward_layer_objects(
     try:
         drain = drain_objects_outbox(outbox_path=outbox_path, ack_path=ack_path)
     except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "Trails objects outbox drain skipped: %s", _safe_error_text(exc)
-        )
+        logger.warning("Trails objects outbox drain skipped: %s", _safe_error_text(exc))
     ids = [str(doc_id).strip() for doc_id in (doc_ids or []) if str(doc_id).strip()]
     if not ids:
         return {
@@ -745,9 +899,7 @@ def maybe_forward_layer_objects(
     try:
         ops = _collect_ops_for_docs(storage, ids, ack_path=ack_path)
     except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "Trails layer_objects build failed: %s", _safe_error_text(exc)
-        )
+        logger.warning("Trails layer_objects build failed: %s", _safe_error_text(exc))
         return {
             "enabled": True,
             "ok": False,
@@ -772,14 +924,25 @@ def maybe_forward_layer_objects(
         }
     try:
         posted = _post_objects(ops)
-        _update_acks_after_success(ack_path, ops)
+        acked = list(posted.get("acked") or [])
+        retry_bodies = list(posted.get("retry") or [])
+        if acked:
+            _update_acks_after_success(ack_path, acked)
+        queued = 0
+        if retry_bodies:
+            queued = enqueue_objects_outbox(
+                outbox_path,
+                retry_bodies,
+                error="retry_after_partial_or_unknown_status",
+            )
         return {
             "enabled": True,
-            "ok": True,
-            "forwarded": len(ops),
-            "queued": 0,
+            "ok": not retry_bodies,
+            "forwarded": len(acked),
+            "queued": queued,
+            "dropped_invalid": int(posted.get("dropped_invalid") or 0),
+            "statuses": posted.get("statuses") or {},
             "drain": drain,
-            **posted,
         }
     except Exception as exc:  # noqa: BLE001
         error = _safe_error_text(exc)
@@ -814,12 +977,7 @@ def sync_layer_objects_to_trails(
         if isinstance(item, dict) and item.get("doc_id")
     ]
     if dry_run:
-        if not trails_layer_objects_forwarding_enabled():
-            # Still report would_* from local qualify without requiring flag? 
-            # dry_run should work for planning even if flag off — but then we
-            # only compute ops when enabled OR always compute for dry_run.
-            pass
-        # Compute ops even when flag off so operators can preview.
+        # Compute ops even when the forward flag is off so operators can preview.
         acks = read_acks(storage.trails_objects_ack_path)
         would: list[dict[str, Any]] = []
         for doc_id in doc_ids:

@@ -245,15 +245,23 @@ def locality_payload_to_trails_upsert(
     elif not kod:
         return None
     page = payload.get("page_number")
-    try:
-        page_number = int(page) if page not in (None, "") else None
-    except (TypeError, ValueError):
+    page_number: int | None
+    if page is None or page == "":
         page_number = None
+    else:
+        try:
+            page_number = int(page)
+        except (TypeError, ValueError):
+            page_number = None
     confidence = payload.get("confidence")
-    try:
-        confidence_f = float(confidence) if confidence not in (None, "") else None
-    except (TypeError, ValueError):
+    confidence_f: float | None
+    if confidence is None or confidence == "":
         confidence_f = None
+    else:
+        try:
+            confidence_f = float(confidence)
+        except (TypeError, ValueError):
+            confidence_f = None
     candidates = payload.get("candidates")
     if not isinstance(candidates, list):
         candidates = []
@@ -264,8 +272,7 @@ def locality_payload_to_trails_upsert(
         "kraj": str(payload.get("kraj") or ""),
         "source_dataset": str(payload.get("source_dataset") or "rag-timer"),
         "doc_id": doc_id,
-        "parent_document": str(payload.get("parent_document") or "").strip()
-        or None,
+        "parent_document": str(payload.get("parent_document") or "").strip() or None,
         "chunk_index": chunk_index,
         "page_number": page_number,
         "point_id": str(payload.get("point_id") or "").strip() or None,
@@ -278,11 +285,9 @@ def locality_payload_to_trails_upsert(
         "ambiguous": bool(payload.get("ambiguous")),
         "candidates": candidates,
         "confidence": confidence_f,
-        "confidence_level": str(payload.get("confidence_level") or "").strip()
-        or None,
+        "confidence_level": str(payload.get("confidence_level") or "").strip() or None,
         "notes": str(payload.get("notes") or "").strip() or None,
-        "agent_version": str(payload.get("agent_version") or "").strip()
-        or None,
+        "agent_version": str(payload.get("agent_version") or "").strip() or None,
         "locality_level": level,
         "cast_obce_kod": kod,
         "cast_obce_name": cast_name,
@@ -442,25 +447,25 @@ def _post_links(items: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     inserted = 0
     updated = 0
     ids: list[str] = []
+
+    def _flush(batch: list[Mapping[str, Any]]) -> None:
+        nonlocal inserted, updated
+        result = _http_request(
+            "POST", url, json_body={"links": list(batch)}, token=token
+        )
+        inserted += int(result.get("inserted") or 0)
+        updated += int(result.get("updated") or 0)
+        ids.extend(str(item) for item in (result.get("ids") or []))
+
     batch: list[Mapping[str, Any]] = []
     for body in items:
         batch.append(body)
         if len(batch) < TRAILS_LINKS_BATCH_MAX:
             continue
-        result = _http_request(
-            "POST", url, json_body={"links": list(batch)}, token=token
-        )
-        inserted += int(result.get("inserted") or 0)
-        updated += int(result.get("updated") or 0)
-        ids.extend(str(item) for item in (result.get("ids") or []))
+        _flush(batch)
         batch = []
     if batch:
-        result = _http_request(
-            "POST", url, json_body={"links": list(batch)}, token=token
-        )
-        inserted += int(result.get("inserted") or 0)
-        updated += int(result.get("updated") or 0)
-        ids.extend(str(item) for item in (result.get("ids") or []))
+        _flush(batch)
     return {"inserted": inserted, "updated": updated, "ids": ids}
 
 
@@ -560,9 +565,7 @@ def forward_locality_links(
     try:
         drain = drain_trails_outbox(client, outbox_path)
     except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "Trails outbox drain skipped: %s", _safe_error_text(exc)
-        )
+        logger.warning("Trails outbox drain skipped: %s", _safe_error_text(exc))
     if not ids:
         return {
             "enabled": True,
@@ -610,9 +613,7 @@ def drain_trails_outbox(client: QdrantClient, outbox_path: Path) -> dict[str, in
         ]
         payloads_by_id = _retrieve_link_payloads(client, link_ids)
         ordered = [
-            payloads_by_id[link_id]
-            for link_id in link_ids
-            if link_id in payloads_by_id
+            payloads_by_id[link_id] for link_id in link_ids if link_id in payloads_by_id
         ]
         if not ordered:
             drained += 1
@@ -702,9 +703,7 @@ def sync_links_to_trails(
         return report
     if not trails_forwarding_enabled():
         report["status"] = "disabled"
-        report["error"] = (
-            "TRAILS_API_URL and TRAILS_API_TOKEN must both be set"
-        )
+        report["error"] = "TRAILS_API_URL and TRAILS_API_TOKEN must both be set"
         return report
     drain = drain_trails_outbox(client, outbox_path)
     try:
