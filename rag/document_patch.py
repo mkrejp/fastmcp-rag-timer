@@ -15,13 +15,16 @@ from rag.document_delete import DocumentNotFoundError
 from rag.logging_setup import get_logger
 from rag.processing import guess_mime, is_supported_filename
 from rag.storage import DocumentMeta, RagStorage
+from rag.provenance_meta import (
+    normalize_provenance_metadata,
+    split_metadata_patch,
+)
 from rag.verification_meta import (
     FLAT_PAYLOAD_KEYS,
     DocumentMetadataError,
     chunk_payload_fields,
     figure_payload_fields,
     normalize_verification_metadata,
-    split_verification_deletes,
     validate_merged_lifecycle_fields,
 )
 
@@ -501,17 +504,32 @@ def _patch_document_metadata_locked(
 ) -> dict[str, Any]:
     """Apply a metadata patch while ``doc_lock(doc_id)`` is held."""
     meta = _load_document(storage, doc_id)
-    remaining, deleted = split_verification_deletes(metadata)
+    ver_remaining, ver_deleted, prov_remaining, prov_deleted = split_metadata_patch(
+        metadata
+    )
+    deleted = ver_deleted + prov_deleted
     apply_defaults = not metadata
-    if remaining:
-        fields, truncated = normalize_verification_metadata(
-            remaining, apply_defaults=False
+    truncated: list[str] = []
+    fields: dict[str, Any] = {}
+    if ver_remaining:
+        ver_fields, truncated_v = normalize_verification_metadata(
+            ver_remaining, apply_defaults=False
         )
+        fields.update(ver_fields)
+        truncated.extend(truncated_v)
     elif apply_defaults:
-        fields, truncated = normalize_verification_metadata(None, apply_defaults=True)
-    elif deleted:
-        fields, truncated = {}, []
-    else:
+        ver_fields, truncated_v = normalize_verification_metadata(
+            None, apply_defaults=True
+        )
+        fields.update(ver_fields)
+        truncated.extend(truncated_v)
+    if prov_remaining:
+        prov_fields, truncated_p = normalize_provenance_metadata(prov_remaining)
+        fields.update(prov_fields)
+        truncated.extend(truncated_p)
+    if not fields and deleted:
+        pass
+    elif not fields and not apply_defaults:
         raise DocumentMetadataError("at least one metadata field is required")
     if "doc_id" in fields:
         raise DocumentMetadataError("doc_id cannot be changed")

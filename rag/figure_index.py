@@ -19,6 +19,7 @@ from rag.payloads import (
     apply_image_record_verification,
     stable_figure_point_id,
 )
+from rag.provenance_meta import inherit_provenance_for_extracted
 from rag.pdf_figures import BuiltFigure, iterate_figure_records
 from rag.storage import RagStorage
 from rag.vectorstore import (
@@ -150,6 +151,7 @@ def upsert_figure_batch(
     doc_id: str,
     built: Sequence[BuiltFigure],
     existing_by_figure: Mapping[str, Mapping[str, Any]] | None = None,
+    document_provenance: Mapping[str, Any] | None = None,
 ) -> int:
     """Embed and upsert a batch of built figures; return count upserted."""
     if not built:
@@ -190,6 +192,15 @@ def upsert_figure_batch(
                 item.payload,
                 existing_by_figure.get(item.figure_id),
             )
+            image_sha = str(payload.get("image_sha256") or "")
+            if document_provenance and image_sha:
+                inherited = inherit_provenance_for_extracted(
+                    document_provenance,
+                    image_sha256=image_sha,
+                    content_type="page_scan",
+                    modifications="extracted from PDF; cropped",
+                )
+                payload = {**payload, **inherited}
             point_id = stable_figure_point_id(doc_id, item.figure_id)
             image_vector = clip_vector if clip_vector else None
             points.append(
@@ -218,6 +229,7 @@ def index_pdf_figures(
     pdf_bytes: bytes,
     chunks: Sequence[Mapping[str, Any]],
     preserve_existing: bool = True,
+    document_provenance: Mapping[str, Any] | None = None,
 ) -> tuple[int, set[tuple[int, int]]]:
     """Run figure pipeline, store PNGs, upsert Qdrant; return count and skip keys."""
     existing = (
@@ -255,6 +267,7 @@ def index_pdf_figures(
         doc_id=doc_id,
         built=built,
         existing_by_figure=existing,
+        document_provenance=document_provenance,
     )
     if built:
         seen_ids = {item.figure_id for item in built}
@@ -309,6 +322,8 @@ def reindex_figures_for_doc(
             )
         )
         return {"status": "dry_run", "doc_id": doc_id, "figures_reindexed": total}
+    from rag.provenance_meta import document_provenance_from_extra
+
     count, _skip = index_pdf_figures(
         storage=storage,
         qdrant=qdrant,
@@ -319,6 +334,7 @@ def reindex_figures_for_doc(
         pdf_bytes=pdf_bytes,
         chunks=chunks,
         preserve_existing=True,
+        document_provenance=document_provenance_from_extra(meta.extra),
     )
     meta.figure_index_version = FIGURE_INDEX_VERSION
     meta.figures_count = count

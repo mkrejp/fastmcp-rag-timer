@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.utilities.types import Image
@@ -199,12 +199,22 @@ def _run_mcp_tool(
         return message
 
 
-def _image_public_url(doc_id: str, image_id: str) -> str | None:
-    """Build an absolute image URL when ``PUBLIC_BASE_URL`` is configured."""
-    base = resolve_public_base_url()
-    if not base:
-        return None
-    return f"{base}/images/{doc_id}/{image_id}"
+def _image_public_url(
+    doc_id: str,
+    image_id: str,
+    record: Mapping[str, Any] | None = None,
+) -> str | None:
+    """Build a delivery URL (media or RAG) when attribution allows."""
+    from rag.provenance_meta import build_image_delivery_urls
+
+    urls = build_image_delivery_urls(
+        record or {},
+        doc_id=doc_id,
+        image_id=image_id,
+        public_base_url=resolve_public_base_url(),
+        media_public_base_url=None,
+    )
+    return urls.get("url")
 
 
 def _page_image_public_url(doc_id: str, page_one_based: int) -> str | None:
@@ -218,10 +228,18 @@ def _image_meta_with_url(
     *,
     fallback: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Serialize ``image`` and attach a public HTTP URL when available."""
+    """Serialize ``image`` with provenance and delivery URLs when allowed."""
+    from rag.provenance_meta import attach_image_api_fields, document_provenance_from_extra
+
     payload = image.to_dict()
-    payload["url"] = _image_public_url(doc_id, image.image_id)
-    return attach_preferred_geo(payload, fallback=fallback)
+    provenance = document_provenance_from_extra(fallback or {})
+    enriched = attach_image_api_fields(
+        payload,
+        doc_id=doc_id,
+        image_id=image.image_id,
+        provenance=provenance or (fallback or {}),
+    )
+    return attach_preferred_geo(enriched, fallback=fallback)
 
 
 def _figure_item_with_url(
@@ -232,6 +250,8 @@ def _figure_item_with_url(
 ) -> dict[str, Any]:
     """Serialize a ``pdf_figure`` payload in the ``get_document_images`` shape."""
     image_id = str(payload.get("image_id") or "")
+    from rag.provenance_meta import attach_image_api_fields
+
     item = {
         "image_id": image_id,
         "sha256": str(payload.get("image_sha256") or ""),
@@ -240,7 +260,6 @@ def _figure_item_with_url(
         "mime": "image/png",
         "ocr_text": payload.get("ocr_text") or None,
         "ocr_confidence": payload.get("ocr_confidence"),
-        "url": _image_public_url(doc_id, image_id) if image_id else None,
         "source_type": "pdf_figure",
         "caption": payload.get("caption"),
         "summary": payload.get("summary"),
@@ -249,7 +268,13 @@ def _figure_item_with_url(
         "lon": payload.get("lon"),
         "geo_refined": payload.get("geo_refined"),
     }
-    return attach_preferred_geo(item, fallback=fallback or payload)
+    enriched = attach_image_api_fields(
+        item,
+        doc_id=doc_id,
+        image_id=image_id,
+        provenance=payload,
+    )
+    return attach_preferred_geo(enriched, fallback=fallback or payload)
 
 
 def register_mcp_tools(

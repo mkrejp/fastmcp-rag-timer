@@ -22,11 +22,12 @@ from rag.pdf_images import extract_pdf_images
 from rag.processing import guess_mime, is_supported_filename, process_document
 from rag.storage import DocumentMeta, ImageMeta, RagStorage
 from rag.vectorstore import build_named_vector
-from rag.verification_meta import (
-    chunk_payload_fields,
-    figure_payload_fields,
-    normalize_verification_metadata,
+from rag.provenance_meta import (
+    figure_extra_from_document,
+    inherit_provenance_for_extracted,
+    merge_ingest_metadata,
 )
+from rag.verification_meta import chunk_payload_fields
 
 EmbedFn = Callable[[str], list[float]]
 logger = get_logger("rag.ingest")
@@ -169,11 +170,11 @@ def ingest_bytes(
         )
 
     digest = content_sha256(data)
-    verification_fields, truncated = normalize_verification_metadata(
-        metadata, apply_defaults=True
+    verification_fields, truncated = merge_ingest_metadata(
+        metadata, apply_verification_defaults=True
     )
     chunk_fields = chunk_payload_fields(verification_fields)
-    figure_fields = figure_payload_fields(verification_fields)
+    figure_fields = figure_extra_from_document(verification_fields)
     if skip_duplicate:
         existing = storage.find_by_sha256(digest)
         if existing is not None:
@@ -245,6 +246,7 @@ def ingest_bytes(
                 pdf_bytes=data,
                 chunks=chunks,
                 preserve_existing=False,
+                document_provenance=verification_fields,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("Figure indexing failed doc_id=%s: %s", doc_id, exc)
@@ -316,13 +318,19 @@ def ingest_bytes(
     for (img, summary), text_vector in zip(
         image_summaries, image_text_vectors, strict=True
     ):
+        img_prov = inherit_provenance_for_extracted(
+            verification_fields,
+            image_sha256=img.sha256,
+            content_type="image",
+            modifications="extracted from PDF",
+        )
         points.append(
             _image_point(
                 doc_id=doc_id,
                 filename=filename,
                 img=img,
                 summary=summary,
-                extra_payload=figure_fields,
+                extra_payload={**figure_fields, **img_prov},
                 text_vector=text_vector,
                 image_vector=visual_vectors.get(img.image_id),
             )
@@ -336,13 +344,19 @@ def ingest_bytes(
         image_vector = visual_vectors.get(img.image_id)
         if image_vector is None:
             continue
+        img_prov = inherit_provenance_for_extracted(
+            verification_fields,
+            image_sha256=img.sha256,
+            content_type="image",
+            modifications="extracted from PDF",
+        )
         points.append(
             _image_point(
                 doc_id=doc_id,
                 filename=filename,
                 img=img,
                 summary=build_content_summary(img.page_number, img.ocr_text or ""),
-                extra_payload=figure_fields,
+                extra_payload={**figure_fields, **img_prov},
                 image_vector=image_vector,
             )
         )

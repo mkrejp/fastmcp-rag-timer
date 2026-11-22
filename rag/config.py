@@ -117,6 +117,18 @@ def resolve_public_base_url() -> str | None:
     return value or None
 
 
+def resolve_media_public_base_url() -> str | None:
+    """Return the media service public base URL for thumb/large JSON links."""
+    value = os.getenv("MEDIA_PUBLIC_BASE_URL", "").strip().rstrip("/")
+    return value or None
+
+
+def upload_media_deprecated() -> bool:
+    """Return whether ``POST /upload-media`` is closed (410 Gone)."""
+    raw = os.getenv("RAG_UPLOAD_MEDIA_DEPRECATED", "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
 def resolve_google_client_id() -> str | None:
     """Return the Google OAuth client id."""
     value = os.getenv("GOOGLE_CLIENT_ID", "").strip()

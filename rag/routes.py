@@ -30,7 +30,7 @@ from rag.chunked_upload import (
     UploadExpiredError,
     UploadNotFoundError,
 )
-from rag.config import COLLECTION_NAME
+from rag.config import COLLECTION_NAME, upload_media_deprecated
 from rag.document_delete import (
     DocumentLinkedError,
     DocumentNotFoundError,
@@ -735,11 +735,28 @@ def ingest_json_url(
         raise
 
 
+UPLOAD_MEDIA_DEPRECATION_MESSAGE = (
+    "POST /upload-media is closed. Upload images with provenance to the geo-media "
+    "service (POST /v1/assets). Set RAG_UPLOAD_MEDIA_DEPRECATED=0 to temporarily "
+    "re-enable the legacy unauthenticated store."
+)
+
+
 @router.post("/upload-media")
 async def upload_media(
     request: Request, file: UploadFile = File(...)
 ) -> dict[str, Any]:
-    """Store a media asset under originals without extraction or indexing."""
+    """Deprecated unauthenticated store; use geo-media ``POST /v1/assets`` instead."""
+    if upload_media_deprecated():
+        _record_http(route="upload_media", ok=False, error="gone")
+        raise HTTPException(
+            status_code=410,
+            detail={
+                "error": "gone",
+                "message": UPLOAD_MEDIA_DEPRECATION_MESSAGE,
+                "media_service": "geo-media POST /v1/assets",
+            },
+        )
     filename = file.filename or "media.bin"
     data = await file.read()
     try:
