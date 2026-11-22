@@ -173,8 +173,9 @@ Verified in `mkrejp/TrailsAssemblage` (commit `b4dfcea` on `main` when read):
 - **Identity:** migration `008_rag_timer_recent_updates.sql` — `map_layers.source_key='rag-timer'`, unique `rag_timer_key` = `rag_doc_id || U+001F || COALESCE(rag_image_id,'')` on `layer_object_properties`. `POST /catalog/objects` upserts GPS + labels; **no URL, no thumbnail, no attribution** on that contract (`docs/catalog-rag-objects.md`).
 - **Image locators:** migration `009_layer_object_images.sql` — table `public.layer_object_images` with `source_kind` `rag|commons|wikidata|url|upload`, `source_doc_id` / `source_image_id`, `source_url`, **`license` / `attribution` / `credit`** (not the approved names), optional `checksum`. **Bytes are not stored.** `ON DELETE CASCADE` from `layer_objects`; image edits must not bump `layer_objects.updated_at`.
 - **Serving today:** Trails-relative `GET /catalog/objects/{id}/thumbnail` proxies Commons `Special:FilePath/{file}?width=480` or RAG `GET /images/{doc}/{id}` with a server-side token. In-process LRU (64) + optional `IMAGE_CACHE_DIR`. JSON may include `thumbnail_url` + `image.{license,attribution,credit,source_kind,source_page_url}` (`src/trails_assemblage/services/object_images.py`).
+- **Web frontend (later than `docs/images-geo-objects.md` “no image on the map”):** shared helper `frontend/src/object-thumb.js` — `thumbSrc(item.thumbnail_url)`, `attributionText(image.attribution || image.credit, image.license)`, 48×48 `<img alt="">`, placeholder `/catalog/images/placeholder`, `bindThumbError`. Used by `catalog-search-dialog.js` (search rows) and `recent-list.js` (latest-updates list). `recent-api.js` `popupHtml` prepends `popupThumbHtml`. **`recent-map.js` strips `thumbnail_url` and `image` when building GeoJSON `properties`**, so Leaflet popups call `popupHtml` without those fields and fall back to the placeholder. No `large_url`, no lightbox; list-item click focuses the marker.
 - **Audit (Trails doc, 2026-11-22):** many rag-timer **buildings** have `images: []` on RAG, Commons filename only in markdown (`nenahráváno v této dávce`), empty `rag_image_id`. Search used to advertise a RAG thumb URL for any MCP `image_id` and then 404.
-- **mobile-api:** `TrailsAssemblage/mobile-api/` on host `https://api.animarium.ai`, same Railway PostGIS (**geobjectsdb**). Trails and owner-scoped `/v1/trails*` only. Docs: trail list/edit has **no catalog image field**; `TrailItem.thumbnail_url` is optional and **ignored until the Android UI uses it**. There is **no** `mkrejp/mobile-api` repository.
+- **mobile-api:** `TrailsAssemblage/mobile-api/` on host `https://api.animarium.ai`, same Railway PostGIS (**geobjectsdb**). Trails and owner-scoped `/v1/trails*` only. Docs: trail list/edit has **no catalog image field**; `TrailItem.thumbnail_url` is optional and **ignored until the Android UI uses it**. There is **no** `mkrejp/mobile-api` repository. Android UI lives in `TrailsAssemblage/mobile/` (Expo).
 
 ### 3.7 sftpgo / HF / backups
 
@@ -311,12 +312,14 @@ Marek: **clicking a thumbnail opens the large version (lightbox), always with at
 
 | Surface today (`mkrejp/TrailsAssemblage`) | Image behaviour today | After this contract |
 | --- | --- | --- |
-| Catalogue search dialog (`frontend` / `catalog_search_dialog.js`) | `<img src=thumbnail_url>` or empty CSS box; no `onerror`; no lightbox; attribution only if `image.attribution` is wired | Thumb → lightbox large; `attribution_text` visible on the card **and** in the lightbox |
-| Home map / Leaflet popup / `GET /catalog/objects/recent` | Name/type/obec only; **no image** (`docs/images-geo-objects.md`) | Popup shows thumb; click opens lightbox with large + attribution (popup stays small) |
-| Trail detail | Label + catalog UUID; no image | Same image object on the linked `layer_objects` row |
+| Shared helper `frontend/src/object-thumb.js` | `thumbnail_url`; credit from `attribution`/`credit` + `license`; hardcoded 48×48; `alt=""`; placeholder + `onerror`; **no** `large_url` / lightbox | Read §4.5 fields (`thumb_url` with `thumbnail_url` alias, `attribution_text`, real `thumb_width`/`height`, non-empty `alt`); thumb click → lightbox |
+| Catalogue search `frontend/src/catalog-search-dialog.js` | Uses `object-thumb.js`; credit under the row; thumb not clickable as zoom | Same; lightbox on thumb |
+| Recent list `frontend/src/recent-list.js` | Same helper; row click focuses the map, does not open large | Keep focus-on-map on the **row**; **thumb** click → lightbox (stop propagation) |
+| Leaflet popups `frontend/src/recent-map.js` + `recent-api.js` `popupHtml` | Intended 48×48 thumb in the popup, but GeoJSON `properties` **omit** `thumbnail_url` and `image` → placeholder only | Pass the §4.5 object through popup properties (or look up by `id`); popup shows thumb; thumb click → overlay lightbox (not a large JPEG inside Leaflet) |
+| Trail detail | Label + catalog UUID; no image in `mobile/` screens | Same image object on the linked `layer_objects` row when the web trail UI shows it |
 | `GET /catalog/search` | `thumbnail_url` RAG proxy when MCP had `image_id` (often 404) | Prefer stored `layer_object_images` / media object; no RAG origin |
 | GeoServer WFS/WMS | Geometry only | Unchanged (out of scope) |
-| `mobile-api` / Android `TrailItem` | Optional `thumbnail_url` ignored until the app uses it | Same JSON fields when Trails serializes trail items; native lightbox is a later mobile task |
+| `mobile-api` / `mobile/` Android | Optional `thumbnail_url` ignored until the app uses it | Same JSON fields; native lightbox later |
 
 The **browser talks only to Trails** (`GET /catalog/objects`, `{id}`, `/recent`, `/catalog/search`, and binary `GET /catalog/objects/{id}/thumbnail` + **`/large`**). It never calls rag-timer or the cold media service.
 
@@ -371,7 +374,7 @@ List endpoints may return this object as `image` next to `thumbnail_url` for one
 7. Thumb `onerror` → existing Trails placeholder (`/catalog/images/placeholder` / empty CSS box), never a broken-image icon (`docs/images-geo-objects.md`).
 8. Multiple gallery images (later): same object shape in an array; lightbox can step through `large_url`s; each frame has its own `attribution_text` (do not reuse the primary’s TASL on a different work).
 
-This is a **data contract**. Markup, CSS, and Leaflet wiring stay in a Trails frontend follow-up. This rag-timer PR ships no UI.
+This is a **data contract**. Markup, CSS, and Leaflet wiring stay in a Trails frontend follow-up (extend `object-thumb.js`; do not add a second thumb helper). This rag-timer PR ships no UI.
 
 ---
 
@@ -544,7 +547,7 @@ Follow-up in that repo (after this ADR):
 - Align `layer_object_images` columns with §2.1 (`license_id`, `attribution_text`, …). Today: `license`, `attribution`, `credit` — **mismatch**.
 - Store `media_asset_id`. Proxy thumb **and large** from media. Keep Trails-relative URLs. Add public `GET /catalog/objects/{id}/large` next to today’s `/thumbnail`.
 - Catalog JSON (`GET /catalog/objects`, `{id}`, `/recent`, search, trail items) embeds the §4.5 image object (`thumb_url`, `large_url`, `attribution_text`, `thumb_width`/`thumb_height`, `large_width`/`large_height`, `license_id`, `alt`, `title`). Null URLs when restricted.
-- **Frontend consumer (follow-up, not this PR):** Trails web — search dialog, **Leaflet map popups**, recent list, trail detail. Thumb click → lightbox of `large_url` with `attribution_text` always visible. No rag-timer UI work.
+- **Frontend consumer (follow-up, not this PR):** Trails web — `object-thumb.js`, `catalog-search-dialog.js`, `recent-list.js`, `recent-map.js` / `recent-api.js` popups. Thumb click → lightbox of `large_url` with `attribution_text` always visible. Fix GeoJSON property strip so popups receive `thumb_url`/`image`. No rag-timer UI work.
 - Purge `IMAGE_CACHE_DIR` on takedown (thumb **and** large cache keys).
 - **mobile-api:** once Trails `TrailItem` carries the same image object, Android can show thumb + attribution. Do not point the app at RAG. Do not add a second schema. Native lightbox is optional later.
 
@@ -603,7 +606,8 @@ Rollback: Trails can keep Commons FilePath and RAG proxy; media is additive.
 | `DocumentMeta.status` | rag-timer catalog | stays ingest-only; **not** `license_status` |
 | `doc_status` | RAG lifecycle | stays |
 | figure `verification_status` | `unverified/verified/…` | stays; **not** `license_status` |
-| Trails `license`, `attribution`, `credit` | `layer_object_images` | `license_id`, `attribution_text`; drop or alias `credit` |
+| Trails `license`, `attribution`, `credit` | `layer_object_images` + `object-thumb.js` `attributionText` | `license_id`, `attribution_text`; drop or alias `credit` |
+| Trails / frontend `thumbnail_url` | catalog JSON, `thumbSrc` | `thumb_url` (keep `thumbnail_url` alias for one release) |
 | Trails `source_kind` | rag/commons/… | keep as Trails locator; not a provenance substitute |
 | `PUBLIC_BASE_URL` “public” image URL | MCP JSON | replace with media/Trails URLs + `attribution_text` |
 | `sha256` on `pdf_figure` payload | document digest in `build_figure_payload` (`sha256` = `doc_sha256`) vs `image_sha256` | provenance `sha256` = **image original**; do not copy PDF digest into the media asset |
@@ -651,7 +655,7 @@ Rollback: Trails can keep Commons FilePath and RAG proxy; media is additive.
 
 **Q14. `alt` language.** Default `"{title} — {attribution_text}"` (often Czech title + English Commons TASL). Prefer Czech `alt` composed by RAGloader, or keep this mechanical default?
 
-**Q15. Map popup vs lightbox.** Confirm the popup shows only the **thumb** (click → overlay lightbox) rather than loading `large_url` inside the Leaflet popup (large JPEG would be heavy on mobile). Recommendation: **thumb in popup, large in lightbox**.
+**Q15. Map popup vs lightbox.** Confirm the popup shows only the **thumb** (click → overlay lightbox) rather than loading `large_url` inside the Leaflet popup (large JPEG would be heavy on mobile). Recommendation: **thumb in popup, large in lightbox**. Today popups are 48×48 placeholders because `recent-map.js` drops image fields from GeoJSON properties.
 
 ---
 
@@ -660,7 +664,7 @@ Rollback: Trails can keep Commons FilePath and RAG proxy; media is additive.
 1. **Media implementer** — service, layout, Pillow pipeline, auth, audit, batch backfill `--dry-run`.
 2. **RAG schema/API** — provenance on ingest/MCP, inherit to extracts, close `/upload-media`, payload `media_asset_id`.
 3. **Trails/mobile** — `layer_object_images` field alignment, large URL, media proxy, cache purge, catalog JSON §4.5 image object, TrailItem attribution.
-4. **Trails frontend (later)** — search, **map popup**, recent, trail detail: thumb click → lightbox of `large_url` with visible `attribution_text`. No work in this rag-timer PR.
+4. **Trails frontend (later)** — extend `frontend/src/object-thumb.js`; search / recent list / **map popups** (`recent-map.js` must pass image fields into GeoJSON): thumb click → lightbox of `large_url` with visible `attribution_text`. No work in this rag-timer PR.
 5. **TesterVerifier** — licence_status vs doc_status clash tests; hide binaries; CC BY-SA TASL on JSON; lightbox fields present; dedup; takedown audit.
 6. **ControlApps** — backup `/data/media` (or R2); do not merge until GO.
 
@@ -674,5 +678,5 @@ Rollback: Trails can keep Commons FilePath and RAG proxy; media is additive.
 - `rag/ingest.py`, `rag/payloads.py`, `rag/pdf_images.py`, `rag/pdf_figures.py`, `rag/image_delivery.py`, `rag/mcp_tools.py`, `rag/figure_index.py` `verify_image_record`
 - `rag/verification_meta.py` — `status` vs `doc_status` vs figure verification; `FIGURE_EXCLUDED_KEYS`
 - `docs/ARCHITECTURE.md`, `docs/SPLIT_DEPLOY.md`, `docs/AI_AGENTS.md`, `deploy/railway/README.md`
-- Trails: `migrations/008_rag_timer_recent_updates.sql`, `migrations/009_layer_object_images.sql`, `docs/catalog-rag-objects.md`, `docs/images-geo-objects.md`, `src/trails_assemblage/services/object_images.py`, `frontend/src/main.js` (search/map consumers), `mobile-api/README.md`
+- Trails: `migrations/008_rag_timer_recent_updates.sql`, `migrations/009_layer_object_images.sql`, `docs/catalog-rag-objects.md`, `docs/images-geo-objects.md`, `src/trails_assemblage/services/object_images.py`, `importers/object_images_sync.py`, `frontend/src/object-thumb.js`, `catalog-search-dialog.js`, `recent-list.js`, `recent-map.js`, `recent-api.js`, `mobile-api/README.md`, `mobile/` Expo app
 - `mkrejp/sftpgo-geo-servus`, `mkrejp/sftp-mirror-geo-server`
