@@ -346,6 +346,7 @@ def build_image_delivery_urls(
     """Build thumb/large/rag URLs per ADR (media when ``media_asset_id``, else RAG)."""
     from rag.config import resolve_public_base_url
 
+    base_public: str | None
     if public_base_url is not None:
         base_public = public_base_url
     else:
