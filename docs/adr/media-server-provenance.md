@@ -4,7 +4,7 @@
 - **Date:** 2026-11-22
 - **Deciders:** Marek
 - **Policy approved:** 2026-11-22 (shared provenance block on every used document and image; same snake_case field names in RAG and the media server)
-- **Scope of this PR:** this markdown file only. No application code, no migrations, no Railway changes, no secrets.
+- **Scope of this PR:** this Markdown file only. No application code, no migrations, no Railway changes, no secrets.
 - **Follow-up agents** start only after Marek’s word on this ADR. ControlApps merges after TesterVerifier GO and Marek’s word. Do not merge this PR from an agent.
 
 ## 1. Decision summary
@@ -14,7 +14,11 @@
 3. **TrailsAssemblage / geobjectsdb / mobile-api** keep geoobject identity as `(rag_doc_id, rag_image_id)` and add `media_asset_id` plus the shared provenance fields on `layer_object_images`. The browser never sees a RAG origin URL or a RAG token.
 4. **Every hosted image is resized at intake** into a **thumbnail** and a **large** derivative **before** the asset can leave `license_status=intake`. Clients never request “make me a thumb”. A batch job backfills the existing RAG image files.
 5. **Hugging Face and sftpgo remain backups**, not origins. **`POST /upload-media` is closed** (auth + provenance required, or the route is removed once media exists).
-6. **Web UI contract:** JSON for every published image includes `thumb_url`, `large_url`, `attribution_text`, pixel `width`/`height` per size, `license_id`, `alt`, and `title`. Clicking the thumbnail opens the **large** rendition in a lightbox **with attribution always visible**. TrailsAssemblage map popups, catalog search, recent list, and trail detail are the consumers. **No frontend code in this PR.**
+6. **Web UI contract:** JSON for every published image includes `thumb_url`, `large_url`,
+   `attribution_text`, pixel `width`/`height` per size, `license_id`, `alt`, and `title`.
+   Clicking the thumbnail opens the **large** rendition in a lightbox **with attribution
+   always visible**. TrailsAssemblage map popups, catalog search, recent list, and trail
+   detail are the consumers. **No frontend code in this PR.**
 
 This ADR names concrete paths, endpoints, field names, and mismatches in the current code. It does not implement them.
 
@@ -28,7 +32,7 @@ Every document used (books, magazines, scans, texts, images) carries provenance 
 | --- | --- |
 | `content_type` | `image` \| `document` \| `page_scan` \| `magazine` \| `book` \| `text` |
 | `source_url` | Canonical source page (Commons File: page, Kramerius UUID page, IA item, …) |
-| `source_name` | e.g. Wikimedia Commons, Kramerius NKP, Internet Archive, ÖNB AKON |
+| `source_name` | e.g. Wikimedia Commons, Kramerius NKP, `archive.org`, ÖNB AKON |
 | `source_library` | Holding library when distinct from `source_name` |
 | `author` | Creator / photographer |
 | `title` | Work title |
@@ -37,7 +41,7 @@ Every document used (books, magazines, scans, texts, images) carries provenance 
 | `attribution_text` | Ready to display. Commons = TASL |
 | `retrieved_at` | ISO-8601 UTC |
 | `modifications` | What we changed (empty/`none` on original; `resized` on derivatives) |
-| `verified_by` | Operator / agent id who completed licence check |
+| `verified_by` | Operator / agent ID who completed licence check |
 | `license_status` | `intake` \| `license_check` \| `metadata_complete` \| `verified` \| `published` \| `quarantine` \| `takedown` \| `restricted` |
 | `sha256` | Hex digest of the **original** bytes |
 | `publication_year` | When known |
@@ -85,10 +89,10 @@ The operator-side map is **mostly correct** for rag-timer 00001. Corrections and
 
 ### 3.1 Repositories actually read
 
-| Repo | Role in this design | Notes |
+| Repository | Role in this design | Notes |
 | --- | --- | --- |
-| `mkrejp/fastmcp-rag-timer` (this repo, ingester 00001 / reader split) | RAG ingest, disk catalog, Qdrant, `GET /images/...` | Source of today’s binaries |
-| `mkrejp/TrailsAssemblage` | PostGIS `layer_objects`, catalog HTTP, `mobile-api/` | geobjectsdb; no separate `mobile-api` GitHub repo |
+| `mkrejp/fastmcp-rag-timer` (this repository, ingester 00001 / reader split) | RAG ingest, disk catalog, Qdrant, `GET /images/...` | Source of today’s binaries |
+| `mkrejp/TrailsAssemblage` | PostGIS `layer_objects`, catalog HTTP, `mobile-api/` | geobjectsdb; no separate `mobile-api` GitHub repository |
 | `mkrejp/sftpgo-geo-servus` | SFTP daemon wrapper | Desktop backup sink, not an HTTP media origin |
 | `mkrejp/sftp-mirror-geo-server` | Nightly rclone pull from sftpgo | DR copy of yesterday’s `COMPLETE` generation |
 | `mkrejp/sbdb` | Different PostGIS sample-db | **Not** geobjectsdb; ignore for this ADR |
@@ -164,31 +168,58 @@ bytes → sha256 → skip_duplicate via catalog find_by_sha256
 
 `DocumentMeta`: `filename`, `mime`, `sha256` (whole file), `uploaded_at`, `status` (ingest), paths, `images[]`, figure index counters, geo, `extra` (verification fields after ingest).
 
-**None of the §2.1 provenance keys are first-class.** A catalog export of documents/images therefore has zero `license_id` / `source_url` / `attribution_text`. The brief’s “726 docs / 1659 images” is an operator catalog count, not stored in this git repo; this ADR treats **~1659 existing on-disk images** as the backfill population.
+**None of the §2.1 provenance keys are first-class.** A catalog export of documents/images
+therefore has zero `license_id` / `source_url` / `attribution_text`. The brief’s
+“726 docs / 1659 images” is an operator catalog count, not stored in this git
+repository; this ADR treats **~1659 existing on-disk images** as the backfill population.
 
 ### 3.6 Trails / geobjectsdb / mobile-api
 
 Verified in `mkrejp/TrailsAssemblage` (commit `b4dfcea` on `main` when read):
 
 - **Identity:** migration `008_rag_timer_recent_updates.sql` — `map_layers.source_key='rag-timer'`, unique `rag_timer_key` = `rag_doc_id || U+001F || COALESCE(rag_image_id,'')` on `layer_object_properties`. `POST /catalog/objects` upserts GPS + labels; **no URL, no thumbnail, no attribution** on that contract (`docs/catalog-rag-objects.md`).
-- **Image locators:** migration `009_layer_object_images.sql` — table `public.layer_object_images` with `source_kind` `rag|commons|wikidata|url|upload`, `source_doc_id` / `source_image_id`, `source_url`, **`license` / `attribution` / `credit`** (not the approved names), optional `checksum`. **Bytes are not stored.** `ON DELETE CASCADE` from `layer_objects`; image edits must not bump `layer_objects.updated_at`.
+- **Image locators:** migration `009_layer_object_images.sql` — table
+  `public.layer_object_images` with `source_kind`
+  `rag|commons|wikidata|url|upload`, `source_doc_id` / `source_image_id`,
+  `source_url`, **`license` / `attribution` / `credit`** (not the approved
+  names), optional `checksum`. **Bytes are not stored.** `ON DELETE CASCADE`
+  from `layer_objects`; image edits must not bump `layer_objects.updated_at`.
 - **Serving today:** Trails-relative `GET /catalog/objects/{id}/thumbnail` proxies Commons `Special:FilePath/{file}?width=480` or RAG `GET /images/{doc}/{id}` with a server-side token. In-process LRU (64) + optional `IMAGE_CACHE_DIR`. JSON may include `thumbnail_url` + `image.{license,attribution,credit,source_kind,source_page_url}` (`src/trails_assemblage/services/object_images.py`).
-- **Web frontend (later than `docs/images-geo-objects.md` “no image on the map”):** shared helper `frontend/src/object-thumb.js` — `thumbSrc(item.thumbnail_url)`, `attributionText(image.attribution || image.credit, image.license)`, 48×48 `<img alt="">`, placeholder `/catalog/images/placeholder`, `bindThumbError`. Used by `catalog-search-dialog.js` (search rows) and `recent-list.js` (latest-updates list). `recent-api.js` `popupHtml` prepends `popupThumbHtml`. **`recent-map.js` strips `thumbnail_url` and `image` when building GeoJSON `properties`**, so Leaflet popups call `popupHtml` without those fields and fall back to the placeholder. No `large_url`, no lightbox; list-item click focuses the marker.
-- **Audit (Trails doc, 2026-11-22):** many rag-timer **buildings** have `images: []` on RAG, Commons filename only in markdown (`nenahráváno v této dávce`), empty `rag_image_id`. Search used to advertise a RAG thumb URL for any MCP `image_id` and then 404.
-- **mobile-api:** `TrailsAssemblage/mobile-api/` on host `https://api.animarium.ai`, same Railway PostGIS (**geobjectsdb**). Trails and owner-scoped `/v1/trails*` only. Docs: trail list/edit has **no catalog image field**; `TrailItem.thumbnail_url` is optional and **ignored until the Android UI uses it**. There is **no** `mkrejp/mobile-api` repository. Android UI lives in `TrailsAssemblage/mobile/` (Expo).
+- **Web frontend (later than `docs/images-geo-objects.md` “no image on the map”):**
+  shared helper `frontend/src/object-thumb.js` — `thumbSrc(item.thumbnail_url)`,
+  `attributionText(image.attribution || image.credit, image.license)`, 48×48
+  `<img alt="">`, placeholder `/catalog/images/placeholder`, `bindThumbError`.
+  Used by `catalog-search-dialog.js` (search rows) and `recent-list.js`
+  (latest-updates list). `recent-api.js` `popupHtml` prepends `popupThumbHtml`.
+  **`recent-map.js` strips `thumbnail_url` and `image` when building GeoJSON
+  `properties`**, so Leaflet popups call `popupHtml` without those fields and
+  fall back to the placeholder. No `large_url`, no lightbox; list-item click
+  focuses the marker.
+- **Audit (Trails doc, 2026-11-22):** many rag-timer **buildings** have
+  `images: []` on RAG, Commons filename only in Markdown
+  (`nenahráváno v této dávce`), empty `rag_image_id`. Search used to advertise a
+  RAG thumb URL for any MCP `image_id` and then 404.
+- **mobile-api:** `TrailsAssemblage/mobile-api/` on host
+  `https://api.animarium.ai`, same Railway PostGIS (**geobjectsdb**). Trails and
+  owner-scoped `/v1/trails*` only. Docs: trail list/edit has **no catalog image
+  field**; `TrailItem.thumbnail_url` is optional and **ignored until the Android
+  UI uses it**. There is **no** `mkrejp/mobile-api` repository. Android UI lives
+  in `TrailsAssemblage/mobile/` (Expo).
 
 ### 3.7 sftpgo / HF / backups
 
 - `sftpgo-geo-servus`: `Dockerfile` `FROM drakkan/sftpgo:v2.7.6` + chown entrypoint. Not an image CDN; no provenance schema.
 - `sftp-mirror-geo-server`: cron 19:45 Europe/Prague, copies newest `COMPLETE` desktop backup onto a **5 GB** `/mirror` volume (two generations). Restore docs live on the operator box, not in rag-timer.
-- Hugging Face in **this** repo is **ONNX download** (FastEmbed BGE-M3, CLIP), not a media origin. HF as RAG/PostGIS **backup** is an HFHosts/operator practice, **not in git**. Treat HF as cold backup only.
+- Hugging Face in **this** repository is **ONNX download** (FastEmbed BGE-M3, CLIP),
+  not a media origin. HF as RAG/PostGIS **backup** is an HFHosts/operator practice,
+  **not in git**. Treat HF as cold backup only.
 
 ### 3.8 Where metadata is dropped (trace)
 
 ```text
 FotoImporter (operator)
   local fields: autor, obrazek_licence, zdroj, licence
-  → not this repo; not Trails; not media
+  → not this repository; not Trails; not media
 catalog-upload-tools (operator)
   POST /upload or chunked /upload/init → complete
   licence/title/source → local upload-result.json (often license=public)
@@ -200,7 +231,7 @@ extracted PDF images / pdf_figure / page JPEGs
   → inherit nothing; parent also has no provenance
 Trails POST /catalog/objects
   → (rag_doc_id, rag_image_id) only
-Trails object_images_sync (markdown Commons parse)
+Trails object_images_sync (Markdown Commons parse)
   → license/attribution/credit (different names); bytes still on Commons or RAG
 ```
 
@@ -243,7 +274,7 @@ Keep existing IDs; add one.
 | ID | Format today | After |
 | --- | --- | --- |
 | `rag_doc_id` | UUID | Unchanged. RAG catalog / Qdrant `doc_id`. Trails `rag_doc_id`. |
-| `rag_image_id` | 16 hex (`sha256[:16]`) or `page:{doc_id}:{n}` | Unchanged for existing rows. New hosted images still get a 16-hex id **or** keep using `sha256[:16]` of the original so Trails keys stay stable. |
+| `rag_image_id` | 16 hex (`sha256[:16]`) or `page:{doc_id}:{n}` | Unchanged for existing rows. New hosted images still get a 16-hex ID **or** keep using `sha256[:16]` of the original so Trails keys stay stable. |
 | `media_asset_id` | — | New UUID from the media service. Stored on RAG image/figure payload, Trails `layer_object_images`, and media metadata. |
 | `sha256` | image bytes or whole PDF | **Original bitstream** on the media asset. Derivatives have their own digests in the derivative table, not as the asset’s `sha256`. |
 
@@ -257,13 +288,18 @@ Marek is the sole user; ingest compute should be **cold**. Trails home map is pu
 
 | Option | Bytes | Compute | Serve thumbs to the public map | Cost shape | Verdict |
 | --- | --- | --- | --- | --- | --- |
-| **A. Dedicated Railway volume + small FastAPI, started with the cold ingester** | Volume `MEDIA_DATA_ROOT` (e.g. `/data/media`) | On only during intake + batch | Trails (already warm) server-side GETs the media origin **or** reads a shared pattern; if media is stopped, Trails must have a copy or Trails 502s | Volume ~$0.15/GB/mo always; no extra always-on RAM if Trails caches | **Recommended phase 1** together with Trails proxy + on-disk cache (`IMAGE_CACHE_DIR`) of **thumb + large only** |
+| **A. Dedicated Railway volume + FastAPI, started with the cold ingester** | `/data/media` | Intake + batch only | Trails (warm) proxies and caches; 502 on cache miss if media is down | ~$0.15/GB/mo volume | **Phase 1:** Trails proxy + `IMAGE_CACHE_DIR` for thumb + large |
 | **B. Same rag-timer ingester volume** | Mix Qdrant+PDFs+media on the ~39 GB tree | Ingester already cold | Reader would have to grow by every derivative or Trails keeps proxying a **stopped** origin | Avoid. Mixes embeddings lock with binary origin; reader volume already large | Rejected |
 | **C. Object storage (Cloudflare R2 / Backblaze B2)** | Cheap persistent bytes, no Railway GB | Media worker cold; no CDN required (R2 has no egress fee) | Public object URLs **or** Trails proxy | Storage cents/GB-mo; no always-on CDN | **Recommended phase 2** if hosted originals exceed ~10 GB or Railway volume is painful. Not required for ~1659 images. |
 | **D. Hugging Face dataset as origin** | Possible backup dump | Not an attribution/quarantine API | Hub URLs ignore `takedown` | Free-ish but wrong control plane | Backup only |
 | **E. sftpgo as origin** | Desktop tar generations | SFTP, not HTTP image API | No | Backup only | Rejected as origin |
 
-**Phase 1 recommendation:** new service repo or a tightly scoped module (follow-up), Railway service **media** in the RAG project, volume at `/data/media`, **stopped** with the ingester. Trails remains the **public HTTP facade** (`/catalog/objects/{id}/thumbnail` and a new `/large`) and caches derivatives. Media internal URL is private (`*.railway.internal`). No Cloudflare CDN, no always-on extra container.
+**Phase 1 recommendation:** new service repository or a tightly scoped module (follow-up),
+Railway service **media** in the RAG project, volume at `/data/media`, **stopped** with
+the ingester. Trails remains the **public HTTP facade**
+(`/catalog/objects/{id}/thumbnail` and a new `/large`) and caches derivatives.
+Media internal URL is private (`*.railway.internal`). No Cloudflare CDN, no
+always-on extra container.
 
 **Do not** put originals on the Trails volume (PostGIS host). Trails stores locators + cached derivatives only.
 
@@ -508,7 +544,13 @@ A single `license_status` gates **original, thumb, large, and every `recipe_vers
 1. **Intake:** operator/FotoImporter gathers bytes + provenance (TASL for Commons).
 2. **Licence check:** map local `licence` / Kramerius public → `license_id` + `pd_status`. If not hostable → media metadata `restricted`, RAG text may keep `quote` + `source_url`, **no** binaries.
 3. **POST media `/v1/assets`:** original stored, **sync thumb+large**, `license_status` at least `metadata_complete` (or `intake` until humans fill years).
-4. **RAG ingest:** RAGloader uploads the **document** (PDF/md) via existing `/upload` **after** media returns ids for each image. New ingest fields (follow-up): copy of provenance on `DocumentMeta.extra` and on every chunk/image/figure payload; `media_asset_id` on image/figure points. Extracted PDF images: if sha256 already in media, **link**, do not write a second original to `/data/rag/processed/.../images` (RAG may keep a local copy only while reader CLIP still needs a file — see Q5).
+4. **RAG ingest:** RAGloader uploads the **document** (PDF/md) via existing
+   `/upload` **after** media returns IDs for each image. New ingest fields
+   (follow-up): copy of provenance on `DocumentMeta.extra` and on every
+   chunk/image/figure payload; `media_asset_id` on image/figure points.
+   Extracted PDF images: if sha256 already in media, **link**, do not write a
+   second original to `/data/rag/processed/.../images` (RAG may keep a local
+   copy only while reader CLIP still needs a file — see Q5).
 5. **Trails:** `POST /catalog/objects` unchanged for GPS; `layer_object_images` upsert with `media_asset_id`, approved field names, Trails proxy pointing at **media** not RAG.
 
 ### 6.2 FotoImporter
@@ -542,7 +584,7 @@ Follow-up (after approval), not this PR:
 
 ### 6.5 TrailsAssemblage + mobile-api
 
-Follow-up in that repo (after this ADR):
+Follow-up in that repository (after this ADR):
 
 - Align `layer_object_images` columns with §2.1 (`license_id`, `attribution_text`, …). Today: `license`, `attribution`, `credit` — **mismatch**.
 - Store `media_asset_id`. Proxy thumb **and large** from media. Keep Trails-relative URLs. Add public `GET /catalog/objects/{id}/large` next to today’s `/thumbnail`.
@@ -560,7 +602,8 @@ Follow-up in that repo (after this ADR):
 
 ## 7. Cost estimate (sole user, cold compute)
 
-Railway volume list price used in-repo: **~$0.15/GB/month**, billed while the service is stopped (`deploy/railway/README.md`).
+Railway volume list price used in this repository: **~$0.15/GB/month**, billed
+while the service is stopped (`deploy/railway/README.md`).
 
 Assumptions for **~1659 existing images** (operator count; not in git): mixed postcard/PDF extracts. If mean original is **400 KiB** (many JPEG extracts are smaller; some scans larger):
 
@@ -620,7 +663,7 @@ Rollback: Trails can keep Commons FilePath and RAG proxy; media is additive.
 - **Any frontend / Leaflet / lightbox / CSS / Android UI** (contract only, §4.5).
 - Railway provisioning, DNS, tokens.
 - Merging, deleting RAG files, rewriting Qdrant.
-- Choosing a new GitHub repo name for the media service (Q8).
+- Choosing a new GitHub repository name for the media service (Q8).
 - GeoServer WMS photos (`docs/images-geo-objects.md` already defers this).
 
 ---
@@ -641,7 +684,9 @@ Rollback: Trails can keep Commons FilePath and RAG proxy; media is additive.
 
 **Q7. Host book PDFs on media** (`content_type=book`) or leave PDFs on RAG `originals/` and only move **images**? Recommendation: **images + page_scan clips on media; PDFs stay on RAG** until a later ADR (39 GB copy is expensive).
 
-**Q8. Media code location.** New `mkrejp/geo-media` repo vs a `media/` tree in rag-timer vs inside Trails. Recommendation: **new small repo**, so Trails/RAG deploys stay independent and the cold service can stop without stopping Trails.
+**Q8. Media code location.** New `mkrejp/geo-media` repository vs a `media/` tree in
+rag-timer vs inside Trails. Recommendation: **new small repository**, so Trails/RAG
+deploys stay independent and the cold service can stop without stopping Trails.
 
 **Q9. Public thumbs without Trails.** Should media ever serve anonymous `GET /thumb` (home map if Trails is down), or is Trails-only facade enough?
 
