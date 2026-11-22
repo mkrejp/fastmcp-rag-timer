@@ -19,8 +19,8 @@ from rag.payloads import (
     apply_image_record_verification,
     stable_figure_point_id,
 )
-from rag.provenance_meta import inherit_provenance_for_extracted
 from rag.pdf_figures import BuiltFigure, iterate_figure_records
+from rag.provenance_meta import inherit_provenance_for_extracted
 from rag.storage import RagStorage
 from rag.vectorstore import (
     build_named_vector,

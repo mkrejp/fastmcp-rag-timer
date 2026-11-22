@@ -20,13 +20,13 @@ from rag.ocr import build_content_summary, ocr_image_file
 from rag.payloads import build_chunk_payload, build_image_payload
 from rag.pdf_images import extract_pdf_images
 from rag.processing import guess_mime, is_supported_filename, process_document
-from rag.storage import DocumentMeta, ImageMeta, RagStorage
-from rag.vectorstore import build_named_vector
 from rag.provenance_meta import (
     figure_extra_from_document,
     inherit_provenance_for_extracted,
     merge_ingest_metadata,
 )
+from rag.storage import DocumentMeta, ImageMeta, RagStorage
+from rag.vectorstore import build_named_vector
 from rag.verification_meta import chunk_payload_fields
 
 EmbedFn = Callable[[str], list[float]]

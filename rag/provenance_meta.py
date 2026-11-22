@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping
 
 from rag.verification_meta import DocumentMetadataError
 
@@ -111,16 +111,14 @@ def split_metadata_patch(
     from rag.verification_meta import (
         DELETABLE_VERIFICATION_FIELDS,
         ROLLBACK_ONLY_DELETE_FIELDS,
+        STATUS_ALIAS_MESSAGE,
+        _reject_lifecycle_link_fields,
     )
 
     if raw is None:
         return {}, [], {}, []
     if not isinstance(raw, Mapping):
         raise ProvenanceMetadataError("metadata must be an object")
-    from rag.verification_meta import (
-        STATUS_ALIAS_MESSAGE,
-        _reject_lifecycle_link_fields,
-    )
 
     if "status" in raw:
         raise ProvenanceMetadataError(STATUS_ALIAS_MESSAGE)
@@ -199,7 +197,7 @@ def normalize_provenance_metadata(
 
     Unknown keys and legacy aliases (``licence``, ``autor``, …) are rejected.
     ``zdroj`` is verification-only and must not appear here.
-  """
+    """
     if raw is None:
         data: dict[str, Any] = {}
     else:
@@ -262,7 +260,9 @@ def normalize_provenance_metadata(
         out["pd_status"] = _enum(data["pd_status"], PD_STATUS_VALUES, path="pd_status")
     if "sha256" in data:
         digest = _require_str(data["sha256"], path="sha256")
-        if len(digest) != 64 or not all(c in "0123456789abcdef" for c in digest.lower()):
+        if len(digest) != 64 or not all(
+            c in "0123456789abcdef" for c in digest.lower()
+        ):
             raise ProvenanceMetadataError("sha256 must be a 64-char hex digest")
         out["sha256"] = digest.lower()
     if "publication_year" in data:
@@ -281,9 +281,10 @@ def normalize_provenance_metadata(
         out.setdefault("license_id", "Unknown")
         out.setdefault("license_status", "restricted")
 
-    if out.get("license_id") == "Permission" and not (
-        out.get("permission_evidence_url") or ""
-    ).strip():
+    if (
+        out.get("license_id") == "Permission"
+        and not (out.get("permission_evidence_url") or "").strip()
+    ):
         raise ProvenanceMetadataError(
             "permission_evidence_url is required when license_id is Permission"
         )
@@ -345,7 +346,10 @@ def build_image_delivery_urls(
     """Build thumb/large/rag URLs per ADR (media when ``media_asset_id``, else RAG)."""
     from rag.config import resolve_public_base_url
 
-    base_public = public_base_url if public_base_url is not None else resolve_public_base_url()
+    if public_base_url is not None:
+        base_public = public_base_url
+    else:
+        base_public = resolve_public_base_url()
     allowed = attribution_allows_public_urls(record)
     if not allowed:
         return {"thumb_url": None, "large_url": None, "url": None}

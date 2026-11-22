@@ -14,11 +14,8 @@ from rag.doc_locks import doc_lock
 from rag.document_delete import DocumentNotFoundError
 from rag.logging_setup import get_logger
 from rag.processing import guess_mime, is_supported_filename
+from rag.provenance_meta import normalize_provenance_metadata, split_metadata_patch
 from rag.storage import DocumentMeta, RagStorage
-from rag.provenance_meta import (
-    normalize_provenance_metadata,
-    split_metadata_patch,
-)
 from rag.verification_meta import (
     FLAT_PAYLOAD_KEYS,
     DocumentMetadataError,

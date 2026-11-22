@@ -52,6 +52,11 @@ from rag.page_ids import format_page_image_id
 from rag.payloads import ImageRecordPayloadError, LocalityLinkPayloadError
 from rag.pdf_pages import get_page_highlights as compute_page_highlights
 from rag.processing import is_supported_filename
+from rag.provenance_meta import (
+    attach_image_api_fields,
+    build_image_delivery_urls,
+    document_provenance_from_extra,
+)
 from rag.search_context import (
     build_document_context,
     enrich_knowledge_hit,
@@ -205,8 +210,6 @@ def _image_public_url(
     record: Mapping[str, Any] | None = None,
 ) -> str | None:
     """Build a delivery URL (media or RAG) when attribution allows."""
-    from rag.provenance_meta import build_image_delivery_urls
-
     urls = build_image_delivery_urls(
         record or {},
         doc_id=doc_id,
@@ -229,8 +232,6 @@ def _image_meta_with_url(
     fallback: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Serialize ``image`` with provenance and delivery URLs when allowed."""
-    from rag.provenance_meta import attach_image_api_fields, document_provenance_from_extra
-
     payload = image.to_dict()
     provenance = document_provenance_from_extra(fallback or {})
     enriched = attach_image_api_fields(
@@ -250,8 +251,6 @@ def _figure_item_with_url(
 ) -> dict[str, Any]:
     """Serialize a ``pdf_figure`` payload in the ``get_document_images`` shape."""
     image_id = str(payload.get("image_id") or "")
-    from rag.provenance_meta import attach_image_api_fields
-
     item = {
         "image_id": image_id,
         "sha256": str(payload.get("image_sha256") or ""),

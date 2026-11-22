@@ -94,9 +94,7 @@ def _build_search_hit(
         allowed_source_types=allowed_source_types,
     )
     url = (
-        image_url_fn(doc_id, image_id_str, payload)
-        if doc_id and image_id_str
-        else None
+        image_url_fn(doc_id, image_id_str, payload) if doc_id and image_id_str else None
     )
     hit: dict[str, Any] = {
         "doc_id": doc_id or None,

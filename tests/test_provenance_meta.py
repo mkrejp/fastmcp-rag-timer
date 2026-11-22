@@ -13,7 +13,6 @@ from rag.config import upload_media_deprecated
 from rag.ingest import ingest_bytes
 from rag.provenance_meta import (
     ProvenanceMetadataError,
-    attach_image_api_fields,
     attribution_allows_public_urls,
     build_image_delivery_urls,
     inherit_provenance_for_extracted,
@@ -24,6 +23,30 @@ from rag.storage import RagStorage
 
 if TYPE_CHECKING:
     from qdrant_client import QdrantClient
+
+
+def _first_pdf_image_payload(
+    qdrant_client: "QdrantClient",
+    doc_id: str,
+    *,
+    limit: int = 10,
+) -> dict[str, object]:
+    """Return the first ``pdf_image`` Qdrant payload for ``doc_id``."""
+    scroll_filter = Filter(
+        must=[
+            FieldCondition(key="doc_id", match=MatchValue(value=doc_id)),
+            FieldCondition(key="source_type", match=MatchValue(value="pdf_image")),
+        ]
+    )
+    points, _next = qdrant_client.scroll(
+        collection_name="client_domain_knowledge",
+        scroll_filter=scroll_filter,
+        limit=limit,
+        with_payload=True,
+        with_vectors=False,
+    )
+    assert points
+    return dict(points[0].payload or {})
 
 
 def test_provenance_rejects_legacy_licence() -> None:
@@ -207,21 +230,7 @@ def test_pdf_image_inherits_parent_provenance(
             metadata=metadata,
         )
     doc_id = str(result["doc_id"])
-    scroll_filter = Filter(
-        must=[
-            FieldCondition(key="doc_id", match=MatchValue(value=doc_id)),
-            FieldCondition(key="source_type", match=MatchValue(value="pdf_image")),
-        ]
-    )
-    points, _next = qdrant_client.scroll(
-        collection_name="client_domain_knowledge",
-        scroll_filter=scroll_filter,
-        limit=10,
-        with_payload=True,
-        with_vectors=False,
-    )
-    assert points
-    payload = dict(points[0].payload or {})
+    payload = _first_pdf_image_payload(qdrant_client, doc_id)
     doc_meta = rag_storage.read_meta(doc_id)
     assert doc_meta is not None
     assert payload.get("attribution_text") == "Parent document attribution"
@@ -252,21 +261,7 @@ def test_pdf_image_without_parent_attribution_is_restricted(
             embed_fn=fake_embed,
         )
     doc_id = str(result["doc_id"])
-    scroll_filter = Filter(
-        must=[
-            FieldCondition(key="doc_id", match=MatchValue(value=doc_id)),
-            FieldCondition(key="source_type", match=MatchValue(value="pdf_image")),
-        ]
-    )
-    points, _next = qdrant_client.scroll(
-        collection_name="client_domain_knowledge",
-        scroll_filter=scroll_filter,
-        limit=5,
-        with_payload=True,
-        with_vectors=False,
-    )
-    assert points
-    payload = dict(points[0].payload or {})
+    payload = _first_pdf_image_payload(qdrant_client, doc_id, limit=5)
     assert payload.get("license_id") == "Unknown"
     assert payload.get("license_status") == "restricted"
     urls = build_image_delivery_urls(
