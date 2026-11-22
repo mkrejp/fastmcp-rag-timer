@@ -168,7 +168,6 @@ FIGURE_EXCLUDED_KEYS = frozenset(
         "verification_status",
         "verified",
         "source",
-        "source_url",
     }
 )
 

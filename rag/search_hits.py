@@ -6,6 +6,7 @@ from typing import Any, Callable
 
 from rag.geo_refined import attach_preferred_geo, preferred_geo
 from rag.page_ids import page_image_id_from_payload_page
+from rag.provenance_meta import PROVENANCE_KEYS, attach_image_api_fields
 from rag.storage import RagStorage
 
 _LIFECYCLE_HIT_KEYS = (
@@ -76,7 +77,7 @@ def _build_search_hit(
     *,
     score: float | None,
     text: str,
-    image_url_fn: Callable[[str, str], str | None],
+    image_url_fn: Callable[..., str | None],
     document_fallback: dict[str, Any] | None,
     allowed_source_types: frozenset[str],
     default_source_type: str,
@@ -92,7 +93,9 @@ def _build_search_hit(
         payload,
         allowed_source_types=allowed_source_types,
     )
-    url = image_url_fn(doc_id, image_id_str) if doc_id and image_id_str else None
+    url = (
+        image_url_fn(doc_id, image_id_str, payload) if doc_id and image_id_str else None
+    )
     hit: dict[str, Any] = {
         "doc_id": doc_id or None,
         "parent_document": parent,
@@ -104,6 +107,16 @@ def _build_search_hit(
         "score": score,
         "content": text,
     }
+    for key in PROVENANCE_KEYS:
+        if key in payload:
+            hit[key] = payload[key]
+    if source_type in _IMAGE_SOURCE_TYPES and image_id_str and doc_id:
+        hit = attach_image_api_fields(
+            hit,
+            doc_id=doc_id,
+            image_id=image_id_str,
+            provenance=payload,
+        )
     _attach_lifecycle_fields(hit, payload)
     if source_type == "pdf_figure":
         hit["verification_status"] = payload.get("verification_status")
