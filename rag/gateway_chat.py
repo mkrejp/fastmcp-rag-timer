@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from typing import Any, Mapping, Sequence
 
@@ -27,6 +28,25 @@ DEFAULT_DAILY_CHAT_CALLS = 300
 CHAT_TIMEOUT_SECONDS = 15
 
 logger = get_logger("rag.gateway_chat")
+
+_THINK_BLOCK_RE = re.compile(
+    r"<(?:redacted_thinking|reasoning)>.*?</(?:redacted_thinking|reasoning)>",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _load_json_object(text: str) -> dict[str, Any]:
+    """Parse ``text`` as a JSON object, tolerating leading non-JSON prose."""
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        start = text.find("{")
+        if start < 0:
+            raise
+        payload, _end = json.JSONDecoder().raw_decode(text, start)
+    if not isinstance(payload, dict):
+        raise ValueError("helper JSON must be an object")
+    return payload
 
 
 def resolve_gateway_api_key() -> str | None:
@@ -226,7 +246,5 @@ def parse_helper_json(raw: str) -> dict[str, Any]:
         if lines and lines[-1].strip() == "```":
             lines = lines[:-1]
         text = "\n".join(lines).strip()
-    payload = json.loads(text)
-    if not isinstance(payload, dict):
-        raise ValueError("helper JSON must be an object")
-    return payload
+    text = _THINK_BLOCK_RE.sub("", text).strip()
+    return _load_json_object(text)
