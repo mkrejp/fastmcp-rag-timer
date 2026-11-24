@@ -22,7 +22,7 @@ from rag.novita_rerank import classify_upstream_error
 DEFAULT_GATEWAY_BASE_URL = "https://ai-gateway.vercel.sh/v1"
 ALLOWED_CHAT_MODELS = frozenset({"vmc/cheap"})
 DEFAULT_CHAT_MODEL = "vmc/cheap"
-DEFAULT_MAX_TOKENS = 400
+DEFAULT_MAX_TOKENS = 700
 DEFAULT_DAILY_CHAT_CALLS = 300
 CHAT_TIMEOUT_SECONDS = 15
 
@@ -53,12 +53,12 @@ def resolve_chat_model() -> str:
 
 
 def resolve_chat_max_tokens() -> int:
-    """Return the helper completion cap."""
+    """Return the helper completion cap (enough for a short cited essay)."""
     raw = os.getenv("CHAT_HELPER_MAX_TOKENS", "").strip()
     if not raw:
         return DEFAULT_MAX_TOKENS
     try:
-        return max(32, min(int(raw), 1024))
+        return max(32, min(int(raw), 1536))
     except ValueError:
         return DEFAULT_MAX_TOKENS
 

@@ -928,7 +928,8 @@ def register_mcp_tools(
         Uses prepaid Novita ``baai/bge-m3`` query embeddings and optional
         prepaid ``baai/bge-reranker-v2-m3``. Optional Vercel Gateway
         ``vmc/cheap`` phrasing is off unless ``use_chat`` and
-        ``CHAT_HELPER_CHAT`` are both enabled. Always returns JSON.
+        ``CHAT_HELPER_CHAT`` are both enabled. When chat runs, ``answer``
+        is a short essay over the retrieved hits. Always returns JSON.
         Does not write the index. Runs off the event loop.
         """
 

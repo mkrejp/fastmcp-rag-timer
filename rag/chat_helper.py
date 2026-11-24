@@ -53,7 +53,7 @@ MAX_LIMIT = 12
 MAX_RELATED_LIMIT = 12
 MAX_QUERY_CHARS = 1000
 MAX_CONTENT_CHARS = 800
-MAX_ANSWER_CHARS = 600
+MAX_ANSWER_CHARS = 1600
 OVERALL_DEADLINE_SECONDS = 20.0
 CHAT_MIN_REMAINING_SECONDS = 8.0
 _URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
@@ -66,8 +66,12 @@ HELPER_SYSTEM_PROMPT = (
     '"related_suggestions": [{"hit_index": int, "reason": string}]}. '
     "best_hit_indexes are 0-based indexes into hits. "
     "related_suggestions hit_index values are 0-based indexes into "
-    "related_facts. Answer in the query language. If nothing fits, set "
-    'answer to a short "no matching facts" note and use empty lists.'
+    "related_facts. Write answer as a short essay of two to four compact "
+    "paragraphs: name the objects found, explain how they answer the "
+    "query, and explain how they relate to each other (same place, type, "
+    "or neighbor facts). Prefer prose over lists. Answer in the query "
+    "language. If nothing fits, set answer to a short "
+    '"no matching facts" note and use empty lists.'
 )
 
 logger = get_logger("rag.chat_helper")
@@ -150,7 +154,7 @@ def _prompt_hit(hit: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _sanitize_answer(raw: object, *, cited: bool) -> str | None:
-    """Cap, strip URLs, and drop answers that cite nothing."""
+    """Cap a cited essay, strip URLs, and drop answers that cite nothing."""
     if not cited or not isinstance(raw, str):
         return None
     text = _URL_RE.sub("", raw).strip()

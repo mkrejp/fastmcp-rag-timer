@@ -31,7 +31,8 @@
 
 Indexed text is still embedded with Novita or local Hugging Face ONNX (1024-dim
 BGE-M3). A **bounded** reader exception is MCP `chat_helper`: retrieve, then
-prepaid Novita rerank, then optional `vmc/cheap` phrasing over those hits only.
+prepaid Novita rerank, then optional `vmc/cheap` phrasing over those hits only
+(a short essay naming the objects and how they relate).
 Chat is **off by default** and daily-capped. Generation for hunting and coding
 still happens **outside** this process (Cursor), against **GitHub**.
 
