@@ -301,7 +301,7 @@ are **400** pointing at `POST /documents/{doc_id}/supersede` and `POST /document
 Null on any other field (including `tags`, `obec_kod`, `gps_presnost`, `extrakce_model`, `fakt_ref`)
 is **400**. Success responses
 include `deleted_fields`; vectors and `doc_id` are untouched. Same Bearer MCP/RAG or Google session
-as `POST /upload` / `DELETE`. Operating convention (outside this repo): RAGloader logs each deletion
+as `POST /upload` / `DELETE`. Operating convention (outside this repository): RAGloader logs each deletion
 to `rag-changes.jsonl` with action `metadata_unset` and the field list.
 
 ```json
@@ -313,7 +313,13 @@ PATCH /documents/{doc_id}/metadata
 
 ## Exposed MCP tools, resources, and prompts
 
-From `rag/mcp_tools.py`, registered in `create_app()` and served at **`/mcp`** (Streamable HTTP). `streamable_http_path="/"` so the MCP endpoint is the mount root `/mcp`, not `/mcp/mcp`. Every `/mcp` HTTP request requires Bearer `MCP_API_TOKEN` or fallback `RAG_API_TOKEN` (`McpBearerAuth`; 401 invalid, 503 unset). When `MCP_READ_TOKEN` is set, that Bearer is also accepted as read-only: `tools/list` matches the Reader column below and write `tools/call` is a JSON-RPC error with HTTP 403 (even if `APP_MODE` is `ingester` / `all`). `MCP_READ_TOKEN` never authorizes HTTP write routes.
+From `rag/mcp_tools.py`, registered in `create_app()` and served at **`/mcp`** (Streamable HTTP).
+`streamable_http_path="/"` so the MCP endpoint is the mount root `/mcp`, not `/mcp/mcp`.
+Every `/mcp` HTTP request requires Bearer `MCP_API_TOKEN` or fallback `RAG_API_TOKEN`
+(`McpBearerAuth`; 401 invalid, 503 unset). When `MCP_READ_TOKEN` is set, that Bearer is also
+accepted as read-only: `tools/list` matches the Reader column below and write `tools/call` is a
+JSON-RPC error with HTTP 403 (even if `APP_MODE` is `ingester` / `all`).
+`MCP_READ_TOKEN` never authorizes HTTP write routes.
 
 `register_mcp_tools(..., include_write_tools=...)` omits write tools entirely when `APP_MODE=reader` (`mcp_include_write_tools()`). `/api/admin/mcp` and `app.state.mcp_tools` list only registered names.
 
@@ -663,7 +669,7 @@ Current gaps (not a history of old bugs):
 1. **No timer/scheduler** despite the repository name. Upload TTL is enforced on session access and when a new upload is created, not by a background sweeper.
 2. **No MCP resources or prompts.**
 3. **No REST search** — similarity search is MCP-only.
-4. **No generator LLM in this process** — retrieval only; no answer synthesis. Development/hunting LLMs are Cursor-hosted Grok against **GitHub** application repos; they must not back reader or GeoServer search ([inference roles](./adr/inference-roles.md)).
+4. **No generator LLM in this process** — retrieval only; no answer synthesis. Development/hunting LLMs are Cursor-hosted Grok against **GitHub** application repositories; they must not back reader or GeoServer search ([inference roles](./adr/inference-roles.md)).
 5. **Catalog, fulltext, `/upload-media`, `/health`, `/node-info`, and OpenAPI have no inbound auth.** Multipart `POST /upload` has no size quota in code.
 6. **`/upload-media`** stores files but does not index them or add them to `index.json`.
 7. **No HTTP reindex** of PDF bytes — `PUT /documents/{doc_id}/content` replaces indexed text only (no image/figure re-extract). To replace a PDF file entirely, delete then re-upload.

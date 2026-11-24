@@ -11,7 +11,7 @@
   [embedding-provider.md](../embedding-provider.md),
   [AI_AGENTS.md](../AI_AGENTS.md).
   Trails catalogue search lives in `mkrejp/TrailsAssemblage`
-  (`docs/catalog-search.md`). GeoServer lives in that repo under `geoserver/`.
+  (`docs/catalog-search.md`). GeoServer lives in that repository under `geoserver/`.
 
 ## 1. Decision
 
@@ -23,7 +23,7 @@
 | **Trails web catalogue search** | Browser → Trails `GET /catalog/search`. **RAG** source = reader MCP `search_domain_knowledge`. **GeoServer** source = WFS `ILIKE` on `trails:layer_objects` | Grok answering the dialog; pointing Trails at the ingester |
 | **GeoServer** | WMS/WFS geometry and attribute filter (PostGIS). No embeddings | xAI, Novita chat, Hugging Face inference chat |
 | **Development, content hunting, loading into the ingester** | **Cursor agents + Cursor-hosted Grok** (Cursor plan, not an xAI BYOK key on Vercel) opening PRs on GitHub and calling `APP_MODE=ingester` HTTP/MCP writes | Grok as the public reader or as GeoServer |
-| **Application source of truth** | **GitHub repositories** (this repo, `mkrejp/TrailsAssemblage`, related Marek GitHub apps) | Vercel project files, Railway-only edits, Hugging Face Spaces as the app origin |
+| **Application source of truth** | **GitHub repositories** (this repository, `mkrejp/TrailsAssemblage`, related Marek GitHub apps) | Vercel project files, Railway-only edits, Hugging Face Spaces as the app origin |
 | **Long-term backup** | **Hugging Face volumes** (cold dumps of RAG / PostGIS / media; HFHosts + ControlApps) | Live origin, catalogue search backend, or a substitute for GitHub |
 
 This repository stays **retrieval-only**. There is still no chat/completions client
@@ -113,8 +113,8 @@ application repository.
 
 Allowed:
 
-- Code work as **GitHub PRs** on this repo and `mkrejp/TrailsAssemblage` (and
-  any other Marek GitHub app repo). That is the application repository.
+- Code work as **GitHub PRs** on this repository and `mkrejp/TrailsAssemblage` (and
+  any other Marek GitHub application repository). That is the application repository.
 - Hunting public-domain facts, captions, GPS candidates.
 - Loading accepted payloads into **`APP_MODE=ingester`** (`POST /upload`,
   chunked upload, `POST /ingest-json`, MCP `ingest_text` / metadata tools)
@@ -145,7 +145,7 @@ cheap LLM experiments. It is **not** the Trails/GeoServer/reader search path.
 
 ## 6. Trails web and GeoServer
 
-Facts from Trails `docs/catalog-search.md` and `geoserver/README.md` (not this repo):
+Facts from Trails `docs/catalog-search.md` and `geoserver/README.md` (not this repository):
 
 | Surface | Search mechanism | Inference |
 | --- | --- | --- |
@@ -159,9 +159,9 @@ filter — still not Grok.
 
 ## 7. GitHub is the application repository
 
-| GitHub repo | Application |
+| GitHub repository | Application |
 | --- | --- |
-| `mkrejp/fastmcp-rag-timer` (this repo) | RAG reader + ingester (FastAPI / FastMCP / Qdrant) |
+| `mkrejp/fastmcp-rag-timer` (this repository) | RAG reader + ingester (FastAPI / FastMCP / Qdrant) |
 | `mkrejp/TrailsAssemblage` | Trails web app, catalogue search, GeoServer image, PostGIS catalog importers |
 
 Cursor agents develop by cloning these remotes, branching, and opening pull

@@ -45,7 +45,8 @@ On Railway, mount a volume at `/data`. The app creates `/data/rag` and `/data/ac
 
 `versions/{doc_id}/` lives only on that node's volume. Nodes `00001` and `00002` do
 **not** replicate version snapshots (or Qdrant) to each other. Include `versions/`
-in any backup or restore of `/data/rag`. Long-term backup **target** is Hugging Face volumes ([inference roles](docs/adr/inference-roles.md)); there is no in-repo backup job.
+in any backup or restore of `/data/rag`. Long-term backup **target** is Hugging Face volumes
+([inference roles](docs/adr/inference-roles.md)); there is no backup job in this repository.
 
 ## Configuration
 

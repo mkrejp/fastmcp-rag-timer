@@ -8,7 +8,12 @@ This document inventories inbound, outbound, and in-process connections for **fa
 reverse-proxy config, TLS cert, compose network, or firewall rules in the repository. Anything about
 an edge proxy or Railway routing is labeled **Assumption**.
 
-Related: [ARCHITECTURE.md](./ARCHITECTURE.md), [SPLIT_DEPLOY.md](./SPLIT_DEPLOY.md), [Embedding provider](./embedding-provider.md), [ADR: Inference roles](./adr/inference-roles.md). Embedding API details are in [Embedding connectivity](#embedding-connectivity). Application source of truth is **GitHub** (this repo and `mkrejp/TrailsAssemblage`). **Hugging Face volumes** are the long-term backup target (not a live origin). Railway is runtime; Hugging Face Hub ONNX is embedding weights only.
+Related: [ARCHITECTURE.md](./ARCHITECTURE.md), [SPLIT_DEPLOY.md](./SPLIT_DEPLOY.md),
+[Embedding provider](./embedding-provider.md), [ADR: Inference roles](./adr/inference-roles.md).
+Embedding API details are in [Embedding connectivity](#embedding-connectivity).
+Application source of truth is **GitHub** (this repository and `mkrejp/TrailsAssemblage`).
+**Hugging Face volumes** are the long-term backup target (not a live origin).
+Railway is runtime; Hugging Face Hub ONNX is embedding weights only.
 
 ## Clients, tokens, and target modes
 

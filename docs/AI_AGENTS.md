@@ -2,7 +2,13 @@
 
 Marek's AI agents are separate Grok Bot assistants that cooperate on this project and its data. On the **operator's machine** they share a noticeboard at ``/workspace/nastenka/`` — **on the operator's box, not in this repository, not readable by cloud agents**.
 
-This document is self-contained for **cloud agents and contributors who only see this git repository**. Runtime deploy behaviour is in [ARCHITECTURE.md](./ARCHITECTURE.md) and [SPLIT_DEPLOY.md](./SPLIT_DEPLOY.md). Machine-readable catalog: [agents.json](./agents.json). Application source of truth is **GitHub** (this repository and `mkrejp/TrailsAssemblage`). **Hugging Face volumes** are the long-term backup target. Cursor/Grok agents open PRs on GitHub and may load hunted content into the **ingester** — they are not the reader/GeoServer search backend ([inference roles](./adr/inference-roles.md)).
+This document is self-contained for **cloud agents and contributors who only see this git repository**.
+Runtime deploy behaviour is in [ARCHITECTURE.md](./ARCHITECTURE.md) and [SPLIT_DEPLOY.md](./SPLIT_DEPLOY.md).
+Machine-readable catalog: [agents.json](./agents.json).
+Application source of truth is **GitHub** (this repository and `mkrejp/TrailsAssemblage`).
+**Hugging Face volumes** are the long-term backup target.
+Cursor/Grok agents open PRs on GitHub and may load hunted content into the **ingester** — they
+are not the reader/GeoServer search backend ([inference roles](./adr/inference-roles.md)).
 
 ## Jak to používat jako cloud agent
 
