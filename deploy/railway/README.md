@@ -15,7 +15,8 @@ Shared:
 
 - `MCP_API_TOKEN` / `RAG_API_TOKEN`
 - `MCP_READ_TOKEN` (optional; read-only `/mcp`)
-- `BGE_M3_NOVITA_API_KEY` (when query or ingest uses Novita)
+- `BGE_M3_NOVITA_API_KEY` (when query or ingest uses Novita; prepaid Model
+  API, not Coding Plan)
 - `RAG_DATA_ROOT=/data/rag` + volume mount at `/data`
 - `RAG_NODES` JSON with write + read URLs
 - `PUBLIC_BASE_URL` matching the service domain
@@ -26,6 +27,9 @@ Reader:
 - `APP_MODE=reader`
 - `EMBEDDING_PROVIDER_QUERY=novita`
 - `IMAGE_EMBEDDING_ENABLED=false`
+- Optional helper phrasing only: dedicated `AI_GATEWAY_API_KEY`,
+  `CHAT_HELPER_CHAT=1`, and the `CHAT_HELPER_DAILY_*` caps. Leave chat off
+  unless Marek enables it. Rerank uses the existing Novita key.
 
 Ingester:
 

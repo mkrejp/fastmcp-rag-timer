@@ -24,6 +24,7 @@ MCP_TOOLS = (
     "supersede_document",
     "unsupersede_document",
     "search_domain_knowledge",
+    "chat_helper",
     "search_images",
     "link_locality",
     "list_links",
@@ -49,7 +50,13 @@ HTTP_ROUTES = (
     "documents_delete",
     "health",
 )
-OUTBOUND_TARGETS = ("novita_embeddings", "remote_fetch", "trails_api")
+OUTBOUND_TARGETS = (
+    "novita_embeddings",
+    "novita_rerank",
+    "ai_gateway_chat",
+    "remote_fetch",
+    "trails_api",
+)
 
 _accounting_source: ContextVar[str] = ContextVar("accounting_source", default="other")
 _global_store: AccountingStore | None = None
@@ -91,6 +98,18 @@ def set_global_store(store: AccountingStore | None) -> None:
 def get_global_store() -> AccountingStore | None:
     """Return the process-global accounting store, if configured."""
     return _global_store
+
+
+def today_outbound_calls(target: str) -> int:
+    """Return today's outbound call count for ``target`` (0 if unset)."""
+    store = get_global_store()
+    if store is None:
+        return 0
+    bucket = store.read_day(utc_today()).get("outbound", {}).get(target) or {}
+    try:
+        return int(bucket.get("calls") or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _empty_embed_counters() -> dict[str, int]:
@@ -137,6 +156,8 @@ def empty_day_rollup(date: str) -> dict[str, Any]:
         "http": {name: _empty_simple_counters(with_bytes=True) for name in HTTP_ROUTES},
         "outbound": {
             "novita_embeddings": {"calls": 0, "errors": 0, "latency_ms_sum": 0},
+            "novita_rerank": {"calls": 0, "errors": 0, "latency_ms_sum": 0},
+            "ai_gateway_chat": {"calls": 0, "errors": 0, "latency_ms_sum": 0},
             "remote_fetch": {"calls": 0, "errors": 0, "bytes_in": 0},
             "trails_api": {
                 "calls": 0,
@@ -393,6 +414,8 @@ class AccountingStore:
         bytes_in: int = 0,
         latency_ms: int = 0,
         error: str | None = None,
+        prompt_tokens: int = 0,
+        total_tokens: int = 0,
     ) -> None:
         """Record one outbound connection (non-embedding)."""
         if target not in OUTBOUND_TARGETS:
@@ -412,18 +435,20 @@ class AccountingStore:
             if "latency_ms_sum" in bucket:
                 _add_ints(bucket, "latency_ms_sum", max(0, latency_ms))
             self._save_unlocked(date, day)
-            self._append_event_unlocked(
-                date,
-                {
-                    "kind": "outbound",
-                    "ts": utc_now_iso(),
-                    "target": target,
-                    "ok": ok,
-                    "bytes_in": bytes_in,
-                    "latency_ms": latency_ms,
-                    "error": error,
-                },
-            )
+            event: dict[str, Any] = {
+                "kind": "outbound",
+                "ts": utc_now_iso(),
+                "target": target,
+                "ok": ok,
+                "bytes_in": bytes_in,
+                "latency_ms": latency_ms,
+                "error": error,
+            }
+            if prompt_tokens:
+                event["prompt_tokens"] = int(prompt_tokens)
+            if total_tokens:
+                event["total_tokens"] = int(total_tokens)
+            self._append_event_unlocked(date, event)
 
     def _load_unlocked(self, date: str) -> dict[str, Any]:
         """Load and normalize a day document without acquiring the lock."""

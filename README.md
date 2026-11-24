@@ -1,8 +1,18 @@
 # fastmcp-rag-timer
 
-Combines FastAPI (web endpoints and a Google-authenticated console), FastMCP (tools over Streamable HTTP), and an on-disk Qdrant Client. It extracts PDF/text/GeoJSON, stores originals and processed artifacts, and indexes named vectors for semantic retrieval. Search is retrieval-only (no generator LLM). There is no scheduler despite the repository name.
+Combines FastAPI (web endpoints and a Google-authenticated console), FastMCP
+(tools over Streamable HTTP), and an on-disk Qdrant Client. It extracts
+PDF/text/GeoJSON, stores originals and processed artifacts, and indexes named
+vectors for semantic retrieval. Search is retrieve + optional prepaid Novita
+rerank (`chat_helper`); generator phrasing is off by default. There is no
+scheduler despite the repository name.
 
-**Inference roles** (2026-11-24): reader and Trails/GeoServer search use **Novita + Hugging Face ONNX** only. **Cursor agents + Cursor-hosted Grok** are for development, content hunting, and loading the **ingester**. **GitHub** is the application repository. **Hugging Face volumes** are the long-term backup target. Details: [docs/adr/inference-roles.md](docs/adr/inference-roles.md).
+**Inference roles** (2026-11-24): reader and Trails/GeoServer search use
+**prepaid Novita + Hugging Face ONNX**. Optional Gateway `vmc/cheap` is
+phrasing only, off by default. **Cursor agents + Cursor-hosted Grok** are for
+development, content hunting, and loading the **ingester**. **GitHub** is the
+application repository. **Hugging Face volumes** are the long-term backup
+target. Details: [docs/adr/inference-roles.md](docs/adr/inference-roles.md).
 
 ## Process roles (`APP_MODE`)
 
@@ -63,7 +73,12 @@ in any backup or restore of `/data/rag`. Long-term backup **target** is Hugging 
 | `IMAGE_EMBEDDING_ENABLED` | `false` | Load CLIP and index/search `image_vector` (adds RAM beside BGE-M3) |
 | `IMAGE_EMBEDDING_CACHE_PATH` | `{RAG_DATA_ROOT}/clip` | ONNX cache for CLIP ViT-B/32 vision + text towers |
 | `BGE_M3_NOVITA_API_KEY` | unset | Preferred Novita API credential for ingest embeddings |
-| `NOVITA_API_KEY` | unset | Embedding credential if `BGE_M3_NOVITA_API_KEY` is empty |
+| `NOVITA_API_KEY` | unset | Embedding/rerank credential if `BGE_M3_NOVITA_API_KEY` is empty (prepaid Model API; not Coding Plan) |
+| `CHAT_HELPER_RERANK` | `1` | Reader MCP `chat_helper` calls prepaid Novita `baai/bge-reranker-v2-m3` |
+| `CHAT_HELPER_CHAT` | `0` | Set `1` to allow optional Gateway `vmc/cheap` phrasing (`use_chat=true` still required) |
+| `AI_GATEWAY_API_KEY` | unset | Dedicated reader Gateway key for optional helper phrasing (not `OPENAI_API_KEY`) |
+| `CHAT_HELPER_DAILY_RERANK_CALLS` | `3000` | In-process daily cap for Novita rerank HTTP calls |
+| `CHAT_HELPER_DAILY_CHAT_CALLS` | `300` | In-process daily cap for Gateway chat HTTP calls |
 | `OPENAI_TOKEN` | unset | Embedding credential if both Novita-named vars are empty |
 | `OPENAI_API_KEY` | unset | Embedding credential checked last |
 | `RAG_SKIP_DEFAULT_APP` | unset | Set to `1` to skip module-level `create_app()` (used by tests) |
@@ -429,6 +444,7 @@ Streamable HTTP MCP is mounted at **`/mcp`** (`stateless_http=True`, `streamable
 - `supersede_document` (`old_doc_id`, `new_doc_id`, optional `correction_note`) — atomic both-sides link + `doc_status=superseded`
 - `unsupersede_document` (`old_doc_id`) — atomic unlink
 - `search_domain_knowledge` (text `text_vector` only; optional `obec_id` / `cast_obce` payload filter; PDF hits add `page_image_id`; optional `format=json`; optional `include_superseded=true`)
+- `chat_helper` (retrieve + prepaid Novita rerank; optional Gateway `vmc/cheap` phrasing off by default; JSON hits plus related neighbor facts; read-only)
 - `search_images` (CLIP `image_vector`; optional `hybrid=true`; PDF hits add `page_image_id`; optional `format=json`; optional `precision` / `needs_refinement` filters on `geo_refined`; optional `include_superseded=true`)
 - `link_locality` (upsert document-municipality links into payload-only `locality_links`; forwards to Trails when configured; no embeddings)
 - `list_links` (filter `doc_id` / `obec_id` / `status` / `ambiguous` / `locality_level` / `cast_obce`, paginate with `limit` / `offset`)

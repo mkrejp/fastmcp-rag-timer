@@ -70,7 +70,8 @@ flowchart TB
     httpClient["HTTP client"]
     mcpClient["MCP client / agent"]
     browser["Browser / Google user"]
-    novita["api.novita.ai:443<br/>/openai/v1/embeddings"]
+    novita["api.novita.ai:443<br/>embeddings + rerank"]
+    gateway["ai-gateway.vercel.sh:443<br/>optional vmc/cheap"]
     hf["huggingface.co<br/>ONNX model files"]
     google["accounts.google.com<br/>oauth2.googleapis.com"]
     remoteJson["Public http(s) JSON URLs"]
@@ -120,6 +121,8 @@ flowchart TB
   uploads --> vol
   accnt --> vol
   embed -->|"TLS + Bearer when ingest=novita"| novita
+  mcp -->|"TLS prepaid rerank / optional chat"| novita
+  mcp -.->|"TLS optional vmc/cheap"| gateway
   embed -->|"TLS first BGE-M3 load"| hf
   clip -->|"TLS first CLIP load"| hf
   fastapi -->|"TLS OAuth token/userinfo"| google
@@ -297,7 +300,9 @@ Auth points that do not exist: JWT (other than Google session cookie), mTLS, MCP
 | Inbound `DELETE /documents/{doc_id}` | Authenticated removal of originals, processed files, catalog row, and Qdrant points |
 | Inbound `/mcp` | Tool arguments and return strings (including document text/chunks); optional inline image bytes up to 5 MiB |
 | Inbound `/ui` and `/api/admin` | Google profile in session; volume listings, log buffer, accounting rollups |
-| Outbound Novita embedding | Chunk **plaintext** plus the API key — ingest only; see [Embedding connectivity](#embedding-connectivity) |
+| Outbound Novita embedding | Chunk **plaintext** plus the API key — ingest and query; see [Embedding connectivity](#embedding-connectivity) |
+| Outbound Novita rerank | Query + hit plaintext to `/openai/v1/rerank` (`baai/bge-reranker-v2-m3`) on prepaid credits from `BGE_M3_NOVITA_API_KEY` / `NOVITA_API_KEY` only |
+| Outbound AI Gateway chat | Optional helper phrasing to `vmc/cheap` with `only: ["novita"]`; off by default; `AI_GATEWAY_API_KEY` only |
 | Outbound TrailsAssemblage | Locality-link JSON to `TRAILS_API_URL` (`POST /locality-links`, `PATCH /locality-links/{id}/verify`) with Bearer `TRAILS_API_TOKEN` when both env vars are set. Token is never logged. Failures retry then persist to `{RAG_DATA_ROOT}/trails_outbox.json`. |
 | Outbound FastEmbed/CLIP | Model weights from Hugging Face; query plaintext stays local after download |
 | Disk Qdrant | Named vectors and payloads (`source_type`, `text`/`content_summary`, `source`/`parent_document`, `doc_id`, `page_number`, `chunk_index`, `image_id`, `file_path`, `sha256`) |
@@ -317,7 +322,10 @@ Set `EMBEDDING_PROVIDER_INGEST=fastembed` to skip Novita on ingest. The first Fa
 ONNX weights from Hugging Face (~2.3GB). A FastEmbed query path needs that download; a Novita query path
 does not.
 
-The Novita HTTP API is OpenAI-compatible (`/openai/v1/embeddings`); the host is **Novita**, not `api.openai.com`. There is no chat/completions client.
+The Novita HTTP API is OpenAI-compatible (`/openai/v1/embeddings` and
+`/openai/v1/rerank`); the host is **Novita**, not `api.openai.com`. Optional
+helper phrasing uses Vercel AI Gateway `vmc/cheap` (fail-closed, off by
+default). Billing is **prepaid Novita credits**, not the Coding Plan.
 
 ### APIs, endpoints, and models
 
@@ -326,7 +334,7 @@ The Novita HTTP API is OpenAI-compatible (`/openai/v1/embeddings`); the host is 
 | Embeddings (ingest) | **Yes** | Novita: `NOVITA_EMBEDDING_URL`, model `baai/bge-m3`, dim 1024, **or** FastEmbed `BAAI/bge-m3` ONNX dim 1024. Selected by `EMBEDDING_PROVIDER_INGEST`. |
 | Embeddings (query) | **Yes** | Novita `baai/bge-m3` or FastEmbed `BAAI/bge-m3` 1024 per `EMBEDDING_PROVIDER_QUERY`. |
 | Image embeddings | **Optional** | CLIP `Qdrant/clip-ViT-B-32-vision` / `-text`, dim 512, when `IMAGE_EMBEDDING_ENABLED=true`. |
-| Chat / Completions / Responses | **No** | No chat or LLM client in the repository |
+| Chat / Completions / Responses | **Optional** | MCP `chat_helper` may call Gateway `vmc/cheap` when `CHAT_HELPER_CHAT=1` and `use_chat=true` |
 | Azure OpenAI or a configurable base URL | **No** | Novita URL is a module constant; provider is selected by env |
 
 `open_qdrant()` creates named vectors `text_vector` (1024) and `image_vector` (512). Ingest/query helpers reject vectors whose length is not the active dimension.
@@ -420,6 +428,7 @@ Error mapping:
 - Missing key or unexpected dimension: `ValueError`. HTTP `_ingest_upload` maps **any** `ValueError` to **HTTP 400**.
 - Other embedding failures (`requests.HTTPError`, JSON/KeyError): HTTP **500** `"Ingest failed: ..."`.
 - MCP `search_domain_knowledge` / `ingest_text` / `search_images`: any exception → tool result string.
+- MCP `chat_helper`: retrieve failures return `"Error executing chat_helper: retrieve_failed"` (no exception text). Rerank/chat HTTP failures stay inside the JSON envelope as coarse `rerank.status` / `chat.status` codes.
 
 ### Data sent to Novita (privacy)
 

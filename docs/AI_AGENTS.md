@@ -7,8 +7,10 @@ Runtime deploy behaviour is in [ARCHITECTURE.md](./ARCHITECTURE.md) and [SPLIT_D
 Machine-readable catalog: [agents.json](./agents.json).
 Application source of truth is **GitHub** (this repository and `mkrejp/TrailsAssemblage`).
 **Hugging Face volumes** are the long-term backup target.
-Cursor/Grok agents open PRs on GitHub and may load hunted content into the **ingester** — they
-are not the reader/GeoServer search backend ([inference roles](./adr/inference-roles.md)).
+Cursor/Grok agents open PRs on GitHub and may load hunted content into the
+**ingester** — they are not the reader/GeoServer search backend. Reader search
+uses prepaid Novita (BGE-M3 + optional rerank); Gateway `vmc/cheap` phrasing is
+off by default ([inference roles](./adr/inference-roles.md)).
 
 ## Jak to používat jako cloud agent
 
