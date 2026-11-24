@@ -99,9 +99,9 @@
     "name": "HFHosts",
     "agent_id": "9bfa426e-2922-44d9-bb9a-f2e81c540da4",
     "area": "provoz",
-    "role": "Hugging Face hosting, disk-space and download rules.",
+    "role": "Hugging Face hosting, disk-space and download rules; Hugging Face volumes as long-term backup (not an application origin).",
     "owns": "stahovani.md (operator noticeboard, not in this repo)",
-    "contributions": "not attributable from repo history"
+    "contributions": "Policy recorded in docs/adr/inference-roles.md (2026-11-24). Backup jobs themselves are not in this git."
   },
   {
     "name": "MCPConnectionsEngineer",

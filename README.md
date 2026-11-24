@@ -2,6 +2,8 @@
 
 Combines FastAPI (web endpoints and a Google-authenticated console), FastMCP (tools over Streamable HTTP), and an on-disk Qdrant Client. It extracts PDF/text/GeoJSON, stores originals and processed artifacts, and indexes named vectors for semantic retrieval. Search is retrieval-only (no generator LLM). There is no scheduler despite the repository name.
 
+**Inference roles** (2026-11-24): reader and Trails/GeoServer search use **Novita + Hugging Face ONNX** only. **Cursor agents + Cursor-hosted Grok** are for development, content hunting, and loading the **ingester**. **GitHub** is the application repository. **Hugging Face volumes** are the long-term backup target. Details: [docs/adr/inference-roles.md](docs/adr/inference-roles.md).
+
 ## Process roles (`APP_MODE`)
 
 One codebase, three deploy shapes. Set `APP_MODE` or `RAG_APP_MODE` (`all` default), or use role-specific entrypoints and Dockerfiles.
@@ -43,7 +45,8 @@ On Railway, mount a volume at `/data`. The app creates `/data/rag` and `/data/ac
 
 `versions/{doc_id}/` lives only on that node's volume. Nodes `00001` and `00002` do
 **not** replicate version snapshots (or Qdrant) to each other. Include `versions/`
-in any backup or restore of `/data/rag`; there is no in-repo backup tooling.
+in any backup or restore of `/data/rag`. Long-term backup **target** is Hugging Face volumes
+([inference roles](docs/adr/inference-roles.md)); there is no backup job in this repository.
 
 ## Configuration
 

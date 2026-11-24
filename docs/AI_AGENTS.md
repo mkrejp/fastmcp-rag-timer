@@ -2,7 +2,13 @@
 
 Marek's AI agents are separate Grok Bot assistants that cooperate on this project and its data. On the **operator's machine** they share a noticeboard at ``/workspace/nastenka/`` — **on the operator's box, not in this repository, not readable by cloud agents**.
 
-This document is self-contained for **cloud agents and contributors who only see this git repository**. Runtime deploy behaviour is in [ARCHITECTURE.md](./ARCHITECTURE.md) and [SPLIT_DEPLOY.md](./SPLIT_DEPLOY.md). Machine-readable catalog: [agents.json](./agents.json).
+This document is self-contained for **cloud agents and contributors who only see this git repository**.
+Runtime deploy behaviour is in [ARCHITECTURE.md](./ARCHITECTURE.md) and [SPLIT_DEPLOY.md](./SPLIT_DEPLOY.md).
+Machine-readable catalog: [agents.json](./agents.json).
+Application source of truth is **GitHub** (this repository and `mkrejp/TrailsAssemblage`).
+**Hugging Face volumes** are the long-term backup target.
+Cursor/Grok agents open PRs on GitHub and may load hunted content into the **ingester** — they
+are not the reader/GeoServer search backend ([inference roles](./adr/inference-roles.md)).
 
 ## Jak to používat jako cloud agent
 
@@ -40,7 +46,7 @@ A cloud agent **cannot** message those bots directly — there is no contact cha
 | --- | --- | --- | --- | --- |
 | ControlApps | `3b9379d3-b47a-4925-8f60-82feb77a1a10` | Backups/restore (RAG, PostGIS, Grok desktop upload); RAG node modes per ``rag-routing.md`` (operator box). | Owns ``provoz.md`` (operator box). | Operator-only: backup/restore. In git: [SPLIT_DEPLOY](./SPLIT_DEPLOY.md) ([PR #43](https://github.com/mkrejp/fastmcp-rag-timer/pull/43)). |
 | CoolifyHoster | `fbfd4410-c0e8-4f8e-bf6d-a10daf778673` | Railway hosting: sftpgo, sftp-mirror cron, volume cleanup, economy operation. | — | Reported by operator, not verifiable in this repository (2026-11-18). |
-| HFHosts | `9bfa426e-2922-44d9-bb9a-f2e81c540da4` | Hugging Face hosting; disk/download rules. | Owns ``stahovani.md`` (operator box). | not attributable from repository history |
+| HFHosts | `9bfa426e-2922-44d9-bb9a-f2e81c540da4` | Hugging Face hosting; disk/download rules; **Hugging Face volumes as long-term backup** (not app origin). | Owns ``stahovani.md`` (operator box). | Policy in [inference roles](./adr/inference-roles.md); backup jobs not in this git. |
 | MCPConnectionsEngineer | `7ce74566-2edc-40f3-89da-412c7214da82` | MCP connections. | Role not documented. | not attributable from repository history |
 | Build Reporty | `fd340aed-7827-4ecf-bc9f-23bad6535fee` | Daily (~7:47 Europe/Prague) Gmail cleanup of CI/build notification emails. | — | not attributable from repository history |
 
@@ -104,7 +110,7 @@ flowchart TB
 
 Rules below apply on the operator ecosystem. They are repeated here so cloud agents need not read the noticeboard.
 
-1. **Only RAGloader** writes into the live RAG index. Others submit proposals through ``rag-queue/inbox/`` on the operator box (**not in this repository**).
+1. **Only RAGloader** is the named production writer into the live RAG index. Others submit proposals through ``rag-queue/inbox/`` on the operator box (**not in this repository**). **Cursor agents + Cursor-hosted Grok** may hunt content and load it through **ingester** HTTP/MCP APIs (GitHub remains the application repository; they must not write the reader volume or back Trails/GeoServer search).
 2. **RAG node mode** (WRITE / READ / STOP) is decided in ``rag-routing.md`` on the operator box only. In-repository process roles use ``APP_MODE`` — see [SPLIT_DEPLOY.md](./SPLIT_DEPLOY.md) and merged [PR #43](https://github.com/mkrejp/fastmcp-rag-timer/pull/43).
 3. **Corrections** = new document plus link; **deleting** only with Marek's explicit OK.
 4. **Only Marek's own words** are approval.
@@ -121,7 +127,7 @@ Rules below apply on the operator ecosystem. They are repeated here so cloud age
 ## Relation to this repository
 
 - [README.md](../README.md) — HTTP/MCP API including [PATCH metadata](../README.md#patch-verification-fields-patchdocumentsdoc_idmetadata) aligned with [verification_meta.py](../rag/verification_meta.py).
-- **APP_MODE** (`reader` / `ingester` / `all`) gates who can call write APIs in **code**; the **RAGloader-only-writer** rule is an **operational** constraint on who may ingest in production.
+- **APP_MODE** (`reader` / `ingester` / `all`) gates who can call write APIs in **code**; the **RAGloader-only-writer** rule is an **operational** constraint on who may ingest in production. Cursor/Grok agents develop on **GitHub** and may load the **ingester**; they are not the ČTENÍ/GeoServer search backend ([inference roles](./adr/inference-roles.md)).
 - Unified verification record shape (``verification[]``, ``reliability`` 0–4, ``source_key``, ``content_hash``) is implemented in this repository; the original proposal lives on the operator box (``rag-proposal/1``), not in git.
 
 ## Contribution verification note

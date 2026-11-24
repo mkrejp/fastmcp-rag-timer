@@ -20,7 +20,8 @@ The service is a single-process **FastAPI + FastMCP** application per container.
 `mcp_tools.py`, `processing.py`, `routes.py`, `admin_routes.py`,
 `google_oauth.py`, `chunked_upload.py`, `asgi_shutdown.py`, `storage.py`,
 `vectorstore.py`, `auth.py`, `publish/`), `README.md`, `docs/SPLIT_DEPLOY.md`,
-`docs/embedding-provider.md`, `docs/AI_AGENTS.md`, `docs/agents.json`, `static/`, and `tests/`.
+`docs/embedding-provider.md`, `docs/AI_AGENTS.md`, `docs/agents.json`,
+`docs/adr/inference-roles.md`, `static/`, and `tests/`.
 Human/agent coordination (who may ingest in production vs `APP_MODE` in code): [AI_AGENTS.md](./AI_AGENTS.md).
 `pyproject.toml` lists runtime dependencies (including `fastembed`, `pymupdf`, `pillow`, `pytesseract`).
 There is no `requirements.txt`, lockfile, or `railway.toml`. Example VPS layout: `deploy/vps/docker-compose.yml`.
@@ -28,7 +29,7 @@ CI lives under `.github/workflows/` (Super Linter, pytest on Python 3.11, and Do
 
 Statements below are taken from those files unless labeled **Assumption**.
 
-Embedding request details (endpoint, auth, timeouts, privacy, cost) live in [Embedding connectivity](./CONNECTIVITY.md#embedding-connectivity) and [Embedding provider](./embedding-provider.md).
+Embedding request details (endpoint, auth, timeouts, privacy, cost) live in [Embedding connectivity](./CONNECTIVITY.md#embedding-connectivity) and [Embedding provider](./embedding-provider.md). Who may use Grok vs Novita/HF, that **GitHub is the application repository**, and that **Hugging Face volumes are the long-term backup target**: [ADR: Inference roles](./adr/inference-roles.md).
 
 ## Process roles (`APP_MODE`)
 
@@ -300,7 +301,7 @@ are **400** pointing at `POST /documents/{doc_id}/supersede` and `POST /document
 Null on any other field (including `tags`, `obec_kod`, `gps_presnost`, `extrakce_model`, `fakt_ref`)
 is **400**. Success responses
 include `deleted_fields`; vectors and `doc_id` are untouched. Same Bearer MCP/RAG or Google session
-as `POST /upload` / `DELETE`. Operating convention (outside this repo): RAGloader logs each deletion
+as `POST /upload` / `DELETE`. Operating convention (outside this repository): RAGloader logs each deletion
 to `rag-changes.jsonl` with action `metadata_unset` and the field list.
 
 ```json
@@ -312,7 +313,13 @@ PATCH /documents/{doc_id}/metadata
 
 ## Exposed MCP tools, resources, and prompts
 
-From `rag/mcp_tools.py`, registered in `create_app()` and served at **`/mcp`** (Streamable HTTP). `streamable_http_path="/"` so the MCP endpoint is the mount root `/mcp`, not `/mcp/mcp`. Every `/mcp` HTTP request requires Bearer `MCP_API_TOKEN` or fallback `RAG_API_TOKEN` (`McpBearerAuth`; 401 invalid, 503 unset). When `MCP_READ_TOKEN` is set, that Bearer is also accepted as read-only: `tools/list` matches the Reader column below and write `tools/call` is a JSON-RPC error with HTTP 403 (even if `APP_MODE` is `ingester` / `all`). `MCP_READ_TOKEN` never authorizes HTTP write routes.
+From `rag/mcp_tools.py`, registered in `create_app()` and served at **`/mcp`** (Streamable HTTP).
+`streamable_http_path="/"` so the MCP endpoint is the mount root `/mcp`, not `/mcp/mcp`.
+Every `/mcp` HTTP request requires Bearer `MCP_API_TOKEN` or fallback `RAG_API_TOKEN`
+(`McpBearerAuth`; 401 invalid, 503 unset). When `MCP_READ_TOKEN` is set, that Bearer is also
+accepted as read-only: `tools/list` matches the Reader column below and write `tools/call` is a
+JSON-RPC error with HTTP 403 (even if `APP_MODE` is `ingester` / `all`).
+`MCP_READ_TOKEN` never authorizes HTTP write routes.
 
 `register_mcp_tools(..., include_write_tools=...)` omits write tools entirely when `APP_MODE=reader` (`mcp_include_write_tools()`). `/api/admin/mcp` and `app.state.mcp_tools` list only registered names.
 
@@ -368,7 +375,7 @@ No stdio MCP entrypoint (`mcp.run()` is not called). Tests post JSON-RPC `initia
 
 ## RAG pipeline
 
-There is **retrieval + embedding**, not generation. No chat/completions call exists. See [Embedding connectivity](./CONNECTIVITY.md#embedding-connectivity).
+There is **retrieval + embedding**, not generation. No chat/completions call exists. See [Embedding connectivity](./CONNECTIVITY.md#embedding-connectivity). Cursor-hosted Grok is used **outside** this process (GitHub PRs, hunting, ingester loads) — not on the reader, Trails search path, or GeoServer ([inference roles](./adr/inference-roles.md)).
 
 ### Ingestion
 
@@ -662,7 +669,7 @@ Current gaps (not a history of old bugs):
 1. **No timer/scheduler** despite the repository name. Upload TTL is enforced on session access and when a new upload is created, not by a background sweeper.
 2. **No MCP resources or prompts.**
 3. **No REST search** — similarity search is MCP-only.
-4. **No generator LLM** — retrieval only; no answer synthesis.
+4. **No generator LLM in this process** — retrieval only; no answer synthesis. Development/hunting LLMs are Cursor-hosted Grok against **GitHub** application repositories; they must not back reader or GeoServer search ([inference roles](./adr/inference-roles.md)).
 5. **Catalog, fulltext, `/upload-media`, `/health`, `/node-info`, and OpenAPI have no inbound auth.** Multipart `POST /upload` has no size quota in code.
 6. **`/upload-media`** stores files but does not index them or add them to `index.json`.
 7. **No HTTP reindex** of PDF bytes — `PUT /documents/{doc_id}/content` replaces indexed text only (no image/figure re-extract). To replace a PDF file entirely, delete then re-upload.
