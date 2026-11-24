@@ -44,6 +44,7 @@ def test_mcp_accepts_railway_host_with_token(client):
         "supersede_document",
         "unsupersede_document",
         "search_domain_knowledge",
+        "chat_helper",
         "link_locality",
         "list_links",
         "verify_link",

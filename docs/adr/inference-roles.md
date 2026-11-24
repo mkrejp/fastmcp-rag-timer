@@ -3,9 +3,10 @@
 - **Status:** Accepted (Marek, 2026-11-24)
 - **Date:** 2026-11-24
 - **Deciders:** Marek
-- **Scope of this PR:** this Markdown file and pointers from README / ARCHITECTURE /
-  CONNECTIVITY / embedding-provider / AI_AGENTS. No application code, no Railway
-  env mutation, no secrets.
+- **Scope of this PR:** prepaid Novita MCP `chat_helper` (rerank on, chat off
+  by default), this ADR, and pointers from README / ARCHITECTURE /
+  CONNECTIVITY / embedding-provider / AI_AGENTS. No Railway env mutation, no
+  secrets.
 - **Related:** [ARCHITECTURE.md](../ARCHITECTURE.md),
   [CONNECTIVITY.md](../CONNECTIVITY.md),
   [embedding-provider.md](../embedding-provider.md),
@@ -17,19 +18,22 @@
 
 | Work | Who / what | Not |
 | --- | --- | --- |
-| **Reader (ČTENÍ) search embeddings** | Novita `baai/bge-m3` (default) or Hugging Face ONNX FastEmbed `BAAI/bge-m3` | xAI, Vercel AI Gateway chat, Cursor Grok |
+| **Reader (ČTENÍ) search embeddings** | Novita `baai/bge-m3` (default) or Hugging Face ONNX FastEmbed `BAAI/bge-m3` | xAI, Vercel AI Gateway embeddings, Cursor Grok |
+| **Reader refined ranking** | Prepaid Novita `baai/bge-reranker-v2-m3` (`MCP chat_helper`) | Novita Coding Plan, dedicated GPU, Gateway embeddings |
+| **Reader helper phrasing** | Optional Gateway `vmc/cheap` (Novita DeepSeek flash BYOK), **off by default** | xAI, Grok, Coding Plan, Vercel provider fallback |
 | **Ingester (ZÁPIS) text embeddings** | Same Novita / FastEmbed BGE-M3 1024-dim family | A chat model writing vectors |
 | **Optional visual search** | Hugging Face CLIP `Qdrant/clip-ViT-B-32-*` when `IMAGE_EMBEDDING_ENABLED=true` | Grok vision as the image index |
-| **Trails web catalogue search** | Browser → Trails `GET /catalog/search`. **RAG** source = reader MCP `search_domain_knowledge`. **GeoServer** source = WFS `ILIKE` on `trails:layer_objects` | Grok answering the dialog; pointing Trails at the ingester |
+| **Trails web catalogue search** | Browser → Trails `GET /catalog/search` (**signed-in** session or Bearer). **RAG** typeahead = reader MCP `search_domain_knowledge`. **RAG Ask/chat** (later) = same Trails proxy → reader MCP `chat_helper` for **logged-in users only**. **GeoServer** = WFS `ILIKE` | Anonymous chat; browser calling RAG/GeoServer; Grok in the dialog; pointing Trails at the ingester |
 | **GeoServer** | WMS/WFS geometry and attribute filter (PostGIS). No embeddings | xAI, Novita chat, Hugging Face inference chat |
 | **Development, content hunting, loading into the ingester** | **Cursor agents + Cursor-hosted Grok** (Cursor plan, not an xAI BYOK key on Vercel) opening PRs on GitHub and calling `APP_MODE=ingester` HTTP/MCP writes | Grok as the public reader or as GeoServer |
 | **Application source of truth** | **GitHub repositories** (this repository, `mkrejp/TrailsAssemblage`, related Marek GitHub apps) | Vercel project files, Railway-only edits, Hugging Face Spaces as the app origin |
 | **Long-term backup** | **Hugging Face volumes** (cold dumps of RAG / PostGIS / media; HFHosts + ControlApps) | Live origin, catalogue search backend, or a substitute for GitHub |
 
-This repository stays **retrieval-only**. There is still no chat/completions client
-in `rag/`. Generation for hunting and coding happens **outside** this process
-(Cursor), against **GitHub**. Indexed text is still embedded with Novita or local
-Hugging Face ONNX.
+Indexed text is still embedded with Novita or local Hugging Face ONNX (1024-dim
+BGE-M3). A **bounded** reader exception is MCP `chat_helper`: retrieve, then
+prepaid Novita rerank, then optional `vmc/cheap` phrasing over those hits only.
+Chat is **off by default** and daily-capped. Generation for hunting and coding
+still happens **outside** this process (Cursor), against **GitHub**.
 
 ## 2. Why
 
@@ -140,8 +144,25 @@ Low-RAM reader: `APP_MODE=reader`, `EMBEDDING_PROVIDER_QUERY=novita`,
 `IMAGE_EMBEDDING_ENABLED=false`. Hugging Face is then only a **build/cache**
 source if a host opts into FastEmbed or CLIP — not a chat API.
 
-Vercel `vmc/cheap` (Novita DeepSeek flash, BYOK) is optional for **non-retrieval**
-cheap LLM experiments. It is **not** the Trails/GeoServer/reader search path.
+**Novita billing is prepaid Model API credits** (manual Stripe top-up over $10).
+Do **not** buy the monthly Novita Coding Plan: it is a coding-IDE quota, does
+not include BGE-M3 or the reranker, and conflicts with the no-monthly-sub
+preference.
+
+| Prepaid Model API | Role | Typical list price |
+| --- | --- | --- |
+| `baai/bge-m3` | ingest + query embeddings | $0.01 / Mt |
+| `baai/bge-reranker-v2-m3` | helper refined ranking | $0.01 / Mt |
+| `deepseek/deepseek-v4.1-flash` via `vmc/cheap` | optional helper phrasing | $0.3 / $1.2 / Mt + Gateway BYOK fee |
+
+Vercel `vmc/cheap` is **not** the Trails typeahead path and **not** GeoServer.
+Trails `source=rag` stays MCP `search_domain_knowledge` while typing. Helper
+phrasing is opt-in (`CHAT_HELPER_CHAT=1` plus `use_chat=true`) and must pin
+`providerOptions.gateway.only = ["novita"]`. Gateway team budgets currently
+**exclude BYOK**, so daily in-process caps
+(`CHAT_HELPER_DAILY_RERANK_CALLS`, `CHAT_HELPER_DAILY_CHAT_CALLS`) are the
+spend brake. Prefer a dedicated reader Gateway key with `includeByokInQuota`
+if Marek enables chat.
 
 ## 6. Trails web and GeoServer
 
@@ -150,7 +171,8 @@ Facts from Trails `docs/catalog-search.md` and `geoserver/README.md` (not this r
 | Surface | Search mechanism | Inference |
 | --- | --- | --- |
 | Vite app `https://trail.animarium.ai` catalogue dialog | Trails `GET /catalog/search` | None in the browser |
-| `source=rag` | MCP `search_domain_knowledge` `format=json` on `{RAG_READER_URL}/mcp/` with `MCP_READ_TOKEN` | Reader Novita (or FastEmbed) |
+| `source=rag` (typeahead) | MCP `search_domain_knowledge` `format=json` on `{RAG_READER_URL}/mcp/` with `MCP_READ_TOKEN` | Reader Novita (or FastEmbed). Trails already requires a signed-in session |
+| `source=rag` Ask / chat | Same Trails origin, **logged-in only**, explicit Ask/Enter → MCP `chat_helper` (`use_chat` only when `CHAT_HELPER_CHAT=1`) | Anonymous users; debounce typeahead; GeoServer WFS |
 | `source=geoserver` | WFS 2.0 `GetFeature` `trails:layer_objects` CQL `ILIKE` | None (PostGIS text) |
 | GeoServer WMS/WMTS | PNG tiles of catalog/locality layers | None |
 
@@ -186,8 +208,8 @@ sftpgo + `sftp-mirror-geo-server` stay desktop / nightly short-horizon copies. T
 
 ## 9. Vercel AI Gateway (team `animarium-ai`)
 
-Hobby credits + Novita BYOK remain for optional cheap chat. **No xAI in this
-solution:**
+Hobby credits + Novita BYOK remain for optional helper phrasing (`vmc/cheap`).
+**No xAI in this solution:**
 
 - `vmc/grok` **archived**
 - Deny rules on `spacexai/grok-4.7` and `vmc/grok`

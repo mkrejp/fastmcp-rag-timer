@@ -41,6 +41,7 @@ def patched_embeddings(
         patch("rag.figure_index.get_ingest_embeddings", side_effect=fake_many),
         patch("rag.document_replace.get_ingest_embeddings", side_effect=fake_many),
         patch("rag.mcp_tools.get_query_embedding", side_effect=fake_embed),
+        patch("rag.chat_helper.get_query_embedding", side_effect=fake_embed),
     ):
         yield
 

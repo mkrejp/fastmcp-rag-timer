@@ -23,6 +23,7 @@ from qdrant_client import QdrantClient
 from rag.accounting import accounting_source, get_global_store
 from rag.app_mode import app_mode_status
 from rag.auth import require_api_token, require_embed_access
+from rag.chat_helper import helper_public_status
 from rag.chunked_upload import (
     ChunkConflictError,
     ChunkedUploadError,
@@ -482,6 +483,7 @@ def health(request: Request) -> dict[str, object]:
             "qdrant_points": qdrant_points,
             "sync_enabled": sync_api_enabled(),
             "sync_push_on_ingest": sync_push_on_ingest_enabled(),
+            "chat_helper": helper_public_status(),
         }
         _record_http(route="health", ok=True)
         return body

@@ -260,8 +260,9 @@ From `rag/routes.py`, `rag/app.py`, `rag/google_oauth.py`, and `rag/admin_routes
 
 Chunked-upload errors: `400` validation, `404` unknown session, `409` chunk conflict, `410` expired.
 
-There is **no REST search** endpoint. Similarity search is MCP-only (`search_domain_knowledge`,
-`search_images`). Those tools, plus `list_image_records` and `list_geo_refinements`, omit
+There is **no REST search** endpoint. Similarity search is MCP-only
+(`search_domain_knowledge`, `search_images`, `chat_helper`). Those tools, plus
+`list_image_records` and `list_geo_refinements`, omit
 `doc_status=superseded` / `retracted` by default (`include_superseded=true` includes them;
 missing `doc_status` counts as active). Direct `GET /documents/{doc_id}` and `get_document_text` still
 return superseded/retracted documents. There is no HTTP reindex route. In-place text replace is
@@ -327,7 +328,7 @@ JSON-RPC error with HTTP 403 (even if `APP_MODE` is `ingester` / `all`).
 | --- | --- | --- |
 | `list_documents`, `get_document_text`, `get_document_chunks`, `get_document_images` | Yes | Yes |
 | `get_image`, `get_page_image`, `get_page_highlights` | Yes | Yes |
-| `search_domain_knowledge`, `search_images` | Yes | Yes |
+| `search_domain_knowledge`, `search_images`, `chat_helper` | Yes | Yes |
 | `search_with_context`, `get_document_context`, `search_catalog_documents` | Yes | Yes |
 | `list_links`, `link_stats`, `list_image_records`, `list_geo_refinements`, `image_record_stats` | Yes | Yes |
 | `ingest_text`, `update_document`, `update_document_metadata` | **No** | Yes |
@@ -362,6 +363,12 @@ Tool behavior:
   superseded/retracted → format `Source:` / `Content:` blocks (OCR image hits included
   when they have text vectors); empty → `"No relevant facts found."`; exceptions →
   `"Error executing RAG search: ..."`
+- `chat_helper`: async MCP JSON helper. Retrieve (same `text_vector` path as
+  `search_domain_knowledge`) → prepaid Novita `baai/bge-reranker-v2-m3` when
+  configured → leftover neighbors as `related_facts`. Optional Gateway
+  `vmc/cheap` phrasing is off unless `CHAT_HELPER_CHAT=1` and `use_chat=true`.
+  Runs off the event loop. No REST route. Empty query still returns JSON
+  `status=ok` with empty hits.
 - `search_images`: requires `IMAGE_EMBEDDING_ENABLED=true`; CLIP text tower → `image_vector`; `hybrid=true` RRF-merges CLIP hits with `pdf_image` text hits; same `doc_status` default exclusion
 - `search_with_context`: same vector path as `search_domain_knowledge`, always JSON; each hit adds optional catalog, versions index (no fulltext), locality links, supersession-related docs, and neighbor chunks from disk (`rag/search_context.py`)
 - `get_document_context` / `search_catalog_documents`: reader-local only (no embeddings); catalog substring search optionally wraps the same context bundle
@@ -460,7 +467,9 @@ See [Embedding connectivity](./CONNECTIVITY.md#embedding-connectivity) and [Embe
   `image_id` / URL. When coordinates exist, JSON hits include preferred `lat`/`lon`, `geo_source`
   (`refined` if `geo_refined` is present else `original`), `geo_original`, and `geo_refined`.
 - `search_images`: CLIP query → `image_vector` (default limit 5); optional hybrid RRF with OCR text hits. Optional `precision` / `needs_refinement` filters on `geo_refined`. Disabled unless `IMAGE_EMBEDDING_ENABLED=true`.
-- Optional locality payload filters on search; no rerank, no REST search. Geo write tools are MCP-only (same as `link_locality`).
+- Optional locality payload filters on search; no REST search. MCP
+  `chat_helper` adds prepaid Novita rerank (and optional off-by-default
+  Gateway phrasing). Geo write tools are MCP-only (same as `link_locality`).
 
 ### Timer / scheduling
 
@@ -656,7 +665,10 @@ Anyone who can reach the listen port can list/read processed catalog text, store
 
 - Application logger `rag.*` with StreamHandler plus an in-memory ring buffer (`rag/logging_setup.py`, 500 entries) exposed at `GET /api/admin/logs` (Google session).
 - Uvicorn default access/error logs.
-- `GET /health` returns liveness, data root, embedding provider status, `app_mode` / `writes_enabled`, and `release_id`; it does not probe Qdrant or Novita.
+- `GET /health` returns liveness, data root, embedding provider status,
+  `app_mode` / `writes_enabled`, `release_id`, and `chat_helper` flags
+  (prepaid billing, rerank/chat configured); it does not probe Qdrant or
+  Novita.
 - `GET /node-info` returns the public node catalog and this instance's Railway identity fields; it does not include secrets.
 - MCP tool failures are returned as strings and recorded in accounting; they are also logged on the search path.
 - Accounting under `ACCNT_DATA_ROOT`: daily JSON rollups and JSONL events for embeddings, MCP tools, HTTP routes, and outbound fetches. No budgets or dollar conversion.

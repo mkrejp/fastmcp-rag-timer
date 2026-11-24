@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any, Callable, Mapping
 
+import anyio
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.utilities.types import Image
 from mcp.types import ImageContent, TextContent
@@ -12,6 +13,7 @@ from qdrant_client import QdrantClient
 
 from rag.accounting import accounting_source, get_global_store
 from rag.app_mode import mcp_include_write_tools
+from rag.chat_helper import run_chat_helper
 from rag.config import COLLECTION_NAME, resolve_public_base_url
 from rag.document_delete import DocumentNotFoundError
 from rag.document_patch import (
@@ -84,6 +86,7 @@ from rag.vectorstore import (
 from rag.verification_meta import DocumentMetadataError
 
 logger = get_logger("rag.mcp")
+_CHAT_HELPER_LIMITER = anyio.CapacityLimiter(2)
 
 
 def _safe_trails_forward(
@@ -904,6 +907,61 @@ def register_mcp_tools(
             request_chars=len(query) + len(obec_id) + len(cast_obce),
             source="search_mcp",
             fn=_body,
+        )
+
+    @mcp.tool()
+    async def chat_helper(
+        query: str,
+        limit: int = 5,
+        related_limit: int = 5,
+        obec_id: str = "",
+        cast_obce: str = "",
+        include_figures: bool = True,
+        only_verified: bool = False,
+        min_status: str = "",
+        include_superseded: bool = False,
+        use_rerank: bool = True,
+        use_chat: bool = False,
+    ) -> str:
+        """Intelligent RAG helper: retrieve, rerank, related facts.
+
+        Uses prepaid Novita ``baai/bge-m3`` query embeddings and optional
+        prepaid ``baai/bge-reranker-v2-m3``. Optional Vercel Gateway
+        ``vmc/cheap`` phrasing is off unless ``use_chat`` and
+        ``CHAT_HELPER_CHAT`` are both enabled. Always returns JSON.
+        Does not write the index. Runs off the event loop.
+        """
+
+        def _body() -> str:
+            try:
+                payload = run_chat_helper(
+                    storage,
+                    qdrant,
+                    query=query,
+                    limit=limit,
+                    related_limit=related_limit,
+                    obec_id=obec_id,
+                    cast_obce=cast_obce,
+                    include_figures=include_figures,
+                    only_verified=only_verified,
+                    min_status=min_status,
+                    include_superseded=include_superseded,
+                    use_rerank=use_rerank,
+                    use_chat=use_chat,
+                    collection_name=collection_name,
+                )
+                return json.dumps(payload, ensure_ascii=False, indent=2)
+            except Exception:  # noqa: BLE001 - coarse MCP error, no leak
+                return "Error executing chat_helper: retrieve_failed"
+
+        return await anyio.to_thread.run_sync(
+            lambda: _run_mcp_tool(
+                "chat_helper",
+                request_chars=len(query) + len(obec_id) + len(cast_obce),
+                source="search_mcp",
+                fn=_body,
+            ),
+            limiter=_CHAT_HELPER_LIMITER,
         )
 
     @mcp.tool()

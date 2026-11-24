@@ -61,6 +61,10 @@ MCP_TOOL_DOCS = {
     "supersede_document": "Atomically link an old document as superseded by a new one.",
     "unsupersede_document": "Atomically remove a supersession link from both documents.",
     "search_domain_knowledge": "Query RAG facts; optional obec_id/cast_obce filter.",
+    "chat_helper": (
+        "Retrieve and prepaid Novita rerank; optional Gateway phrasing "
+        "for best-fitting RAG hits plus related facts (chat off by default)."
+    ),
     "search_images": "Search PDF images by CLIP visual similarity (optional hybrid).",
     "search_with_context": "Vector search with catalog/versions/locality/related/neighbor context.",
     "get_document_context": "Reader-local catalog/versions/locality/related context for one doc_id.",

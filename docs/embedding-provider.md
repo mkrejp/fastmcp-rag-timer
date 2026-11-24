@@ -2,7 +2,11 @@
 
 Runtime defaults: **`EMBEDDING_PROVIDER`** is `novita` when unset. **`EMBEDDING_PROVIDER_INGEST`** and **`EMBEDDING_PROVIDER_QUERY`** (alias **`EMBEDDING_PROVIDER_SEARCH`**) override ingest vs search independently. Search may use Novita or local FastEmbed; **`APP_MODE=reader`** defaults query to **novita** when those vars are unset.
 
-Reader and Trails/GeoServer search stay on **Novita + Hugging Face ONNX**. Do not route query embeddings through Vercel AI Gateway or xAI. Cursor Grok is for GitHub development and ingester loads only — [inference roles](./adr/inference-roles.md).
+Reader and Trails/GeoServer search stay on **prepaid Novita + Hugging Face
+ONNX**. Do not route query embeddings through Vercel AI Gateway or xAI.
+MCP `chat_helper` may call Novita rerank (same prepaid key) and, off by
+default, Gateway `vmc/cheap` for phrasing only. Cursor Grok is for GitHub
+development and ingester loads only — [inference roles](./adr/inference-roles.md).
 
 ## Split ingest vs query
 
