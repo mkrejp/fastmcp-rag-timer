@@ -333,6 +333,7 @@ def _run_chat(
         f"<query>{query}</query>\n"
         "<retrieved>" + json.dumps(user_payload, ensure_ascii=False) + "</retrieved>"
     )
+    raw = ""
     try:
         raw = complete_chat(
             [
@@ -343,7 +344,14 @@ def _run_chat(
         parsed = parse_helper_json(raw)
     except RuntimeError as exc:
         return empty, str(exc)
-    except Exception:  # noqa: BLE001 - retrieve still succeeds
+    except Exception as exc:  # noqa: BLE001 - retrieve still succeeds
+        preview = _URL_RE.sub("", raw if isinstance(raw, str) else "")[:120]
+        logger.warning(
+            "chat_helper JSON parse failed: %s raw_len=%s preview=%r",
+            type(exc).__name__,
+            len(raw) if isinstance(raw, str) else 0,
+            preview,
+        )
         return empty, "bad_json"
     best = _safe_indexes(parsed.get("best_hit_indexes"), len(hits))
     suggestions_raw = parsed.get("related_suggestions")

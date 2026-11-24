@@ -344,6 +344,78 @@ def test_parse_helper_json_strips_fences() -> None:
     assert payload["answer"] == "ok"
 
 
+def test_parse_helper_json_strips_think_blocks() -> None:
+    """DeepSeek-style think tags before JSON still parse."""
+    wrapped = (
+        "<think>plan citation indexes</think>"
+        '{"answer": "ok", "best_hit_indexes": [0], "related_suggestions": []}'
+    )
+    payload = parse_helper_json(wrapped)
+    assert payload["answer"] == "ok"
+    assert payload["best_hit_indexes"] == [0]
+
+
+def test_parse_helper_json_accepts_leading_prose() -> None:
+    """Leading natural-language prose before the JSON object still parses."""
+    wrapped = (
+        "Here is the JSON response.\n"
+        '{"answer": "facade note", "best_hit_indexes": [], '
+        '"related_suggestions": []}'
+    )
+    payload = parse_helper_json(wrapped)
+    assert payload["answer"] == "facade note"
+
+
+def test_parse_helper_json_rejects_non_object() -> None:
+    """Arrays are not accepted as helper payloads."""
+    with pytest.raises((json.JSONDecodeError, ValueError)):
+        parse_helper_json("[1, 2, 3]")
+
+
+def test_chat_helper_think_wrapped_gateway_json(
+    client: TestClient, monkeypatch: MonkeyPatch
+) -> None:
+    """Think-wrapped Gateway JSON still yields applied chat with citations."""
+    monkeypatch.setenv("AI_GATEWAY_API_KEY", "gateway-test-key")
+    monkeypatch.setenv("CHAT_HELPER_CHAT", "1")
+    _ingest(client, "facade.txt", b"Beta Prague Art Nouveau timer facade.")
+    gateway = Mock()
+    gateway.raise_for_status = Mock()
+    inner = json.dumps(
+        {
+            "answer": "The timer facade matches Prague Art Nouveau.",
+            "best_hit_indexes": [0],
+            "related_suggestions": [],
+        }
+    )
+    gateway.json = Mock(
+        return_value={
+            "choices": [
+                {
+                    "message": {
+                        "content": ("<reasoning>match hit zero</reasoning>" + inner)
+                    }
+                }
+            ]
+        }
+    )
+    with patch("rag.gateway_chat.requests.post", return_value=gateway):
+        body = _helper(
+            client,
+            {
+                "query": "Prague timer",
+                "limit": 1,
+                "related_limit": 0,
+                "use_rerank": False,
+                "use_chat": True,
+            },
+        )
+    assert body["chat"]["status"] == "applied"
+    assert body["answer"] is not None
+    assert body["chat"]["best_hit_indexes"] == [0]
+    assert body["hits"][0]["cited"] is True
+
+
 def test_chat_helper_skips_budget(client: TestClient, monkeypatch: MonkeyPatch) -> None:
     """Daily rerank cap returns skipped_budget and makes no HTTP call."""
     monkeypatch.setenv("NOVITA_API_KEY", "prepaid-test-key")
