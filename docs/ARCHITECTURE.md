@@ -20,7 +20,8 @@ The service is a single-process **FastAPI + FastMCP** application per container.
 `mcp_tools.py`, `processing.py`, `routes.py`, `admin_routes.py`,
 `google_oauth.py`, `chunked_upload.py`, `asgi_shutdown.py`, `storage.py`,
 `vectorstore.py`, `auth.py`, `publish/`), `README.md`, `docs/SPLIT_DEPLOY.md`,
-`docs/embedding-provider.md`, `docs/AI_AGENTS.md`, `docs/agents.json`, `static/`, and `tests/`.
+`docs/embedding-provider.md`, `docs/AI_AGENTS.md`, `docs/agents.json`,
+`docs/adr/inference-roles.md`, `static/`, and `tests/`.
 Human/agent coordination (who may ingest in production vs `APP_MODE` in code): [AI_AGENTS.md](./AI_AGENTS.md).
 `pyproject.toml` lists runtime dependencies (including `fastembed`, `pymupdf`, `pillow`, `pytesseract`).
 There is no `requirements.txt`, lockfile, or `railway.toml`. Example VPS layout: `deploy/vps/docker-compose.yml`.
@@ -28,7 +29,7 @@ CI lives under `.github/workflows/` (Super Linter, pytest on Python 3.11, and Do
 
 Statements below are taken from those files unless labeled **Assumption**.
 
-Embedding request details (endpoint, auth, timeouts, privacy, cost) live in [Embedding connectivity](./CONNECTIVITY.md#embedding-connectivity) and [Embedding provider](./embedding-provider.md).
+Embedding request details (endpoint, auth, timeouts, privacy, cost) live in [Embedding connectivity](./CONNECTIVITY.md#embedding-connectivity) and [Embedding provider](./embedding-provider.md). Who may use Grok vs Novita/HF, that **GitHub is the application repository**, and that **Hugging Face volumes are the long-term backup target**: [ADR: Inference roles](./adr/inference-roles.md).
 
 ## Process roles (`APP_MODE`)
 
@@ -368,7 +369,7 @@ No stdio MCP entrypoint (`mcp.run()` is not called). Tests post JSON-RPC `initia
 
 ## RAG pipeline
 
-There is **retrieval + embedding**, not generation. No chat/completions call exists. See [Embedding connectivity](./CONNECTIVITY.md#embedding-connectivity).
+There is **retrieval + embedding**, not generation. No chat/completions call exists. See [Embedding connectivity](./CONNECTIVITY.md#embedding-connectivity). Cursor-hosted Grok is used **outside** this process (GitHub PRs, hunting, ingester loads) — not on the reader, Trails search path, or GeoServer ([inference roles](./adr/inference-roles.md)).
 
 ### Ingestion
 
@@ -662,7 +663,7 @@ Current gaps (not a history of old bugs):
 1. **No timer/scheduler** despite the repository name. Upload TTL is enforced on session access and when a new upload is created, not by a background sweeper.
 2. **No MCP resources or prompts.**
 3. **No REST search** — similarity search is MCP-only.
-4. **No generator LLM** — retrieval only; no answer synthesis.
+4. **No generator LLM in this process** — retrieval only; no answer synthesis. Development/hunting LLMs are Cursor-hosted Grok against **GitHub** application repos; they must not back reader or GeoServer search ([inference roles](./adr/inference-roles.md)).
 5. **Catalog, fulltext, `/upload-media`, `/health`, `/node-info`, and OpenAPI have no inbound auth.** Multipart `POST /upload` has no size quota in code.
 6. **`/upload-media`** stores files but does not index them or add them to `index.json`.
 7. **No HTTP reindex** of PDF bytes — `PUT /documents/{doc_id}/content` replaces indexed text only (no image/figure re-extract). To replace a PDF file entirely, delete then re-upload.

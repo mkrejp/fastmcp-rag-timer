@@ -211,8 +211,11 @@ Verified in `mkrejp/TrailsAssemblage` (commit `b4dfcea` on `main` when read):
 - `sftpgo-geo-servus`: `Dockerfile` `FROM drakkan/sftpgo:v2.7.6` + chown entrypoint. Not an image CDN; no provenance schema.
 - `sftp-mirror-geo-server`: cron 19:45 Europe/Prague, copies newest `COMPLETE` desktop backup onto a **5 GB** `/mirror` volume (two generations). Restore docs live on the operator box, not in rag-timer.
 - Hugging Face in **this** repository is **ONNX download** (FastEmbed BGE-M3, CLIP),
-  not a media origin. HF as RAG/PostGIS **backup** is an HFHosts/operator practice,
-  **not in git**. Treat HF as cold backup only.
+  not a media origin. **Hugging Face volumes are the long-term backup target**
+  (RAG / PostGIS / later media); that split is in
+  [inference-roles.md](./inference-roles.md). Backup jobs remain HFHosts/operator
+  practice, **not in git**. Treat HF volumes as cold backup only — never a live
+  origin.
 
 ### 3.8 Where metadata is dropped (trace)
 
