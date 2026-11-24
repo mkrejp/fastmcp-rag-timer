@@ -14,7 +14,13 @@ from _pytest.monkeypatch import MonkeyPatch
 from fastapi.testclient import TestClient
 
 from rag.accounting import today_outbound_calls
-from rag.gateway_chat import chat_configured, chat_enabled, parse_helper_json
+from rag.chat_helper import HELPER_SYSTEM_PROMPT, MAX_ANSWER_CHARS, _sanitize_answer
+from rag.gateway_chat import (
+    chat_configured,
+    chat_enabled,
+    parse_helper_json,
+    resolve_chat_max_tokens,
+)
 from rag.node_info import is_http_write_request
 from rag.novita_rerank import NOVITA_BILLING, rerank_configured
 from tests.conftest import AUTH_HEADERS, patched_embeddings
@@ -272,6 +278,10 @@ def test_chat_helper_llm_marks_cited_without_reorder(
     assert sent["model"] == "vmc/cheap"
     assert sent["providerOptions"] == {"gateway": {"only": ["novita"]}}
     assert sent["response_format"] == {"type": "json_object"}
+    assert sent["max_tokens"] == 700
+    system_text = sent["messages"][0]["content"]
+    assert "short essay" in system_text
+    assert "relate to each other" in system_text
 
 
 def test_chat_helper_reader_mcp_read_token(
@@ -334,6 +344,34 @@ def test_openai_key_does_not_configure_rerank(monkeypatch: MonkeyPatch) -> None:
     """Rerank accepts only prepaid Novita-named keys."""
     monkeypatch.setenv("OPENAI_API_KEY", "embedding-fallback")
     assert rerank_configured() is False
+
+
+def test_helper_system_prompt_asks_for_short_essay() -> None:
+    """Ask phrasing is a cited essay over hits, not a one-line label."""
+    assert "short essay" in HELPER_SYSTEM_PROMPT
+    assert "two to four compact paragraphs" in HELPER_SYSTEM_PROMPT
+    assert "relate to each other" in HELPER_SYSTEM_PROMPT
+    assert resolve_chat_max_tokens() == 700
+    assert MAX_ANSWER_CHARS == 1600
+
+
+def test_sanitize_answer_keeps_cited_essay_and_caps() -> None:
+    """Cited multi-paragraph answers survive; URLs and overlong tails do not."""
+    essay = (
+        "The Municipal House in Prague answers the query as the best-known "
+        "Art Nouveau civic hall in the set.\n\n"
+        "The related Obecni dum facade note is the same building's exterior, "
+        "not a second site. Both hits share Praha as the municipality."
+    )
+    assert _sanitize_answer(essay, cited=True) == essay
+    assert _sanitize_answer(essay, cited=False) is None
+    assert _sanitize_answer("See https://example.com/x for more.", cited=True) == (
+        "See  for more."
+    )
+    too_long = ("Praha " * 400).strip()
+    capped = _sanitize_answer(too_long, cited=True)
+    assert capped is not None
+    assert len(capped) == MAX_ANSWER_CHARS
 
 
 def test_parse_helper_json_strips_fences() -> None:
