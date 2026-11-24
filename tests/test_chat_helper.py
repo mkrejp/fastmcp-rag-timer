@@ -14,11 +14,7 @@ from _pytest.monkeypatch import MonkeyPatch
 from fastapi.testclient import TestClient
 
 from rag.accounting import today_outbound_calls
-from rag.chat_helper import (
-    HELPER_SYSTEM_PROMPT,
-    MAX_ANSWER_CHARS,
-    _sanitize_answer,
-)
+from rag.chat_helper import HELPER_SYSTEM_PROMPT, MAX_ANSWER_CHARS, _sanitize_answer
 from rag.gateway_chat import (
     chat_configured,
     chat_enabled,
