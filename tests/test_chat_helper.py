@@ -278,10 +278,11 @@ def test_chat_helper_llm_marks_cited_without_reorder(
     assert sent["model"] == "vmc/cheap"
     assert sent["providerOptions"] == {"gateway": {"only": ["novita"]}}
     assert sent["response_format"] == {"type": "json_object"}
-    assert sent["max_tokens"] == 700
+    assert sent["max_tokens"] == 1200
     system_text = sent["messages"][0]["content"]
     assert "short essay" in system_text
     assert "relate to each other" in system_text
+    assert system_text.index("best_hit_indexes") < system_text.index('"answer": string')
 
 
 def test_chat_helper_reader_mcp_read_token(
@@ -349,9 +350,9 @@ def test_openai_key_does_not_configure_rerank(monkeypatch: MonkeyPatch) -> None:
 def test_helper_system_prompt_asks_for_short_essay() -> None:
     """Ask phrasing is a cited essay over hits, not a one-line label."""
     assert "short essay" in HELPER_SYSTEM_PROMPT
-    assert "two to four compact paragraphs" in HELPER_SYSTEM_PROMPT
+    assert "two compact paragraphs" in HELPER_SYSTEM_PROMPT
     assert "relate to each other" in HELPER_SYSTEM_PROMPT
-    assert resolve_chat_max_tokens() == 700
+    assert resolve_chat_max_tokens() == 1200
     assert MAX_ANSWER_CHARS == 1600
 
 
@@ -410,6 +411,33 @@ def test_parse_helper_json_rejects_non_object() -> None:
         parse_helper_json("[1, 2, 3]")
 
 
+def test_parse_helper_json_recovers_truncated_answer() -> None:
+    """Token-capped JSON still yields the essay started in ``answer``."""
+    truncated = (
+        '{"answer": "K dotazu na Havlíčkův Brod se v datech váže především '
+        "secesní Vila bratří Mahlerů, jediná stavba tohoto typu"
+    )
+    payload = parse_helper_json(truncated)
+    assert payload["_truncated"] is True
+    assert payload["answer"] is not None
+    assert "Havlíčkův Brod" in payload["answer"]
+    assert "Mahlerů" in payload["answer"]
+    assert payload["best_hit_indexes"] == []
+
+
+def test_parse_helper_json_recovers_indexes_before_truncated_answer() -> None:
+    """Indexes emitted first survive when the essay string is cut off."""
+    truncated = (
+        '{"best_hit_indexes": [0, 2], "related_suggestions": [], '
+        '"answer": "Pro dotaz Havlíčkův Brod se v pramenech objevují'
+    )
+    payload = parse_helper_json(truncated)
+    assert payload["_truncated"] is True
+    assert payload["best_hit_indexes"] == [0, 2]
+    assert payload["answer"] is not None
+    assert payload["answer"].startswith("Pro dotaz Havlíčkův Brod")
+
+
 def test_chat_helper_think_wrapped_gateway_json(
     client: TestClient, monkeypatch: MonkeyPatch
 ) -> None:
@@ -452,6 +480,47 @@ def test_chat_helper_think_wrapped_gateway_json(
     assert body["answer"] is not None
     assert body["chat"]["best_hit_indexes"] == [0]
     assert body["hits"][0]["cited"] is True
+
+
+def test_chat_helper_recovers_truncated_gateway_json(
+    client: TestClient, monkeypatch: MonkeyPatch
+) -> None:
+    """A token-capped essay still becomes ``answer`` instead of bad_json."""
+    monkeypatch.setenv("AI_GATEWAY_API_KEY", "gateway-test-key")
+    monkeypatch.setenv("CHAT_HELPER_CHAT", "1")
+    _ingest(client, "brod.txt", b"Havlickuv Brod secesni Vila bratru Mahleru.")
+    gateway = Mock()
+    gateway.raise_for_status = Mock()
+    gateway.json = Mock(
+        return_value={
+            "choices": [
+                {
+                    "finish_reason": "length",
+                    "message": {
+                        "content": (
+                            '{"answer": "K dotazu na Havlíčkův Brod se v datech '
+                            "váže především secesní Vila bratří Mahlerů"
+                        )
+                    },
+                }
+            ]
+        }
+    )
+    with patch("rag.gateway_chat.requests.post", return_value=gateway):
+        body = _helper(
+            client,
+            {
+                "query": "Havlíčkův Brod",
+                "limit": 1,
+                "related_limit": 0,
+                "use_rerank": False,
+                "use_chat": True,
+            },
+        )
+    assert body["chat"]["status"] == "applied"
+    assert body["answer"] is not None
+    assert "Havlíčkův Brod" in body["answer"]
+    assert "Mahlerů" in body["answer"]
 
 
 def test_chat_helper_skips_budget(client: TestClient, monkeypatch: MonkeyPatch) -> None:

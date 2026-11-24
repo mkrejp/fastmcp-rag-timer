@@ -23,9 +23,9 @@ from rag.novita_rerank import classify_upstream_error
 DEFAULT_GATEWAY_BASE_URL = "https://ai-gateway.vercel.sh/v1"
 ALLOWED_CHAT_MODELS = frozenset({"vmc/cheap"})
 DEFAULT_CHAT_MODEL = "vmc/cheap"
-DEFAULT_MAX_TOKENS = 700
+DEFAULT_MAX_TOKENS = 1200
 DEFAULT_DAILY_CHAT_CALLS = 300
-CHAT_TIMEOUT_SECONDS = 15
+CHAT_TIMEOUT_SECONDS = 18
 
 logger = get_logger("rag.gateway_chat")
 
@@ -33,17 +33,95 @@ _THINK_BLOCK_RE = re.compile(
     r"<(?:redacted_thinking|reasoning)>.*?</(?:redacted_thinking|reasoning)>",
     re.IGNORECASE | re.DOTALL,
 )
+_ANSWER_KEY_RE = re.compile(r'"answer"\s*:')
+_INDEXES_RE = re.compile(r'"best_hit_indexes"\s*:\s*(\[[^\]]*\])')
+
+
+def _unescape_json_string(fragment: str) -> str:
+    """Decode a JSON string fragment, including a truncated tail."""
+    text = fragment
+    if text.endswith("\\") and (len(text) - len(text.rstrip("\\"))) % 2 == 1:
+        text = text[:-1]
+    try:
+        decoded: str = json.loads(f'"{text}"')
+    except json.JSONDecodeError:
+        return (
+            text.replace(r"\\", "\\")
+            .replace(r"\"", '"')
+            .replace(r"\n", "\n")
+            .replace(r"\r", "\r")
+            .replace(r"\t", "\t")
+        )
+    return decoded
+
+
+def _extract_json_string_after(text: str, key_match_end: int) -> str | None:
+    """Return the JSON string after a colon, even if the quote never closes."""
+    rest = text[key_match_end:].lstrip()
+    if not rest.startswith('"'):
+        return None
+    chars: list[str] = []
+    escaped = False
+    for char in rest[1:]:
+        if escaped:
+            chars.append(char)
+            escaped = False
+            continue
+        if char == "\\":
+            chars.append(char)
+            escaped = True
+            continue
+        if char == '"':
+            break
+        chars.append(char)
+    fragment = "".join(chars).strip()
+    if not fragment:
+        return None
+    return _unescape_json_string(fragment)
+
+
+def _recover_truncated_helper_json(text: str) -> dict[str, Any] | None:
+    """Pull answer and indexes out of a token-capped JSON object."""
+    answer: str | None = None
+    match = _ANSWER_KEY_RE.search(text)
+    if match:
+        answer = _extract_json_string_after(text, match.end())
+    indexes: list[Any] = []
+    idx_match = _INDEXES_RE.search(text)
+    if idx_match:
+        try:
+            parsed_idx = json.loads(idx_match.group(1))
+        except json.JSONDecodeError:
+            parsed_idx = []
+        if isinstance(parsed_idx, list):
+            indexes = parsed_idx
+    if answer is None and not indexes:
+        return None
+    return {
+        "answer": answer,
+        "best_hit_indexes": indexes,
+        "related_suggestions": [],
+        "_truncated": True,
+    }
 
 
 def _load_json_object(text: str) -> dict[str, Any]:
-    """Parse ``text`` as a JSON object, tolerating leading non-JSON prose."""
+    """Parse ``text`` as a JSON object, tolerating prose and truncated tails."""
     try:
         payload = json.loads(text)
     except json.JSONDecodeError:
         start = text.find("{")
-        if start < 0:
-            raise
-        payload, _end = json.JSONDecoder().raw_decode(text, start)
+        if start >= 0:
+            try:
+                payload, _end = json.JSONDecoder().raw_decode(text, start)
+                if isinstance(payload, dict):
+                    return payload
+            except json.JSONDecodeError:
+                payload = None
+        recovered = _recover_truncated_helper_json(text)
+        if recovered is not None:
+            return recovered
+        raise
     if not isinstance(payload, dict):
         raise ValueError("helper JSON must be an object")
     return payload
@@ -219,6 +297,12 @@ def complete_chat(
                 total_tokens=total_tokens,
             )
             raise RuntimeError("failed_empty")
+        finish_reason = first.get("finish_reason")
+        logger.info(
+            "Gateway chat finish_reason=%s content_len=%s",
+            finish_reason,
+            len(content),
+        )
         _record_outbound(
             ok=True,
             latency_ms=int((time.perf_counter() - started) * 1000),
