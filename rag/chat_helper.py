@@ -45,11 +45,7 @@ from rag.novita_rerank import (
 from rag.provenance_meta import build_image_delivery_urls
 from rag.search_hits import build_knowledge_hit
 from rag.storage import RagStorage
-from rag.vectorstore import (
-    TEXT_VECTOR_NAME,
-    knowledge_locality_filter,
-    search_similar,
-)
+from rag.vectorstore import TEXT_VECTOR_NAME, knowledge_locality_filter, search_similar
 
 DEFAULT_LIMIT = 5
 DEFAULT_RELATED_LIMIT = 5

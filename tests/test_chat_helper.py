@@ -389,13 +389,18 @@ def test_chat_helper_model_pin_rejects_override(
     monkeypatch.setenv("AI_GATEWAY_API_KEY", "gateway-test-key")
     monkeypatch.setenv("CHAT_HELPER_CHAT", "1")
     monkeypatch.setenv("AI_GATEWAY_CHAT_MODEL", "openai/gpt-4o-mini")
-    _ingest(client, "prague.txt", b"Prague Art Nouveau timer facade on the square.")
-    with patch("rag.gateway_chat.requests.post") as posted:
+    _ingest(client, "facade.txt", b"Beta Prague Art Nouveau timer facade.")
+    with patch("rag.gateway_chat.complete_chat") as complete:
         body = _helper(
             client,
-            {"query": "Prague timer", "use_rerank": False, "use_chat": True},
+            {
+                "query": "Art Nouveau facade",
+                "limit": 1,
+                "use_rerank": False,
+                "use_chat": True,
+            },
         )
-    posted.assert_not_called()
+    complete.assert_not_called()
     assert body["chat"]["status"] == "skipped_bad_model"
     assert body["hits"]
 
