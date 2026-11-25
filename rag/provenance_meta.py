@@ -309,7 +309,8 @@ def inherit_provenance_for_extracted(
     """Copy parent provenance onto an extracted image/figure payload."""
     inherited = document_provenance_from_extra(parent)
     if not inherited:
-        inherited = {"license_id": "Unknown", "license_status": "restricted"}
+        # Pre-metadata_complete workflow state (media-licence §3); not ``published``.
+        inherited = {"license_status": "intake"}
     inherited["content_type"] = content_type
     inherited["sha256"] = image_sha256
     if modifications:
@@ -330,7 +331,7 @@ def attribution_allows_public_urls(record: Mapping[str, Any]) -> bool:
     if license_status in HIDDEN_LICENSE_STATUSES:
         return False
     license_id = str(record.get("license_id") or "").strip()
-    if license_id in NON_HOSTABLE_LICENSE_IDS and license_status != "published":
+    if license_id in NON_HOSTABLE_LICENSE_IDS:
         return False
     return True
 

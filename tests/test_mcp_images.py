@@ -14,6 +14,7 @@ from PIL import Image
 from qdrant_client.models import PointStruct
 
 from rag.config import COLLECTION_NAME
+from rag.image_visibility import IMAGE_BINARY_DENIED_DETAIL
 from rag.payloads import stable_figure_point_id
 from rag.storage import RagStorage
 from rag.vectorstore import build_named_vector
@@ -134,9 +135,21 @@ def _seed_orphan_figure(storage: RagStorage, png: bytes) -> None:
     storage.save_image_bytes(
         DOC_ID, image_id=FIGURE_IMAGE_ID, extension=".png", data=png
     )
+    meta = storage.read_meta(DOC_ID)
+    assert meta is not None
+    meta.extra.update(
+        {
+            "attribution_text": "fixture test",
+            "license_id": "CC0-1.0",
+            "license_status": "published",
+        }
+    )
+    storage.write_meta(meta)
 
 
-def _upsert_figure_point(client: TestClient, fake_embed: Callable[[str], list[float]]) -> None:
+def _upsert_figure_point(
+    client: TestClient, fake_embed: Callable[[str], list[float]]
+) -> None:
     """Insert one ``pdf_figure`` Qdrant point for ``DOC_ID``."""
     qdrant = client.app.state.qdrant
     figure_id = "f_test_p1_0"
@@ -312,9 +325,7 @@ def test_mcp_ingested_figure_round_trip(
     assert figure_items[0].get("page_number") is not None
     assert "url" in figure_items[0]
 
-    payload = _call_tool_payload(
-        client, "get_image", {"image_id": image_id}, call_id=5
-    )
+    payload = _call_tool_payload(client, "get_image", {"image_id": image_id}, call_id=5)
     blocks = payload["result"]["content"]
     image_blocks = [
         block
@@ -322,3 +333,26 @@ def test_mcp_ingested_figure_round_trip(
         if isinstance(block, dict) and block.get("type") == "image"
     ]
     assert image_blocks, f"expected image content, got {blocks!r}"
+
+
+def test_mcp_get_image_denied_when_restricted(client: TestClient) -> None:
+    """MCP ``get_image`` returns a denial message instead of bytes when restricted."""
+    from tests.test_image_http import _ingest_fixture_pdf
+    from tests.test_image_visibility import (
+        _patch_restrict,
+        _publish_document_for_hosting,
+    )
+
+    doc_id, image_id = _ingest_fixture_pdf(client)
+    _publish_document_for_hosting(client, doc_id)
+    _patch_restrict(client, doc_id, image_id)
+    _initialize(client)
+    payload = _call_tool_payload(client, "get_image", {"image_id": image_id}, call_id=9)
+    text = _tool_text(payload)
+    assert IMAGE_BINARY_DENIED_DETAIL in text
+    image_blocks = [
+        block
+        for block in payload["result"]["content"]
+        if isinstance(block, dict) and block.get("type") == "image"
+    ]
+    assert not image_blocks

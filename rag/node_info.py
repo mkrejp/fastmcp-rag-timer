@@ -575,6 +575,8 @@ def is_http_write_request(method: str, path: str) -> bool:
             return True
         if upper == "POST":
             return True
+    if upper == "PATCH" and normalized.startswith("/images/"):
+        return True
     return False
 
 

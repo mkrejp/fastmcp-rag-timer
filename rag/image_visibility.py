@@ -13,14 +13,15 @@ from rag.accounting import utc_now_iso
 from rag.doc_locks import doc_lock
 from rag.document_delete import DocumentNotFoundError
 from rag.logging_setup import get_logger
+from rag.page_ids import parse_page_image_id
 from rag.provenance_meta import (
     HIDDEN_LICENSE_STATUSES,
     LICENSE_STATUS_VALUES,
+    NON_HOSTABLE_LICENSE_IDS,
     PROVENANCE_KEYS,
     document_provenance_from_extra,
     normalize_provenance_metadata,
 )
-from rag.page_ids import parse_page_image_id
 from rag.storage import DocumentMeta, ImageMeta, RagStorage
 
 logger = get_logger("rag.image_visibility")
@@ -60,9 +61,16 @@ def image_provenance_record(
 
 
 def image_binary_serving_allowed(record: Mapping[str, Any]) -> bool:
-    """Return whether authenticated HTTP/MCP may return image bytes."""
+    """Return whether authenticated HTTP/MCP may return image bytes (media-licence §6)."""
     status = str(record.get("license_status") or "").strip()
-    return status not in HIDDEN_LICENSE_STATUSES
+    if not status:
+        return False
+    if status in HIDDEN_LICENSE_STATUSES:
+        return False
+    license_id = str(record.get("license_id") or "").strip()
+    if license_id in NON_HOSTABLE_LICENSE_IDS:
+        return False
+    return True
 
 
 def audit_log_path(storage: RagStorage) -> Path:
@@ -175,7 +183,9 @@ def resolve_image_provenance(
     return record, image_meta, qdrant_payloads
 
 
-def _validate_visibility_body(body: Mapping[str, Any], *, restrict: bool) -> dict[str, Any]:
+def _validate_visibility_body(
+    body: Mapping[str, Any], *, restrict: bool
+) -> dict[str, Any]:
     """Normalize and validate a single-image visibility patch body."""
     reason = body.get("reason")
     if reason is not None and not isinstance(reason, str):
@@ -183,10 +193,10 @@ def _validate_visibility_body(body: Mapping[str, Any], *, restrict: bool) -> dic
     decided_by = body.get("decided_by")
     if decided_by is not None and not isinstance(decided_by, str):
         raise ImageVisibilityError("decided_by must be a string")
-    if restrict and not (str(decided_by or "").strip()):
-        raise ImageVisibilityError("decided_by is required when restricting")
-    if restrict and not (str(reason or "").strip()):
-        raise ImageVisibilityError("reason is required when restricting")
+    if not (str(decided_by or "").strip()):
+        raise ImageVisibilityError("decided_by is required")
+    if not (str(reason or "").strip()):
+        raise ImageVisibilityError("reason is required")
 
     status_raw = body.get("license_status")
     if status_raw is not None:
@@ -201,9 +211,7 @@ def _validate_visibility_body(body: Mapping[str, Any], *, restrict: bool) -> dic
 
     if restrict and status not in HIDDEN_LICENSE_STATUSES:
         hidden = ", ".join(sorted(HIDDEN_LICENSE_STATUSES))
-        raise ImageVisibilityError(
-            f"restrict requires license_status in {{{hidden}}}"
-        )
+        raise ImageVisibilityError(f"restrict requires license_status in {{{hidden}}}")
     if not restrict and status in HIDDEN_LICENSE_STATUSES:
         raise ImageVisibilityError(
             "unrestrict must set a non-hidden license_status (e.g. published)"
@@ -289,7 +297,7 @@ def _apply_one_image_visibility(
         doc_id=doc_id,
         image_id=image_id,
     )
-    _ = record  # used for pre-check logging only
+    previous_license_status = str(record.get("license_status") or "").strip() or None
     meta = storage.read_meta(doc_id)
     assert meta is not None
 
@@ -323,6 +331,7 @@ def _apply_one_image_visibility(
         "doc_id": doc_id,
         "image_id": image_id,
         "action": action,
+        "previous_license_status": previous_license_status,
         "license_status": patch.get("license_status"),
         "reason": patch.get("visibility_reason"),
         "decided_by": patch.get("decided_by"),
@@ -344,7 +353,9 @@ def _apply_one_image_visibility(
     merged = image_provenance_record(
         image_row=image_meta.to_dict() if image_meta else None,
         document_extra=meta.extra,
-        qdrant_payload={**qdrant_payloads[0], **qdrant_patch} if qdrant_payloads else qdrant_patch,
+        qdrant_payload=(
+            {**qdrant_payloads[0], **qdrant_patch} if qdrant_payloads else qdrant_patch
+        ),
     )
     return {
         "doc_id": doc_id,

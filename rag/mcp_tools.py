@@ -46,12 +46,12 @@ from rag.image_delivery import (
     locate_global_image,
     resolve_image_delivery,
 )
+from rag.image_embed import embed_image_query, image_embedding_enabled
 from rag.image_visibility import (
     IMAGE_BINARY_DENIED_DETAIL,
     image_binary_serving_allowed,
     resolve_image_provenance,
 )
-from rag.image_embed import embed_image_query, image_embedding_enabled
 from rag.ingest import ingest_bytes
 from rag.logging_setup import get_logger
 from rag.node_info import mcp_write_blocked_message
@@ -59,11 +59,7 @@ from rag.page_ids import format_page_image_id
 from rag.payloads import ImageRecordPayloadError, LocalityLinkPayloadError
 from rag.pdf_pages import get_page_highlights as compute_page_highlights
 from rag.processing import is_supported_filename
-from rag.provenance_meta import (
-    attach_image_api_fields,
-    build_image_delivery_urls,
-    document_provenance_from_extra,
-)
+from rag.provenance_meta import attach_image_api_fields, build_image_delivery_urls
 from rag.search_context import (
     build_document_context,
     enrich_knowledge_hit,

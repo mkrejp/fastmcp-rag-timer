@@ -11,10 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
-from rag.image_delivery import (
-    MISSING_IMAGE_FILE_MESSAGE,
-    UNKNOWN_IMAGE_ID_MESSAGE,
-)
+from rag.image_delivery import MISSING_IMAGE_FILE_MESSAGE, UNKNOWN_IMAGE_ID_MESSAGE
 from rag.storage import ImageMeta, RagStorage
 from tests.conftest import AUTH_HEADERS, patched_embeddings
 from tests.fixtures.pdf_factory import build_image_rich_pdf
@@ -152,6 +149,16 @@ def test_image_http_serves_figure_png_absent_from_meta(
         FIGURE_DOC_ID, image_id=FIGURE_IMAGE_ID, extension=".png", data=png
     )
     assert storage.find_image(FIGURE_DOC_ID, FIGURE_IMAGE_ID) is None
+    doc_meta = storage.read_meta(FIGURE_DOC_ID)
+    assert doc_meta is not None
+    doc_meta.extra.update(
+        {
+            "attribution_text": "fixture test",
+            "license_id": "CC0-1.0",
+            "license_status": "published",
+        }
+    )
+    storage.write_meta(doc_meta)
 
     response = client.get(f"/images/{FIGURE_DOC_ID}/{FIGURE_IMAGE_ID}")
     assert response.status_code == 200
