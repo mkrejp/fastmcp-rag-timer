@@ -11,10 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
-from rag.image_delivery import (
-    MISSING_IMAGE_FILE_MESSAGE,
-    UNKNOWN_IMAGE_ID_MESSAGE,
-)
+from rag.image_delivery import MISSING_IMAGE_FILE_MESSAGE, UNKNOWN_IMAGE_ID_MESSAGE
 from rag.storage import ImageMeta, RagStorage
 from tests.conftest import AUTH_HEADERS, patched_embeddings
 from tests.fixtures.pdf_factory import build_image_rich_pdf

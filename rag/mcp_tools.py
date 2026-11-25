@@ -59,10 +59,7 @@ from rag.page_ids import format_page_image_id
 from rag.payloads import ImageRecordPayloadError, LocalityLinkPayloadError
 from rag.pdf_pages import get_page_highlights as compute_page_highlights
 from rag.processing import is_supported_filename
-from rag.provenance_meta import (
-    attach_image_api_fields,
-    build_image_delivery_urls,
-)
+from rag.provenance_meta import attach_image_api_fields, build_image_delivery_urls
 from rag.search_context import (
     build_document_context,
     enrich_knowledge_hit,
