@@ -493,9 +493,12 @@ Original coordinates stay on the record (`lat`/`lon`, or a GeoJSON `geom` Point)
 
 `precision` is `municipality|cast_obce|street|building`. `status` is `overeno|zpresneno|priblizne|rozpor`. `confidence_level` is `high|medium|low`. Source `type` is `ruian_adresni_misto|wikidata_p625|commons_camera|nominatim|osm_building|manual`. `needs_refinement` defaults to true for medium/low or `rozpor`. `dry_run=true` (the default) returns old vs new without writing.
 
-`GeoRefined` (`rag/geo_refined.py`) sets `extra=forbid`. The object has `note` and the fields above. It has no `ulice` or `address` key. Trails may treat a street-like `note` as the street line when `precision` is `building` or `street`. Method notes (Wikidata P625) and Wikidata `Q…` ids are not streets.
+`GeoRefined` (`rag/geo_refined.py`) sets `extra=forbid`. The object has `note` and the fields above. It has no `ulice` or `address` key. Trails may treat a street-like `note` as the street line when `precision` is `building` or `street`. Method notes (Wikidata P625) and Wikidata `Q…` IDs are not streets.
 
-Search hits, `list_image_records`, and `get_document_images` / `get_document_chunks` prefer `geo_refined` when present, else original, and expose both plus `geo_source: refined|original`. `list_image_records` and `search_images` accept optional `precision` and `needs_refinement` filters. Those payloads stay coordinates and `geo_refined`. Street lines and visitor blurbs are Trails fields, derived after the document GET.
+Search hits, `list_image_records`, and `get_document_images` / `get_document_chunks` prefer `geo_refined` when present, else original, and expose both plus `geo_source: refined|original`.
+`list_image_records` and `search_images` accept optional `precision` and `needs_refinement` filters.
+Those payloads stay coordinates and `geo_refined`.
+Street lines and visitor blurbs are Trails fields, derived after the document GET.
 
 Backfill after deploy: call `refine_geo_batch` in pages of ≤200 (try `dry_run=true` first). Same bearer auth as `link_locality`. Geo refinements are **not** forwarded to Trails.
 
@@ -512,12 +515,12 @@ Both routes are unauthenticated. Facades of one document share one text fetch. T
 
 | Trails display | Where Trails reads it |
 | --- | --- |
-| Street | `**Ulice:**` or `**Adresa:**` in the full text, or a street-like `geo_refined.note` when `precision` is `building` or `street`. Method notes (Wikidata P625) and Wikidata `Q…` ids are not streets. |
+| Street | `**Ulice:**` or `**Adresa:**` in the full text, or a street-like `geo_refined.note` when `precision` is `building` or `street`. Method notes (Wikidata P625) and Wikidata `Q…` IDs are not streets. |
 | Short description | Trails-side extractive text: an explicit `**Popis:**` when present, then the first sentence under `## Shrnutí`, then `## Popisek` / `## Popis`, then the first other prose sentence. Optional Novita `baai/bge-m3` ranking runs in Trails when `TRAILS_CAPTION_EMBED=1`. |
 
 `overeni_souhrn` stays the GPS verification log on metadata PATCH (300 characters). It is the verification record, and Trails leaves it out of the visitor blurb.
 
-Search JSON (`format=json`) keeps `lat`, `lon`, `geo_source`, and `geo_refined`. `street_address` and `short_description` stay on the Trails catalog row. Production embeddings and rerank stay prepaid Novita. Caption generation is a Trails read of stored markdown.
+Search JSON (`format=json`) keeps `lat`, `lon`, `geo_source`, and `geo_refined`. `street_address` and `short_description` stay on the Trails catalog row. Production embeddings and rerank stay prepaid Novita. Caption generation is a Trails read of stored Markdown.
 
 ### Frontend contract (`fastmcp-rag-timer-frontend`)
 

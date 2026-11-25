@@ -139,7 +139,12 @@ Trust notes from code:
 - `/mcp` requires Bearer `MCP_API_TOKEN` or fallback `RAG_API_TOKEN` (401 invalid, 503 unset). Optional `MCP_READ_TOKEN` is also accepted on `/mcp` as read-only (write `tools/call` → JSON-RPC 403). FastMCP also checks `Host` against `MCP_ALLOWED_HOSTS` (421 on mismatch) unless `MCP_DISABLE_DNS_REBINDING_PROTECTION` is set.
 - `POST /upload`, chunked upload routes, `POST /upload-pdf`, `GET /images/...`, and `PATCH`/`DELETE /documents/{doc_id}` require that same MCP/RAG bearer **or** a signed-in Google session.
 - `/ui/` and `/api/admin/*` require Google OAuth (`GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET`) and optional email/domain allow-lists.
-- Secrets: outbound Novita embedding key (`BGE_M3_NOVITA_API_KEY`, then `NOVITA_API_KEY`, `OPENAI_TOKEN`, `OPENAI_API_KEY`); optional figure-summary `NOVITA_API_KEY` and `OPENROUTER_API_KEY`; development `NVIDIA_NIM_API` (fallback `NVIDIA_NIM_APU`, `NVIDIA_API_KEY`) and `OPENROUTER_MANAGEMENT_KEY` (BYOK script only); inbound `RAG_API_TOKEN` / `MCP_API_TOKEN` / `MCP_READ_TOKEN`; Google client secret; `SESSION_SECRET`; optional Trails Bearer `TRAILS_API_TOKEN` (never logged). Health reports configured booleans and optional model ids only.
+- Secrets: outbound Novita embedding key (`BGE_M3_NOVITA_API_KEY`, then `NOVITA_API_KEY`, `OPENAI_TOKEN`, `OPENAI_API_KEY`).
+  Optional figure-summary keys are `NOVITA_API_KEY` and `OPENROUTER_API_KEY`.
+  Development keys are `NVIDIA_NIM_API` (fallback `NVIDIA_NIM_APU`, `NVIDIA_API_KEY`) and `OPENROUTER_MANAGEMENT_KEY` (BYOK script only).
+  Inbound tokens are `RAG_API_TOKEN` / `MCP_API_TOKEN` / `MCP_READ_TOKEN`, plus the Google client secret and `SESSION_SECRET`.
+  Optional Trails Bearer is `TRAILS_API_TOKEN` (never logged).
+  Health reports configured booleans and optional model IDs only.
 - Embedded Qdrant does **not** listen on a network port; it uses `{RAG_DATA_ROOT}/qdrant`.
 - The process binds `0.0.0.0`, so it is reachable on every container/host interface.
 
@@ -217,9 +222,12 @@ Runtime network clients in application code:
 5. `requests.get` in `rag.remote.fetch_remote_bytes()` — used by `POST /ingest-json` to download public http(s) JSON/GeoJSON (GitHub blob URLs rewritten to `raw.githubusercontent.com`). Private/loopback/link-local/metadata destinations are rejected. Max 5 redirects; size cap `RAG_MAX_REMOTE_JSON_BYTES`.
 6. `requests.post` / `requests.get` in `rag.google_oauth` to `oauth2.googleapis.com/token` and `openidconnect.googleapis.com/v1/userinfo` during console sign-in. The browser is redirected to `accounts.google.com/o/oauth2/v2/auth`.
 7. Optional `requests` to TrailsAssemblage when `TRAILS_API_URL` and `TRAILS_API_TOKEN` are set (locality links; write MCP tools / ingester only). Trails caption backfill is the reverse direction: Trails GETs this service's unauthenticated document routes. This process does not POST captions.
-8. Optional figure-summary chat during PDF ingest when `FIGURE_SUMMARY_LLM=novita` (`POST https://api.novita.ai/openai/v1/chat/completions`, header key `NOVITA_API_KEY`) or `FIGURE_SUMMARY_LLM=openrouter` (`POST https://openrouter.ai/api/v1/chat/completions`, `OPENROUTER_API_KEY`, `provider.only` `novita` or `nvidia`). Default is `off`. Replies do not become vectors. Embeddings and `chat_helper` rerank stay prepaid Novita `baai/bge-m3` and `baai/bge-reranker-v2-m3`.
+8. Optional figure-summary chat during PDF ingest when `FIGURE_SUMMARY_LLM=novita` (`POST https://api.novita.ai/openai/v1/chat/completions`, header key `NOVITA_API_KEY`) or `FIGURE_SUMMARY_LLM=openrouter` (`POST https://openrouter.ai/api/v1/chat/completions`, `OPENROUTER_API_KEY`, `provider.only` `novita` or `nvidia`).
+   Default is `off`.
+   Replies do not become vectors.
+   Embeddings and `chat_helper` rerank stay prepaid Novita `baai/bge-m3` and `baai/bge-reranker-v2-m3`.
 9. Operator script `scripts/openrouter_byok_sync.py` (not the HTTP server) can `POST` OpenRouter BYOK with `OPENROUTER_MANAGEMENT_KEY` to attach provider keys `nvidia` (`NVIDIA_NIM_API`, also `NVIDIA_NIM_APU` / `NVIDIA_API_KEY`) and `novita` (`BGE_M3_NOVITA_API_KEY` / `NOVITA_API_KEY`). That registration is development/planning. Production embed and rerank stay direct prepaid Novita HTTP.
-10. `rag/nim.py` can `GET https://integrate.api.nvidia.com/v1/models` when a development caller invokes `list_nim_models()`. Request handling only copies `nvidia_nim` / `openrouter` status onto `GET /health` (configured flags and optional model id).
+10. `rag/nim.py` can `GET https://integrate.api.nvidia.com/v1/models` when a development caller invokes `list_nim_models()`. Request handling only copies `nvidia_nim` / `openrouter` status onto `GET /health` (configured flags and optional model ID).
 
 No code talks to a remote Qdrant URL, PostgreSQL, Redis, SMTP, or webhooks.
 
@@ -306,7 +314,7 @@ Auth points that do not exist: JWT (other than Google session cookie), mTLS, MCP
 | Inbound `/upload`, chunked complete, `/upload-pdf` | File bytes; originals stored; extracted text embedded (Novita and/or FastEmbed); vectors + payloads on disk |
 | Inbound `/ingest-json` | Remote GeoJSON/JSON bytes fetched by the service; feature attributes indexed (coordinates skipped) |
 | Inbound `/upload-media` | Arbitrary bytes; stored under `originals/{uuid}/` only |
-| Inbound `GET /documents*` | Catalog metadata and processed fulltext from disk (unauthenticated). Trails `POST /catalog/objects/captions` uses `GET /documents/{id}` plus `/text` and extracts street (`**Ulice:**` / `**Adresa:**`, or a street-like `geo_refined.note` at precision `building` or `street`) and a short description (`## Shrnutí` / `## Popisek` / first prose). `GeoRefined` stays `extra=forbid` (no `ulice` / `address` on the RAG object). `overeni_souhrn` stays a GPS verification log on the RAG record. Search hits keep coordinates and `geo_refined`. |
+| Inbound `GET /documents*` | Catalog metadata and processed full text from disk (unauthenticated). Trails caption backfill reads these routes; the paragraph under this table states the street and blurb rules. |
 | Inbound `PATCH /documents/{doc_id}` | Authenticated in-place catalog + Qdrant payload metadata update (no re-embed) |
 | Inbound `DELETE /documents/{doc_id}` | Authenticated removal of originals, processed files, catalog row, and Qdrant points |
 | Inbound `/mcp` | Tool arguments and return strings (including document text/chunks); optional inline image bytes up to 5 MiB |
@@ -318,6 +326,13 @@ Auth points that do not exist: JWT (other than Google session cookie), mTLS, MCP
 | Outbound TrailsAssemblage | Locality-link JSON to `TRAILS_API_URL` (`POST /locality-links`, `PATCH /locality-links/{id}/verify`) with Bearer `TRAILS_API_TOKEN` when both env vars are set. Token is never logged. Failures retry then persist to `{RAG_DATA_ROOT}/trails_outbox.json`. |
 | Outbound FastEmbed/CLIP | Model weights from Hugging Face; query plaintext stays local after download |
 | Disk Qdrant | Named vectors and payloads (`source_type`, `text`/`content_summary`, `source`/`parent_document`, `doc_id`, `page_number`, `chunk_index`, `image_id`, `file_path`, `sha256`) |
+
+Trails `POST /catalog/objects/captions` uses `GET /documents/{id}` plus `/text`.
+It extracts the street from `**Ulice:**` / `**Adresa:**`, or from a street-like `geo_refined.note` when precision is `building` or `street`.
+The short description comes from `## Shrnutí` / `## Popisek` / the first prose.
+`GeoRefined` stays `extra=forbid` (no `ulice` / `address` on the RAG object).
+`overeni_souhrn` stays a GPS verification log on the RAG record.
+Search hits keep coordinates and `geo_refined`.
 
 No encryption-at-rest is configured in this repository. Volume confidentiality is whatever the host provides.
 
@@ -483,7 +498,7 @@ There are still **no budgets**, spend caps, or dollar conversion.
 
 ### Gaps
 
-- Production embeddings and rerank are prepaid Novita (`baai/bge-m3`, `baai/bge-reranker-v2-m3`). Optional chat is `chat_helper` Gateway phrasing and `FIGURE_SUMMARY_LLM` (default `off`). Trails street and visitor text are extracted in Trails from document markdown. NVIDIA NIM and OpenRouter BYOK are development credentials ([AI agents](./AI_AGENTS.md)).
+- Production embeddings and rerank are prepaid Novita (`baai/bge-m3`, `baai/bge-reranker-v2-m3`). Optional chat is `chat_helper` Gateway phrasing and `FIGURE_SUMMARY_LLM` (default `off`). Trails street and visitor text are extracted in Trails from document Markdown. NVIDIA NIM and OpenRouter BYOK are development credentials ([AI agents](./AI_AGENTS.md)).
 - Novita base URL and model are not environment-configurable.
 - No retries, 429 handling, or batched Novita embeddings.
 - Unauthenticated callers cannot drive Novita spend via `/upload` or MCP (those require a token or Google session) but **can** read catalog/fulltext and write `/upload-media`. `/ingest-json` requires `RAG_API_TOKEN` and still triggers ingest embedding spend once authorized.
