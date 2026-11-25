@@ -429,15 +429,9 @@ def apply_qdrant_release_with_client(
         loaded = ()
     metadata_only_set = {str(d) for d in metadata_only_doc_ids if d}
     vector_upsert_ids = sorted(
-        {
-            str(d)
-            for d in upsert_doc_ids
-            if d and str(d) not in metadata_only_set
-        }
+        {str(d) for d in upsert_doc_ids if d and str(d) not in metadata_only_set}
     )
-    full_ids = sorted(
-        {str(d) for d in vector_upsert_ids + list(delete_doc_ids) if d}
-    )
+    full_ids = sorted({str(d) for d in vector_upsert_ids + list(delete_doc_ids) if d})
     full_set = set(full_ids) | metadata_only_set
     link_only = sorted(
         {str(d) for d in locality_link_doc_ids if d and str(d) not in full_set}

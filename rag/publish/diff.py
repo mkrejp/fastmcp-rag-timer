@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -127,6 +127,39 @@ def document_catalog_fingerprint(meta: DocumentMeta) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def _legacy_content_sha_fingerprint(sha: str) -> str:
+    """Hash index ``sha256`` when ``meta.json`` is missing."""
+    return hashlib.sha256(
+        json.dumps(
+            {"sha256": sha},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _fingerprint_map_for_storage(
+    storage: RagStorage,
+    *,
+    from_meta: Callable[[DocumentMeta], str],
+) -> dict[str, str]:
+    """Build doc_id→fingerprint using ``from_meta`` on each ``meta.json``."""
+    out: dict[str, str] = {}
+    for doc in storage.list_documents():
+        doc_id = str(doc.get("doc_id") or "")
+        if not doc_id:
+            continue
+        meta = storage.read_meta(doc_id)
+        if meta is not None:
+            out[doc_id] = str(from_meta(meta))
+            continue
+        sha = str(doc.get("sha256") or "")
+        if sha:
+            out[doc_id] = _legacy_content_sha_fingerprint(sha)
+    return out
+
+
 def document_content_fingerprint(meta: DocumentMeta) -> str:
     """Return a content-only digest (processed bytes ``sha256``).
 
@@ -145,26 +178,10 @@ def document_content_fingerprint(meta: DocumentMeta) -> str:
 
 def content_catalog_fingerprint(storage: RagStorage) -> dict[str, str]:
     """Map ``doc_id`` → content-only fingerprint."""
-    out: dict[str, str] = {}
-    for doc in storage.list_documents():
-        doc_id = str(doc.get("doc_id") or "")
-        if not doc_id:
-            continue
-        meta = storage.read_meta(doc_id)
-        if meta is not None:
-            out[doc_id] = document_content_fingerprint(meta)
-            continue
-        sha = str(doc.get("sha256") or "")
-        if sha:
-            out[doc_id] = hashlib.sha256(
-                json.dumps(
-                    {"sha256": sha},
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                ).encode("utf-8")
-            ).hexdigest()
-    return out
+    return _fingerprint_map_for_storage(
+        storage,
+        from_meta=document_content_fingerprint,
+    )
 
 
 def catalog_fingerprint(storage: RagStorage) -> dict[str, str]:
@@ -173,27 +190,10 @@ def catalog_fingerprint(storage: RagStorage) -> dict[str, str]:
     Prefer ``meta.json`` (includes verification / lifecycle extras). Fall back
     to the index ``sha256`` only when meta is missing.
     """
-    out: dict[str, str] = {}
-    for doc in storage.list_documents():
-        doc_id = str(doc.get("doc_id") or "")
-        if not doc_id:
-            continue
-        meta = storage.read_meta(doc_id)
-        if meta is not None:
-            out[doc_id] = document_catalog_fingerprint(meta)
-            continue
-        sha = str(doc.get("sha256") or "")
-        if sha:
-            # Legacy fallback: content digest alone (no meta on disk).
-            out[doc_id] = hashlib.sha256(
-                json.dumps(
-                    {"sha256": sha},
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                ).encode("utf-8")
-            ).hexdigest()
-    return out
+    return _fingerprint_map_for_storage(
+        storage,
+        from_meta=document_catalog_fingerprint,
+    )
 
 
 def _metadata_only_doc_ids(
