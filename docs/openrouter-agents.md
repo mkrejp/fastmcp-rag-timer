@@ -39,11 +39,11 @@ Do not:
 | --- | --- |
 | ``OPENROUTER_API_KEY`` | Inference: list models, chat completions |
 | ``OPENROUTER_MANAGEMENT_KEY`` | BYOK attach only |
-| ``OPENROUTER_MODEL`` | Optional default catalog model id |
+| ``OPENROUTER_MODEL`` | Optional default catalog model ID |
 | ``NVIDIA_NIM_API`` | Direct NVIDIA NIM (preferred name) |
 | ``NVIDIA_NIM_APU`` | Same NIM key (this environment's injected spelling) |
 | ``NVIDIA_API_KEY`` | NVIDIA catalog fallback name |
-| ``NVIDIA_NIM_MODEL`` | Optional NIM catalog model id |
+| ``NVIDIA_NIM_MODEL`` | Optional NIM catalog model ID |
 | ``BGE_M3_NOVITA_API_KEY`` | Prepaid Novita (embeddings and OpenRouter Novita BYOK) |
 | ``NOVITA_API_KEY`` | Novita fallback if the BGE-named var is empty |
 
@@ -51,7 +51,7 @@ Do not:
 ``openrouter.management_configured``, and ``nvidia_nim.configured`` as
 booleans only.
 
-A typical Cursor Cloud Agent environment for this repo has the **management**
+A typical Cursor Cloud Agent environment for this repository has the **management**
 key and Novita/NIM provider keys, and may **lack** ``OPENROUTER_API_KEY``.
 Chat helpers then return ``None``. Ask Marek to add the inference key as a
 runtime secret; do not invent one.
@@ -66,8 +66,8 @@ Module: [rag/openrouter.py](../rag/openrouter.py). Tests:
 | ``openrouter_status()`` | nothing | Public flags, no secrets |
 | ``openrouter_configured()`` | ``OPENROUTER_API_KEY`` | bool |
 | ``openrouter_management_configured()`` | ``OPENROUTER_MANAGEMENT_KEY`` | bool |
-| ``resolve_openrouter_model()`` | ``OPENROUTER_MODEL`` | catalog id or ``None`` |
-| ``list_openrouter_models()`` | inference key | list of catalog ids; raises if key missing |
+| ``resolve_openrouter_model()`` | ``OPENROUTER_MODEL`` | catalog ID or ``None`` |
+| ``list_openrouter_models()`` | inference key | list of catalog IDs; raises if key missing |
 | ``openrouter_chat_completion(messages, model=..., provider_only=...)`` | inference key | assistant text or ``None`` (missing key, HTTP error, empty body) |
 | ``list_openrouter_byok_providers()`` | management key | enabled slugs (``nvidia``, ``novita``, …) |
 | ``ensure_openrouter_byok_credential(provider, key=..., name=...)`` | management key | ``created`` or ``exists`` |
@@ -85,7 +85,7 @@ NVIDIA NIM (direct, not OpenRouter): [rag/nim.py](../rag/nim.py)
 | --- | --- | --- |
 | ``nvidia_nim_status()`` | nothing | Public flags |
 | ``nvidia_nim_configured()`` | ``NVIDIA_NIM_API`` / ``NVIDIA_NIM_APU`` / ``NVIDIA_API_KEY`` | bool |
-| ``list_nim_models()`` | NIM key | catalog ids; base ``https://integrate.api.nvidia.com/v1`` |
+| ``list_nim_models()`` | NIM key | catalog IDs; base ``https://integrate.api.nvidia.com/v1`` |
 
 ## Chat call shape
 
@@ -95,8 +95,8 @@ NVIDIA NIM (direct, not OpenRouter): [rag/nim.py](../rag/nim.py)
 ``novita`` or ``nvidia``, the body includes
 ``{"provider": {"only": ["novita"]}}`` (or ``nvidia``).
 
-Default figure-summary model id: ``z-ai/glm-4.6``
-(``OPENROUTER_FIGURE_MODEL``). Novita served that id on this account. Override
+Default figure-summary model ID: ``z-ai/glm-4.6``
+(``OPENROUTER_FIGURE_MODEL``). Novita served that ID on this account. Override
 with ``FIGURE_SUMMARY_LLM_MODEL`` or ``OPENROUTER_MODEL``.
 
 BYOK still bills the upstream provider plus OpenRouter's surcharge. Direct
