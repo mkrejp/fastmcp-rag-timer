@@ -138,7 +138,7 @@ Hosted NVIDIA NIM is for **development and planning** only. It does **not** embe
 
 | Item | Value |
 | --- | --- |
-| Secret name | ``NVIDIA_NIM_API`` (Cursor Cloud Agent environment secret **and** Railway ``rag-timer-00001`` runtime). Fallback name ``NVIDIA_API_KEY``. Never git or chat. |
+| Secret name | ``NVIDIA_NIM_API`` (Cursor Cloud Agent environment secret **and** Railway ``rag-timer-00001`` runtime). Also accepts ``NVIDIA_NIM_APU`` (this environment’s injected name) and ``NVIDIA_API_KEY``. Never git or chat. |
 | Base URL | ``https://integrate.api.nvidia.com/v1`` |
 | Auth | ``Authorization: Bearer $NVIDIA_NIM_API`` |
 

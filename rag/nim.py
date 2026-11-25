@@ -14,15 +14,18 @@ from typing import Any
 import requests
 
 NVIDIA_NIM_BASE_URL = "https://integrate.api.nvidia.com/v1"
-NVIDIA_NIM_KEY_NAMES = ("NVIDIA_NIM_API", "NVIDIA_API_KEY")
+# NVIDIA_NIM_APU is a recorded misspelling of NVIDIA_NIM_API used on this
+# Cloud Agent environment; keep it as a fallback so the injected secret works.
+NVIDIA_NIM_KEY_NAMES = ("NVIDIA_NIM_API", "NVIDIA_NIM_APU", "NVIDIA_API_KEY")
 _MODELS_TIMEOUT_SECONDS = 30
 
 
 def resolve_nvidia_nim_api_key() -> str | None:
     """Return the hosted NIM key, preferring ``NVIDIA_NIM_API``.
 
-    Falls back to ``NVIDIA_API_KEY`` (NVIDIA catalog name). Empty strings are
-    treated as unset. The value is never logged.
+    Falls back to ``NVIDIA_NIM_APU`` (recorded misspelling) then
+    ``NVIDIA_API_KEY`` (NVIDIA catalog name). Empty strings are treated as
+    unset. The value is never logged.
     """
     for name in NVIDIA_NIM_KEY_NAMES:
         raw = os.getenv(name, "")

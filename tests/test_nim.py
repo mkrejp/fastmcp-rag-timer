@@ -28,6 +28,7 @@ if TYPE_CHECKING:
 def _clear_nim_env(monkeypatch: MonkeyPatch) -> None:
     """Keep NIM tests isolated from the agent or host environment."""
     monkeypatch.delenv("NVIDIA_NIM_API", raising=False)
+    monkeypatch.delenv("NVIDIA_NIM_APU", raising=False)
     monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
     monkeypatch.delenv("NVIDIA_NIM_MODEL", raising=False)
 
@@ -41,6 +42,15 @@ def test_resolve_nvidia_nim_api_key_prefers_nvidia_nim_api(
 
     assert resolve_nvidia_nim_api_key() == "nim-project-key"
     assert nvidia_nim_configured() is True
+
+
+def test_resolve_nvidia_nim_api_key_falls_back_to_nvidia_nim_apu(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """``NVIDIA_NIM_APU`` is accepted when ``NVIDIA_NIM_API`` is unset."""
+    monkeypatch.setenv("NVIDIA_NIM_APU", "apu-key")
+
+    assert resolve_nvidia_nim_api_key() == "apu-key"
 
 
 def test_resolve_nvidia_nim_api_key_falls_back_to_nvidia_api_key(
