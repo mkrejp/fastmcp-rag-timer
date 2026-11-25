@@ -42,6 +42,15 @@ from rag.document_patch import (
     patch_document,
     patch_document_metadata,
 )
+from rag.image_visibility import (
+    IMAGE_BINARY_DENIED_DETAIL,
+    ImageNotFoundError,
+    ImageVisibilityError,
+    image_binary_serving_allowed,
+    patch_image_visibility,
+    patch_images_visibility_batch,
+    resolve_image_provenance,
+)
 from rag.document_replace import (
     DocumentReplaceError,
     DocumentVersionNotFoundError,
@@ -829,8 +838,101 @@ def get_image_http(doc_id: str, image_id: str, request: Request) -> FileResponse
         _record_http(route="images_get", ok=False, error="too large")
         raise HTTPException(status_code=413, detail="Image file too large")
 
+    record, _, _ = resolve_image_provenance(
+        storage,
+        _qdrant(request),
+        collection_name=COLLECTION_NAME,
+        doc_id=doc_id,
+        image_id=image_id,
+    )
+    if not image_binary_serving_allowed(record):
+        _record_http(route="images_get", ok=False, error="restricted")
+        raise HTTPException(status_code=403, detail=IMAGE_BINARY_DENIED_DETAIL)
+
     _record_http(route="images_get", ok=True)
     return FileResponse(path, media_type=mime)
+
+
+@router.patch(
+    "/images/{doc_id}/{image_id}/visibility",
+    dependencies=[Depends(require_embed_access)],
+)
+def patch_image_visibility_http(
+    doc_id: str,
+    image_id: str,
+    request: Request,
+    body: dict[str, Any] | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Hide or restore image binaries via ``license_status`` (no file deletes)."""
+    payload = body or {}
+    try:
+        result = patch_image_visibility(
+            storage=_storage(request),
+            qdrant=_qdrant(request),
+            collection_name=COLLECTION_NAME,
+            doc_id=doc_id,
+            image_id=image_id,
+            body=payload,
+            dry_run=dry_run,
+        )
+    except DocumentNotFoundError:
+        _record_http(route="images_visibility_patch", ok=False, error="not found")
+        raise HTTPException(status_code=404, detail="Document not found") from None
+    except ImageNotFoundError as exc:
+        _record_http(route="images_visibility_patch", ok=False, error=str(exc))
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ImageVisibilityError as exc:
+        _record_http(route="images_visibility_patch", ok=False, error=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 - surface patch failures
+        _record_http(route="images_visibility_patch", ok=False, error=str(exc))
+        raise HTTPException(status_code=500, detail=f"Patch failed: {exc}") from exc
+    _record_http(route="images_visibility_patch", ok=True)
+    return result
+
+
+@router.patch(
+    "/images/{doc_id}/visibility",
+    dependencies=[Depends(require_embed_access)],
+)
+def patch_images_visibility_batch_http(
+    doc_id: str,
+    request: Request,
+    body: dict[str, Any] | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Batch hide or restore binaries for many ``image_ids`` of one document."""
+    payload = body or {}
+    image_ids = payload.get("image_ids")
+    if not isinstance(image_ids, list):
+        _record_http(route="images_visibility_batch", ok=False, error="image_ids")
+        raise HTTPException(status_code=400, detail="image_ids must be a list")
+    shared = {k: v for k, v in payload.items() if k != "image_ids"}
+    try:
+        result = patch_images_visibility_batch(
+            storage=_storage(request),
+            qdrant=_qdrant(request),
+            collection_name=COLLECTION_NAME,
+            doc_id=doc_id,
+            image_ids=[str(item) for item in image_ids],
+            body=shared,
+            dry_run=dry_run,
+        )
+    except DocumentNotFoundError:
+        _record_http(route="images_visibility_batch", ok=False, error="not found")
+        raise HTTPException(status_code=404, detail="Document not found") from None
+    except ImageNotFoundError as exc:
+        _record_http(route="images_visibility_batch", ok=False, error=str(exc))
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ImageVisibilityError as exc:
+        _record_http(route="images_visibility_batch", ok=False, error=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 - surface patch failures
+        _record_http(route="images_visibility_batch", ok=False, error=str(exc))
+        raise HTTPException(status_code=500, detail=f"Patch failed: {exc}") from exc
+    _record_http(route="images_visibility_batch", ok=True)
+    return result
 
 
 @router.get("/documents/{doc_id}/text")
