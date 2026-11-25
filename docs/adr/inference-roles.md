@@ -170,7 +170,7 @@ if Marek enables chat.
 
 ## 6. Trails web and GeoServer
 
-Facts from Trails `docs/catalog-search.md` and `geoserver/README.md` (not this repository):
+Facts from Trails `docs/catalog-search.md`, `docs/catalog-rag-objects.md`, and `geoserver/README.md` (not this repository):
 
 | Surface | Search mechanism | Inference |
 | --- | --- | --- |
@@ -179,9 +179,12 @@ Facts from Trails `docs/catalog-search.md` and `geoserver/README.md` (not this r
 | `source=rag` Ask / chat | Same Trails origin, **logged-in only**, explicit Ask/Enter → MCP `chat_helper` (`use_chat` only when `CHAT_HELPER_CHAT=1`) | Anonymous users; debounce typeahead; GeoServer WFS |
 | `source=geoserver` | WFS 2.0 `GetFeature` `trails:layer_objects` CQL `ILIKE` | None (PostGIS text) |
 | GeoServer WMS/WMTS | PNG tiles of catalog/locality layers | None |
+| Trail stop captions | Trails `POST /catalog/objects/captions` GETs reader `GET /documents/{id}` and `/text` (TrailsAssemblage #63/#64, live on `https://trail.animarium.ai`) | Trails-side extractive text. Street from `**Ulice:**` / `**Adresa:**`, or a street-like `geo_refined.note` when precision is `building` or `street`. Short description from `## Shrnutí` / `## Popisek` / first prose. Optional `TRAILS_CAPTION_EMBED=1` ranks sentences with Novita `baai/bge-m3` inside Trails. Search/Ask do not call this route |
+
+`overeni_souhrn` on the RAG document is a GPS verification log. `GeoRefined` (`rag/geo_refined.py`) uses `extra=forbid` and keeps `note` as free text: no `ulice` or `address` field. Method notes (Wikidata P625) and Wikidata `Q…` ids are not streets. RAG search hits keep `lat` / `lon` / `geo_refined`. Street and the visitor blurb stay columns Trails writes on its catalog row. Production RAG embeddings and rerank stay prepaid Novita.
 
 If RAG MCP is unset, Trails degrades to unauthenticated `GET /documents` filename
-filter — still not Grok.
+filter. That fallback is still catalog text, and the inference role for search stays Novita or FastEmbed when MCP is configured.
 
 ## 7. GitHub is the application repository
 

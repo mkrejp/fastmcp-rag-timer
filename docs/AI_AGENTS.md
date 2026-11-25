@@ -29,7 +29,7 @@ A cloud agent **cannot** message those bots directly — there is no contact cha
 | RAGloader | `32aaf04e-aff1-45fc-9cc9-cadb2702f988` | The **only** writer into the live RAG; loads books/OCR from Czech Digital Library (CDN); pairs captions to images; coordinates the verification plan. | Owns ``rag-kvalita.md`` (operator box). | Verified: [verification_meta.py](../rag/verification_meta.py). Operator-only: ``PLAN.md`` rev2; sole-writer policy. |
 | TesterVerifier | `a5904cb5-152f-43f9-833f-00874f8fb216` | Tests and verifies RAG data (GPS checks, PATCH metadata canary tests, sample checks). | — | Verified: ``TesterVerifier`` in [test_document_metadata.py](../tests/test_document_metadata.py). Operator-only: GPS bulk counts; pilot-30. |
 | ResearcherImprover | `ffd949d5-bfe3-485f-bd63-a4e306760622` | Researches improvements; maintains **Slepá kolej** at ``/workspace/slepa-kolej/`` (operator box). | ``slepa-kolej`` (operator box). | not attributable from repository history |
-| Documentator | `9be5e700-ee9b-4172-9ea5-2ff9131ddce9` | Writes and maintains architecture/connectivity docs for Marek's repositories. | — | Verified: this file, [ARCHITECTURE](./ARCHITECTURE.md), [CONNECTIVITY](./CONNECTIVITY.md); GitHub PRs #44, #39, frontend #8. ``a507c968`` not in git. |
+| Documentator | `9be5e700-ee9b-4172-9ea5-2ff9131ddce9` | Writes and maintains architecture/connectivity docs for Marek's repositories. | In-repo docs only. Does not write the live RAG index. | Verified: this file, [ARCHITECTURE](./ARCHITECTURE.md), [CONNECTIVITY](./CONNECTIVITY.md); GitHub PRs #44, #39, frontend #8. ``a507c968`` not in git. 2026-11-25: Trails caption consumer contract in README, ARCHITECTURE, CONNECTIVITY, inference-roles, SPLIT_DEPLOY (`GeoRefined` stays `extra=forbid`). |
 
 ### Content and GPS (section ``obsah-gps``)
 
@@ -117,7 +117,8 @@ Rules below apply on the operator ecosystem. They are repeated here so cloud age
 3. **Corrections** = new document plus link; **deleting** only with Marek's explicit OK.
 4. **Only Marek's own words** are approval.
 5. **No secrets** in docs, JSON, or the noticeboard.
-6. **Noticeboard ownership** (Marek, 2026-11-18) — all paths on the operator box, not in this repository:
+6. **Trails captions stay on Trails.** `POST /catalog/objects/captions` GETs reader `/documents/{id}` and `/documents/{id}/text`. Street text is `**Ulice:**` / `**Adresa:**`, or a street-like `geo_refined.note` when `precision` is `building` or `street`. Method notes (Wikidata P625) and Wikidata `Q…` ids are not streets. The short description is Trails-side extractive text from `## Shrnutí` / `## Popisek` / the first prose sentence. `overeni_souhrn` is a GPS verification log. Leave `GeoRefined` as implemented (`extra=forbid`: no `ulice` or `address`). Leave search hits without `street_address` or `short_description`. A docs change does not write the live RAG. Production embeddings and rerank stay prepaid Novita. `FIGURE_SUMMARY_LLM` stays `off` on Railway unless Marek enables it.
+7. **Noticeboard ownership** (Marek, 2026-11-18) — all paths on the operator box, not in this repository:
    - ``spolecne/``, ``pripojeni/``, noticeboard README → KapitánVšíInteligence
    - ``obsah-gps`` → KnihomolFactHunter
    - ``rag-kvalita``, ``overeni-plan`` → RAGloader
@@ -142,7 +143,7 @@ Hosted NVIDIA NIM is for **development and planning** only. It does **not** embe
 | Base URL | ``https://integrate.api.nvidia.com/v1`` |
 | Auth | ``Authorization: Bearer $NVIDIA_NIM_API`` |
 
-Do not paste the key into chat or docs. Generate it at [build.nvidia.com/settings](https://build.nvidia.com/settings). Optional ``NVIDIA_NIM_MODEL`` may pin a catalog ID; otherwise pick a model from ``GET /v1/models``. ``GET /health`` reports ``nvidia_nim.configured`` (boolean only).
+Do not paste the key into chat or docs. Generate it at [build.nvidia.com/settings](https://build.nvidia.com/settings). Optional ``NVIDIA_NIM_MODEL`` may pin a catalog ID; otherwise pick a model from ``GET /v1/models``. ``GET /health`` reports ``nvidia_nim.configured``, ``base_url``, and optional ``model``. The payload has no key material. Health does not call NIM.
 
 ## OpenRouter (Cloud Agent development)
 
@@ -156,9 +157,21 @@ Hosted OpenRouter is for **development and planning** only. It does **not** embe
 | Auth | ``Authorization: Bearer $OPENROUTER_API_KEY`` |
 | BYOK providers | ``nvidia`` (from ``NVIDIA_NIM_API`` / ``NVIDIA_NIM_APU`` / ``NVIDIA_API_KEY``) and ``novita`` (from ``BGE_M3_NOVITA_API_KEY`` / ``NOVITA_API_KEY``). Run ``python scripts/openrouter_byok_sync.py``. |
 
-Do not paste keys into chat or docs. Create the inference key at [openrouter.ai/keys](https://openrouter.ai/keys) and a management key on the same page. Optional ``OPENROUTER_MODEL`` may pin a catalog ID. ``GET /health`` reports ``openrouter.configured`` and ``openrouter.management_configured`` (booleans only). NVIDIA and Novita BYOK do **not** replace prepaid Novita embeddings or rerank.
+Do not paste keys into chat or docs. Create the inference key at [openrouter.ai/keys](https://openrouter.ai/keys) and a management key on the same page. Optional ``OPENROUTER_MODEL`` may pin a catalog ID. ``GET /health`` reports ``openrouter.configured``, ``openrouter.management_configured``, and optional ``model``. The payload has no key material. NVIDIA and Novita BYOK stay off the prepaid Novita embedding and rerank path.
 
-Optional ingester figure summaries may set ``FIGURE_SUMMARY_LLM=openrouter`` (default ``off``). That path uses ``OPENROUTER_API_KEY`` and ``FIGURE_SUMMARY_LLM_PROVIDER`` (``novita`` or ``nvidia``). Ingest embeddings stay Novita/FastEmbed BGE-M3. Do not enable this on Railway unless Marek turns it on; then set ``OPENROUTER_API_KEY`` on ``rag-timer-00001``.
+Optional ingester figure summaries may set ``FIGURE_SUMMARY_LLM=openrouter`` (default ``off``; ``novita`` is the other chat backend). That path uses ``OPENROUTER_API_KEY`` and ``FIGURE_SUMMARY_LLM_PROVIDER`` (``novita`` or ``nvidia``). Default OpenRouter model is ``z-ai/glm-4.6`` unless ``FIGURE_SUMMARY_LLM_MODEL`` or ``OPENROUTER_MODEL`` is set. A missing key or a bad response keeps the extractive summary. Summaries do not write vectors. Ingest embeddings and reader rerank stay prepaid Novita BGE-M3 / ``baai/bge-reranker-v2-m3``. Leave the flag ``off`` on Railway unless Marek turns it on; then set ``OPENROUTER_API_KEY`` on ``rag-timer-00001``. [#68](https://github.com/mkrejp/fastmcp-rag-timer/pull/68) only fixed lint on this path.
+
+## Trails caption consumer
+
+TrailsAssemblage [#63](https://github.com/mkrejp/TrailsAssemblage/pull/63) and [#64](https://github.com/mkrejp/TrailsAssemblage/pull/64) are live on ``https://trail.animarium.ai``. Document this contract in RAG docs. Do not reimplement it as new RAG fields.
+
+- Trails ``POST /catalog/objects/captions`` GETs ``/documents/{id}`` and ``/documents/{id}/text`` on the reader.
+- Street: ``**Ulice:**`` / ``**Adresa:**``, or a street-like ``geo_refined.note`` when precision is ``building`` or ``street``.
+- Short description: Trails-side extractive text from ``## Shrnutí`` / ``## Popisek`` / the first prose (``**Popis:**`` when that label is present).
+- ``overeni_souhrn`` is a GPS verification log.
+- ``GeoRefined`` keeps ``extra=forbid``. Search hits keep coordinates and ``geo_refined``.
+
+Reader and ingester embeddings stay prepaid Novita. Caption ranking, when Trails sets ``TRAILS_CAPTION_EMBED=1``, is a Novita ``baai/bge-m3`` call inside Trails. Search and Ask do not call the caption route.
 
 ## Contribution verification note
 
