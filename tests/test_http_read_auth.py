@@ -74,9 +74,7 @@ def test_protected_routes_reject_wrong_token(
 
 
 @pytest.mark.parametrize("path", _PROTECTED_GET_ROUTES)
-def test_protected_routes_accept_write_token(
-    client: TestClient, path: str
-) -> None:
+def test_protected_routes_accept_write_token(client: TestClient, path: str) -> None:
     """Write bearer must authorize protected GET routes."""
     response = client.get(path)
     assert response.status_code == 200

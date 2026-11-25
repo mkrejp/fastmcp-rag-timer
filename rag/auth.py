@@ -5,6 +5,7 @@ from __future__ import annotations
 import hmac
 import json
 import logging
+from collections.abc import Mapping
 from typing import Any, Literal
 
 from fastapi import Depends, HTTPException, Request, status
@@ -23,9 +24,7 @@ McpAuthRole = Literal["write", "read"]
 
 # JSON-RPC server-error range; paired with HTTP 403 for read-token write calls.
 JSONRPC_FORBIDDEN = -32003
-_READ_TOKEN_WRITE_TOOL_MESSAGE = (
-    "Read-only token cannot call write tools"
-)
+_READ_TOKEN_WRITE_TOOL_MESSAGE = "Read-only token cannot call write tools"
 
 
 def require_api_token(
@@ -129,7 +128,9 @@ def _forbidden_write_call(payload: object) -> dict[str, Any] | None:
 
 def _is_tools_list(payload: object) -> bool:
     """Return whether the JSON-RPC payload lists tools."""
-    return any(item.get("method") == "tools/list" for item in _iter_rpc_objects(payload))
+    return any(
+        item.get("method") == "tools/list" for item in _iter_rpc_objects(payload)
+    )
 
 
 def _filter_tools_list_payload(payload: object) -> object:
@@ -237,9 +238,7 @@ async def _read_http_body(receive: Receive) -> tuple[bytes, list[Message]]:
     return b"".join(chunks), extras
 
 
-def _replay_receive(
-    body: bytes, extras: list[Message], receive: Receive
-) -> Receive:
+def _replay_receive(body: bytes, extras: list[Message], receive: Receive) -> Receive:
     """Replay a buffered request body, then continue with the original receive."""
     queued: list[Message] = [
         {"type": "http.request", "body": body, "more_body": False},
@@ -331,6 +330,31 @@ class _BufferedResponse:
         )
 
 
+def _decode_request_headers(scope: Scope) -> dict[str, str]:
+    """Lower-case ASGI header names for bearer checks."""
+    return {
+        k.decode("latin-1").lower(): v.decode("latin-1")
+        for k, v in scope.get("headers", [])
+    }
+
+
+def _mcp_bearer_json_response(
+    headers: Mapping[str, str],
+    *,
+    unconfigured_detail: str,
+) -> JSONResponse | None:
+    """Return a bearer auth error response, or ``None`` when the header is valid."""
+    if not mcp_auth_configured():
+        return JSONResponse({"detail": unconfigured_detail}, status_code=503)
+    if classify_mcp_bearer(headers.get("authorization")) is None:
+        return JSONResponse(
+            {"detail": "Missing or invalid bearer token"},
+            status_code=401,
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return None
+
+
 class McpBearerAuth:
     """ASGI wrapper requiring the bearer token on every ``/mcp`` request (fail closed).
 
@@ -347,28 +371,20 @@ class McpBearerAuth:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
-        if not mcp_auth_configured():
-            _log.warning(
-                "MCP_API_TOKEN/RAG_API_TOKEN/MCP_READ_TOKEN not set; rejecting /mcp request"
-            )
-            response = JSONResponse(
-                {"detail": "MCP token is not configured"}, status_code=503
-            )
-            await response(scope, receive, send)
+        headers = _decode_request_headers(scope)
+        denied = _mcp_bearer_json_response(
+            headers, unconfigured_detail="MCP token is not configured"
+        )
+        if denied is not None:
+            if denied.status_code == 503:
+                _log.warning(
+                    "MCP_API_TOKEN/RAG_API_TOKEN/MCP_READ_TOKEN not set; "
+                    "rejecting /mcp request"
+                )
+            await denied(scope, receive, send)
             return
-        headers = {
-            k.decode("latin-1").lower(): v.decode("latin-1")
-            for k, v in scope.get("headers", [])
-        }
         role = classify_mcp_bearer(headers.get("authorization"))
-        if role is None:
-            response = JSONResponse(
-                {"detail": "Missing or invalid bearer token"},
-                status_code=401,
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-            await response(scope, receive, send)
-            return
+        assert role is not None
         if role == "write":
             await self.app(scope, receive, send)
             return
@@ -431,30 +447,19 @@ class HttpReadAuthMiddleware:
         if not _requires_http_read_auth(method, path):
             await self.app(scope, receive, send)
             return
-        if not mcp_auth_configured():
-            _log.warning(
-                "MCP_API_TOKEN/RAG_API_TOKEN/MCP_READ_TOKEN not set; "
-                "rejecting %s %s",
-                method,
-                path,
-            )
-            response = JSONResponse(
-                {"detail": "Read token is not configured"},
-                status_code=503,
-            )
-            await response(scope, receive, send)
-            return
-        headers = {
-            k.decode("latin-1").lower(): v.decode("latin-1")
-            for k, v in scope.get("headers", [])
-        }
-        if classify_mcp_bearer(headers.get("authorization")) is None:
-            response = JSONResponse(
-                {"detail": "Missing or invalid bearer token"},
-                status_code=401,
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-            await response(scope, receive, send)
+        headers = _decode_request_headers(scope)
+        denied = _mcp_bearer_json_response(
+            headers, unconfigured_detail="Read token is not configured"
+        )
+        if denied is not None:
+            if denied.status_code == 503:
+                _log.warning(
+                    "MCP_API_TOKEN/RAG_API_TOKEN/MCP_READ_TOKEN not set; "
+                    "rejecting %s %s",
+                    method,
+                    path,
+                )
+            await denied(scope, receive, send)
             return
         await self.app(scope, receive, send)
 
