@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -14,10 +15,12 @@ from rag.config import (
     resolve_figure_llm_max_input_tokens,
     resolve_figure_summary_llm,
     resolve_figure_summary_llm_model,
+    resolve_figure_summary_llm_provider,
     resolve_figure_summary_max_chars,
     resolve_figure_summary_top_k,
     resolve_rag_data_root,
 )
+from rag.openrouter import OPENROUTER_FIGURE_MODEL, openrouter_chat_completion
 from rag.logging_setup import get_logger
 
 logger = get_logger("rag.figure_summary")
@@ -132,14 +135,63 @@ def _input_hash(spans: Sequence[str]) -> str:
     return hashlib.sha256(joined.encode("utf-8")).hexdigest()[:16]
 
 
+_FIGURE_LLM_PROMPT = (
+    'Vrať JSON pole objektů {"text": string, "ref": integer} — věty '
+    "shrnující obrázek pouze z dodaného textu. Každá věta musí mít platný "
+    "ref index do seznamu zdrojů (0-based)."
+)
+
+
+def _figure_llm_messages(spans: Sequence[str]) -> list[dict[str, str]]:
+    """Build the figure-summary chat payload (token-budget truncated)."""
+    budget = resolve_figure_llm_max_input_tokens()
+    body_text = "\n".join(spans)[: budget * 4]
+    return [
+        {"role": "system", "content": _FIGURE_LLM_PROMPT},
+        {"role": "user", "content": body_text},
+    ]
+
+
+def _parse_llm_sentences(
+    content: str,
+    spans: Sequence[str],
+    *,
+    related_text_refs: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]] | None:
+    """Parse LLM JSON sentences and keep only grounded refs."""
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, list):
+        return None
+    out: list[dict[str, Any]] = []
+    for item in parsed:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("text") or "").strip()
+        ref = item.get("ref")
+        if not text or ref is None:
+            continue
+        try:
+            ref_i = int(ref)
+        except (TypeError, ValueError):
+            continue
+        if ref_i < 0 or ref_i >= len(related_text_refs):
+            continue
+        source = spans[ref_i] if ref_i < len(spans) else ""
+        if _token_overlap(text, source) < 0.5:
+            continue
+        out.append({"text": text, "ref": ref_i})
+    return out or None
+
+
 def _llm_summary_novita(
     spans: Sequence[str],
     *,
     related_text_refs: Sequence[Mapping[str, Any]],
 ) -> list[dict[str, Any]] | None:
     """Call Novita OpenAI-compatible chat for figure sentences JSON."""
-    import os
-
     api_key = os.getenv("NOVITA_API_KEY", "").strip()
     if not api_key:
         return None
@@ -149,58 +201,56 @@ def _llm_summary_novita(
     )
     if not model:
         model = "meta-llama/Meta-Llama-3-8B-Instruct"
-    base = "https://api.novita.ai/openai/v1"
     import requests
 
-    budget = resolve_figure_llm_max_input_tokens()
-    body_text = "\n".join(spans)[: budget * 4]
-    prompt = (
-        'Vrať JSON pole objektů {"text": string, "ref": integer} — věty '
-        "shrnující obrázek pouze z dodaného textu. Každá věta musí mít platný "
-        "ref index do seznamu zdrojů (0-based)."
-    )
     payload = {
         "model": model,
-        "messages": [
-            {"role": "system", "content": prompt},
-            {"role": "user", "content": body_text},
-        ],
+        "messages": _figure_llm_messages(spans),
         "temperature": 0.2,
     }
     try:
         response = requests.post(
-            f"{base.rstrip('/')}/chat/completions",
+            "https://api.novita.ai/openai/v1/chat/completions",
             headers={"Authorization": f"Bearer {api_key}"},
             json=payload,
             timeout=60,
         )
         response.raise_for_status()
         content = response.json()["choices"][0]["message"]["content"]
-        parsed = json.loads(content)
-        if not isinstance(parsed, list):
-            return None
-        out: list[dict[str, Any]] = []
-        for item in parsed:
-            if not isinstance(item, dict):
-                continue
-            text = str(item.get("text") or "").strip()
-            ref = item.get("ref")
-            if not text or ref is None:
-                continue
-            try:
-                ref_i = int(ref)
-            except (TypeError, ValueError):
-                continue
-            if ref_i < 0 or ref_i >= len(related_text_refs):
-                continue
-            source = spans[ref_i] if ref_i < len(spans) else ""
-            if _token_overlap(text, source) < 0.5:
-                continue
-            out.append({"text": text, "ref": ref_i})
-        return out or None
+        return _parse_llm_sentences(
+            str(content or ""), spans, related_text_refs=related_text_refs
+        )
     except Exception as exc:  # noqa: BLE001
         logger.warning("Figure LLM summary failed: %s", exc)
         return None
+
+
+def _resolve_openrouter_figure_model() -> str:
+    """Return the OpenRouter catalog ID for figure LLM summaries."""
+    return (
+        resolve_figure_summary_llm_model()
+        or os.getenv("OPENROUTER_MODEL", "").strip()
+        or OPENROUTER_FIGURE_MODEL
+    )
+
+
+def _llm_summary_openrouter(
+    spans: Sequence[str],
+    *,
+    related_text_refs: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]] | None:
+    """Call OpenRouter chat (Novita or NVIDIA BYOK) for figure sentences JSON."""
+    model = _resolve_openrouter_figure_model()
+    provider = resolve_figure_summary_llm_provider()
+    content = openrouter_chat_completion(
+        _figure_llm_messages(spans),
+        model=model,
+        provider_only=provider,
+        temperature=0.2,
+    )
+    if not content:
+        return None
+    return _parse_llm_sentences(content, spans, related_text_refs=related_text_refs)
 
 
 class FigureLlmBudget:
@@ -235,7 +285,11 @@ def build_figure_summary(
         ocr_text=ocr_text,
     )
     mode = resolve_figure_summary_llm()
-    if mode != "novita" or not llm_budget or not llm_budget.consume():
+    if (
+        mode not in ("novita", "openrouter")
+        or not llm_budget
+        or not llm_budget.consume()
+    ):
         return extractive_summary, extractive_sentences, "extractive", None
 
     input_hash = _input_hash(span_texts)
@@ -249,11 +303,19 @@ def build_figure_summary(
         except (OSError, json.JSONDecodeError):
             pass
 
-    llm_sentences = _llm_summary_novita(span_texts, related_text_refs=related_text_refs)
+    if mode == "openrouter":
+        llm_sentences = _llm_summary_openrouter(
+            span_texts, related_text_refs=related_text_refs
+        )
+        model = _resolve_openrouter_figure_model()
+    else:
+        llm_sentences = _llm_summary_novita(
+            span_texts, related_text_refs=related_text_refs
+        )
+        model = resolve_figure_summary_llm_model() or None
     if not llm_sentences:
         return extractive_summary, extractive_sentences, "extractive", None
     summary = " ".join(str(s["text"]) for s in llm_sentences).strip()
-    model = resolve_figure_summary_llm_model() or None
     try:
         cache_file.write_text(
             json.dumps(

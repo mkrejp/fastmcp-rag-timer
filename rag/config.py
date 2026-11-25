@@ -404,13 +404,26 @@ def resolve_figure_summary_max_chars() -> int:
 
 
 def resolve_figure_summary_llm() -> str:
-    """LLM backend for figure summaries: ``off`` or ``novita`` (default off)."""
+    """LLM backend for figure summaries.
+
+    Allowed values: ``off`` (default), ``novita``, ``openrouter``. Unknown
+    values fail closed to ``off``. This does not change ingest embeddings.
+    """
     raw = os.getenv("FIGURE_SUMMARY_LLM", "off").strip().lower()
-    return raw if raw in ("off", "novita") else "off"
+    return raw if raw in ("off", "novita", "openrouter") else "off"
+
+
+def resolve_figure_summary_llm_provider() -> str:
+    """OpenRouter ``provider.only`` slug for figure LLM (``novita`` or ``nvidia``).
+
+    Defaults to ``novita``. Unknown values fail closed to ``novita``.
+    """
+    raw = os.getenv("FIGURE_SUMMARY_LLM_PROVIDER", "novita").strip().lower()
+    return raw if raw in ("novita", "nvidia") else "novita"
 
 
 def resolve_figure_summary_llm_model() -> str:
-    """Optional cheap Novita model id for figure LLM summaries."""
+    """Optional catalog ID for figure LLM summaries."""
     return os.getenv("FIGURE_SUMMARY_LLM_MODEL", "").strip()
 
 

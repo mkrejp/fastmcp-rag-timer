@@ -77,6 +77,9 @@ in any backup or restore of `/data/rag`. Long-term backup **target** is Hugging 
 | `OPENROUTER_API_KEY` | unset | OpenRouter inference key (Cloud Agent development and planning). Not used for BGE-M3 embeddings |
 | `OPENROUTER_MANAGEMENT_KEY` | unset | OpenRouter management key for attaching NVIDIA / Novita BYOK. Not used for chat or embeddings |
 | `OPENROUTER_MODEL` | unset | Optional OpenRouter catalog model ID for development calls |
+| `FIGURE_SUMMARY_LLM` | `off` | Figure-summary LLM: `off` (default), `novita`, or `openrouter`. Does not change BGE-M3 ingest embeddings |
+| `FIGURE_SUMMARY_LLM_PROVIDER` | `novita` | OpenRouter `provider.only` when figure LLM is `openrouter`: `novita` or `nvidia` |
+| `FIGURE_SUMMARY_LLM_MODEL` | unset | Optional catalog ID for figure LLM (`z-ai/glm-4.6` when OpenRouter mode is on and this is unset) |
 | `BGE_M3_NOVITA_API_KEY` | unset | Preferred Novita API credential for ingest embeddings |
 | `NOVITA_API_KEY` | unset | Embedding/rerank credential if `BGE_M3_NOVITA_API_KEY` is empty (prepaid Model API; not Coding Plan) |
 | `CHAT_HELPER_RERANK` | `1` | Reader MCP `chat_helper` calls prepaid Novita `baai/bge-reranker-v2-m3` |
