@@ -208,8 +208,7 @@ def ensure_openrouter_byok_credential(
     slug = provider.strip().lower()
     if slug not in OPENROUTER_BYOK_PROVIDERS:
         raise RuntimeError(
-            f"Unsupported OpenRouter BYOK provider {slug!r}. "
-            "Use nvidia or novita."
+            f"Unsupported OpenRouter BYOK provider {slug!r}. Use nvidia or novita."
         )
     stripped_key = key.strip()
     if not stripped_key:
