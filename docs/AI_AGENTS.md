@@ -132,6 +132,30 @@ Rules below apply on the operator ecosystem. They are repeated here so cloud age
 - **APP_MODE** (`reader` / `ingester` / `all`) gates who can call write APIs in **code**; the **RAGloader-only-writer** rule is an **operational** constraint on who may ingest in production. Cursor/Grok agents develop on **GitHub** and may load the **ingester**; they are not the ČTENÍ/GeoServer search backend ([inference roles](./adr/inference-roles.md)).
 - Unified verification record shape (``verification[]``, ``reliability`` 0–4, ``source_key``, ``content_hash``) is implemented in this repository; the original proposal lives on the operator box (``rag-proposal/1``), not in git.
 
+## NVIDIA NIM (Cloud Agent + ingester development)
+
+Hosted NVIDIA NIM is for **development and planning** only. It does **not** embed or rerank production RAG traffic; that stays prepaid Novita + Hugging Face ONNX ([inference roles](./adr/inference-roles.md)).
+
+| Item | Value |
+| --- | --- |
+| Secret name | ``NVIDIA_NIM_API`` (Cursor Cloud Agent environment secret **and** Railway ``rag-timer-00001`` runtime). Also accepts ``NVIDIA_NIM_APU`` (this environment’s injected name) and ``NVIDIA_API_KEY``. Never git or chat. |
+| Base URL | ``https://integrate.api.nvidia.com/v1`` |
+| Auth | ``Authorization: Bearer $NVIDIA_NIM_API`` |
+
+Do not paste the key into chat or docs. Generate it at [build.nvidia.com/settings](https://build.nvidia.com/settings). Optional ``NVIDIA_NIM_MODEL`` may pin a catalog ID; otherwise pick a model from ``GET /v1/models``. ``GET /health`` reports ``nvidia_nim.configured`` (boolean only).
+
+## OpenRouter (Cloud Agent development)
+
+Hosted OpenRouter is for **development and planning** only. It does **not** embed or rerank production RAG traffic.
+
+| Item | Value |
+| --- | --- |
+| Secret name | ``OPENROUTER_API_KEY`` (Cursor Cloud Agent environment secret). Never git or chat. Optional same-name Railway ``rag-timer-00001`` runtime if the ingester should call it. |
+| Base URL | ``https://openrouter.ai/api/v1`` |
+| Auth | ``Authorization: Bearer $OPENROUTER_API_KEY`` |
+
+Do not paste the key into chat or docs. Create it at [openrouter.ai/keys](https://openrouter.ai/keys). Optional ``OPENROUTER_MODEL`` may pin a catalog ID. ``GET /health`` reports ``openrouter.configured`` (boolean only).
+
 ## Contribution verification note
 
 Attributions marked **Verified** were checked against this repository or public GitHub PR URLs. **Reported by operator** items are included as Marek supplied them and are **not** stored in this repository. No git commit in ``mkrejp/fastmcp-rag-timer`` names an agent unless noted (e.g. test fixtures). Merge commits are authored by **mkrejp**.

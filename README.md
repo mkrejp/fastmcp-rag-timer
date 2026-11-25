@@ -72,6 +72,10 @@ in any backup or restore of `/data/rag`. Long-term backup **target** is Hugging 
 | `FASTEMBED_CACHE_PATH` | `{RAG_DATA_ROOT}/fastembed` | ONNX cache for local BGE-M3 (query always uses this backend) |
 | `IMAGE_EMBEDDING_ENABLED` | `false` | Load CLIP and index/search `image_vector` (adds RAM beside BGE-M3) |
 | `IMAGE_EMBEDDING_CACHE_PATH` | `{RAG_DATA_ROOT}/clip` | ONNX cache for CLIP ViT-B/32 vision + text towers |
+| `NVIDIA_NIM_API` | unset | Hosted NVIDIA NIM key (ingester / Cloud Agent development and planning). Not used for BGE-M3 embeddings. Fallback: `NVIDIA_API_KEY` |
+| `NVIDIA_NIM_MODEL` | unset | Optional NIM catalog model ID for development calls |
+| `OPENROUTER_API_KEY` | unset | OpenRouter key (Cloud Agent development and planning). Not used for BGE-M3 embeddings |
+| `OPENROUTER_MODEL` | unset | Optional OpenRouter catalog model ID for development calls |
 | `BGE_M3_NOVITA_API_KEY` | unset | Preferred Novita API credential for ingest embeddings |
 | `NOVITA_API_KEY` | unset | Embedding/rerank credential if `BGE_M3_NOVITA_API_KEY` is empty (prepaid Model API; not Coding Plan) |
 | `CHAT_HELPER_RERANK` | `1` | Reader MCP `chat_helper` calls prepaid Novita `baai/bge-reranker-v2-m3` |
@@ -178,7 +182,7 @@ Embedding REST routes (multipart upload, chunked upload, PDF alias, images, dele
 - `POST /documents/{doc_id}/unsupersede` — atomically remove that link from both documents (`doc_status` is deleted only when it is `superseded`)
 - `DELETE /documents/{doc_id}` — remove originals, processed files (including `images/` and version history), catalog row, and Qdrant points; **409** if supersession links remain
 - `GET /images/{doc_id}/{image_id}` — extracted PDF image bytes (same auth as `POST /upload`; `413` if larger than 50 MiB)
-- `GET /health` — liveness (`status`, `rag_data_root`, ingest/query embedding providers, `image_embedding_enabled`, `app_mode`, `writes_enabled`, `mcp_write_tools`, `release_id`)
+- `GET /health` — liveness (`status`, `rag_data_root`, ingest/query embedding providers, `image_embedding_enabled`, `app_mode`, `writes_enabled`, `mcp_write_tools`, `release_id`, `nvidia_nim.configured`, `openrouter.configured`)
 - `GET /node-info` — public JSON: this instance (name, public URL, Railway service/region when present), catalog of nodes with Czech roles (`ZÁPIS` / `ČTENÍ` / `STOP`). No secrets
 - `GET /` — redirect to `/ui/`
 - `GET /ui/` — Google-authenticated RAG console (static shell under `static/`)
