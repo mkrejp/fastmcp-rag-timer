@@ -224,6 +224,9 @@ def resolve_upload_ttl_seconds() -> int:
 
 DEFAULT_TRAILS_API_TIMEOUT_SECONDS = 20
 TRAILS_LINKS_BATCH_MAX = 500
+TRAILS_OBJECTS_BATCH_MAX = 100
+# Opt-in: Trails curated layer_objects forward (default off).
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
 
 
 def resolve_trails_api_url() -> str | None:
@@ -244,6 +247,20 @@ def resolve_trails_api_token() -> str | None:
 def trails_forwarding_enabled() -> bool:
     """Forward locality links only when both URL and token are set."""
     return bool(resolve_trails_api_url() and resolve_trails_api_token())
+
+
+def trails_layer_objects_flag_enabled() -> bool:
+    """Return whether ``TRAILS_LAYER_OBJECTS_FORWARD`` is explicitly on."""
+    raw = (os.getenv("TRAILS_LAYER_OBJECTS_FORWARD") or "").strip().lower()
+    return raw in _TRUTHY
+
+
+def trails_layer_objects_forwarding_enabled() -> bool:
+    """Forward layer_objects when URL+token set and the opt-in flag is on.
+
+    Readers must never forward (enforced by callers via ``APP_MODE``).
+    """
+    return trails_forwarding_enabled() and trails_layer_objects_flag_enabled()
 
 
 def resolve_mcp_token() -> str | None:

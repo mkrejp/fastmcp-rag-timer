@@ -222,6 +222,7 @@ Runtime network clients in application code:
 5. `requests.get` in `rag.remote.fetch_remote_bytes()` — used by `POST /ingest-json` to download public http(s) JSON/GeoJSON (GitHub blob URLs rewritten to `raw.githubusercontent.com`). Private/loopback/link-local/metadata destinations are rejected. Max 5 redirects; size cap `RAG_MAX_REMOTE_JSON_BYTES`.
 6. `requests.post` / `requests.get` in `rag.google_oauth` to `oauth2.googleapis.com/token` and `openidconnect.googleapis.com/v1/userinfo` during console sign-in. The browser is redirected to `accounts.google.com/o/oauth2/v2/auth`.
 7. Optional `requests` to TrailsAssemblage when `TRAILS_API_URL` and `TRAILS_API_TOKEN` are set (locality links; write MCP tools / ingester only). Trails caption backfill is the reverse direction: Trails GETs this service's unauthenticated document routes. This process does not POST captions.
+   With `TRAILS_LAYER_OBJECTS_FORWARD=1`, also `POST /catalog/objects` `{items:[…]}` for curated layer_objects (parallel to Diff Push; separate `trails_objects_outbox.json`).
 8. Optional figure-summary chat during PDF ingest when `FIGURE_SUMMARY_LLM=novita` (`POST https://api.novita.ai/openai/v1/chat/completions`, header key `NOVITA_API_KEY`) or `FIGURE_SUMMARY_LLM=openrouter` (`POST https://openrouter.ai/api/v1/chat/completions`, `OPENROUTER_API_KEY`, `provider.only` `novita` or `nvidia`).
    Default is `off`.
    Replies do not become vectors.
@@ -323,7 +324,7 @@ Auth points that do not exist: JWT (other than Google session cookie), mTLS, MCP
 | Outbound Novita rerank | Query + hit plaintext to `/openai/v1/rerank` (`baai/bge-reranker-v2-m3`) on prepaid credits from `BGE_M3_NOVITA_API_KEY` / `NOVITA_API_KEY` only |
 | Outbound AI Gateway chat | Optional helper phrasing to `vmc/cheap` with `only: ["novita"]`; off by default; `AI_GATEWAY_API_KEY` only |
 | Outbound figure-summary chat | Span plaintext when `FIGURE_SUMMARY_LLM` is `novita` or `openrouter` (default `off`). The reply is a figure summary, not a vector. Missing key or a bad response keeps the extractive summary |
-| Outbound TrailsAssemblage | Locality-link JSON to `TRAILS_API_URL` (`POST /locality-links`, `PATCH /locality-links/{id}/verify`) with Bearer `TRAILS_API_TOKEN` when both env vars are set. Token is never logged. Failures retry then persist to `{RAG_DATA_ROOT}/trails_outbox.json`. |
+| Outbound TrailsAssemblage | Locality-link JSON to `TRAILS_API_URL` (`POST /locality-links`, verify PATCH) with Bearer `TRAILS_API_TOKEN`. Failures → `trails_outbox.json`. Opt-in `TRAILS_LAYER_OBJECTS_FORWARD=1` → `POST /catalog/objects` `{items:[…]}`; failures → `trails_objects_outbox.json`. Readers never forward. |
 | Outbound FastEmbed/CLIP | Model weights from Hugging Face; query plaintext stays local after download |
 | Disk Qdrant | Named vectors and payloads (`source_type`, `text`/`content_summary`, `source`/`parent_document`, `doc_id`, `page_number`, `chunk_index`, `image_id`, `file_path`, `sha256`) |
 

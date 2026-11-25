@@ -1,10 +1,14 @@
-"""Forward locality_links to TrailsAssemblage PostGIS over HTTP.
+"""Forward locality_links (and re-export layer_objects) to TrailsAssemblage.
 
 Enabled only when ``TRAILS_API_URL`` and ``TRAILS_API_TOKEN`` are both set.
 The token is sent as ``Authorization: Bearer`` and is never written to logs.
 HTTP failures are retried with backoff, then persisted to a JSON outbox on
 the RAG data volume and drained on later calls and startup. MCP tools must
 not fail because Trails is down.
+
+Curated ``layer_objects`` forward lives in :mod:`rag.trails_layer_objects`
+and is re-exported here as :func:`maybe_forward_layer_objects` (parallel to
+Diff Push; opt-in ``TRAILS_LAYER_OBJECTS_FORWARD``).
 """
 
 from __future__ import annotations
@@ -32,6 +36,12 @@ from rag.config import (
 )
 from rag.logging_setup import get_logger
 from rag.payloads import chunk_text_sha256
+from rag.trails_layer_objects import (  # noqa: F401 - public re-export
+    doc_ids_from_mutate_result,
+    maybe_drain_objects_on_startup,
+    maybe_forward_layer_objects,
+    sync_layer_objects_to_trails,
+)
 
 logger = get_logger("rag.trails_sync")
 
@@ -235,15 +245,23 @@ def locality_payload_to_trails_upsert(
     elif not kod:
         return None
     page = payload.get("page_number")
-    try:
-        page_number = int(page) if page not in (None, "") else None
-    except (TypeError, ValueError):
+    page_number: int | None
+    if page is None or page == "":
         page_number = None
+    else:
+        try:
+            page_number = int(page)
+        except (TypeError, ValueError):
+            page_number = None
     confidence = payload.get("confidence")
-    try:
-        confidence_f = float(confidence) if confidence not in (None, "") else None
-    except (TypeError, ValueError):
+    confidence_f: float | None
+    if confidence is None or confidence == "":
         confidence_f = None
+    else:
+        try:
+            confidence_f = float(confidence)
+        except (TypeError, ValueError):
+            confidence_f = None
     candidates = payload.get("candidates")
     if not isinstance(candidates, list):
         candidates = []
@@ -254,8 +272,7 @@ def locality_payload_to_trails_upsert(
         "kraj": str(payload.get("kraj") or ""),
         "source_dataset": str(payload.get("source_dataset") or "rag-timer"),
         "doc_id": doc_id,
-        "parent_document": str(payload.get("parent_document") or "").strip()
-        or None,
+        "parent_document": str(payload.get("parent_document") or "").strip() or None,
         "chunk_index": chunk_index,
         "page_number": page_number,
         "point_id": str(payload.get("point_id") or "").strip() or None,
@@ -268,11 +285,9 @@ def locality_payload_to_trails_upsert(
         "ambiguous": bool(payload.get("ambiguous")),
         "candidates": candidates,
         "confidence": confidence_f,
-        "confidence_level": str(payload.get("confidence_level") or "").strip()
-        or None,
+        "confidence_level": str(payload.get("confidence_level") or "").strip() or None,
         "notes": str(payload.get("notes") or "").strip() or None,
-        "agent_version": str(payload.get("agent_version") or "").strip()
-        or None,
+        "agent_version": str(payload.get("agent_version") or "").strip() or None,
         "locality_level": level,
         "cast_obce_kod": kod,
         "cast_obce_name": cast_name,
@@ -428,29 +443,30 @@ def _post_links(items: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     token = resolve_trails_api_token()
     if not base or not token:
         raise TrailsSyncError("Trails forwarding is not configured")
+    auth_token: str = token
     url = f"{base}/locality-links"
     inserted = 0
     updated = 0
     ids: list[str] = []
+
+    def _flush(batch: list[Mapping[str, Any]]) -> None:
+        nonlocal inserted, updated
+        result = _http_request(
+            "POST", url, json_body={"links": list(batch)}, token=auth_token
+        )
+        inserted += int(result.get("inserted") or 0)
+        updated += int(result.get("updated") or 0)
+        ids.extend(str(item) for item in (result.get("ids") or []))
+
     batch: list[Mapping[str, Any]] = []
     for body in items:
         batch.append(body)
         if len(batch) < TRAILS_LINKS_BATCH_MAX:
             continue
-        result = _http_request(
-            "POST", url, json_body={"links": list(batch)}, token=token
-        )
-        inserted += int(result.get("inserted") or 0)
-        updated += int(result.get("updated") or 0)
-        ids.extend(str(item) for item in (result.get("ids") or []))
+        _flush(batch)
         batch = []
     if batch:
-        result = _http_request(
-            "POST", url, json_body={"links": list(batch)}, token=token
-        )
-        inserted += int(result.get("inserted") or 0)
-        updated += int(result.get("updated") or 0)
-        ids.extend(str(item) for item in (result.get("ids") or []))
+        _flush(batch)
     return {"inserted": inserted, "updated": updated, "ids": ids}
 
 
@@ -550,9 +566,7 @@ def forward_locality_links(
     try:
         drain = drain_trails_outbox(client, outbox_path)
     except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "Trails outbox drain skipped: %s", _safe_error_text(exc)
-        )
+        logger.warning("Trails outbox drain skipped: %s", _safe_error_text(exc))
     if not ids:
         return {
             "enabled": True,
@@ -600,9 +614,7 @@ def drain_trails_outbox(client: QdrantClient, outbox_path: Path) -> dict[str, in
         ]
         payloads_by_id = _retrieve_link_payloads(client, link_ids)
         ordered = [
-            payloads_by_id[link_id]
-            for link_id in link_ids
-            if link_id in payloads_by_id
+            payloads_by_id[link_id] for link_id in link_ids if link_id in payloads_by_id
         ]
         if not ordered:
             drained += 1
@@ -692,9 +704,7 @@ def sync_links_to_trails(
         return report
     if not trails_forwarding_enabled():
         report["status"] = "disabled"
-        report["error"] = (
-            "TRAILS_API_URL and TRAILS_API_TOKEN must both be set"
-        )
+        report["error"] = "TRAILS_API_URL and TRAILS_API_TOKEN must both be set"
         return report
     drain = drain_trails_outbox(client, outbox_path)
     try:
@@ -738,3 +748,19 @@ def maybe_drain_on_startup(client: QdrantClient, outbox_path: Path) -> None:
             "Trails outbox drain on startup failed: %s",
             _safe_error_text(exc),
         )
+
+
+__all__ = [
+    "TRAILS_DISABLED",
+    "TrailsSyncError",
+    "doc_ids_from_mutate_result",
+    "drain_trails_outbox",
+    "enqueue_trails_outbox",
+    "forward_locality_links",
+    "locality_payload_to_trails_upsert",
+    "maybe_drain_objects_on_startup",
+    "maybe_drain_on_startup",
+    "maybe_forward_layer_objects",
+    "sync_layer_objects_to_trails",
+    "sync_links_to_trails",
+]

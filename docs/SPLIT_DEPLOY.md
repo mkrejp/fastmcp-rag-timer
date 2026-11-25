@@ -333,6 +333,7 @@ Public hostname: **`art-nouveau-rag.animarium.ai`** → Coolify reader. Ingester
 | `SESSION_SECRET` | recommended | **yes** | Cookie sessions |
 | `GOOGLE_CLIENT_SECRET` | if Google UI | **yes** | With `GOOGLE_CLIENT_ID` |
 | `TRAILS_API_TOKEN` | if Trails sync | **yes** | With `TRAILS_API_URL`. Trails caption backfill uses this on the **Trails** host, then GETs the reader with no RAG bearer |
+| `TRAILS_LAYER_OBJECTS_FORWARD` | optional | no | Default off; set `1` on **ingester** only for curated `layer_objects` |
 | `NVIDIA_NIM_API` | optional (dev) | **yes** | Hosted NIM. Fallback names `NVIDIA_NIM_APU`, `NVIDIA_API_KEY`. Not embeddings |
 | `OPENROUTER_API_KEY` | optional | **yes** | Development chat, and figure summaries only when `FIGURE_SUMMARY_LLM=openrouter`. Not embeddings |
 | `OPENROUTER_MANAGEMENT_KEY` | optional (dev) | **yes** | BYOK script only (`nvidia` and `novita` providers). Not chat and not embeddings |
