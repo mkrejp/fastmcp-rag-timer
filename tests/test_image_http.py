@@ -152,6 +152,16 @@ def test_image_http_serves_figure_png_absent_from_meta(
         FIGURE_DOC_ID, image_id=FIGURE_IMAGE_ID, extension=".png", data=png
     )
     assert storage.find_image(FIGURE_DOC_ID, FIGURE_IMAGE_ID) is None
+    doc_meta = storage.read_meta(FIGURE_DOC_ID)
+    assert doc_meta is not None
+    doc_meta.extra.update(
+        {
+            "attribution_text": "fixture test",
+            "license_id": "CC0-1.0",
+            "license_status": "published",
+        }
+    )
+    storage.write_meta(doc_meta)
 
     response = client.get(f"/images/{FIGURE_DOC_ID}/{FIGURE_IMAGE_ID}")
     assert response.status_code == 200

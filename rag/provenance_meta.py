@@ -309,7 +309,7 @@ def inherit_provenance_for_extracted(
     """Copy parent provenance onto an extracted image/figure payload."""
     inherited = document_provenance_from_extra(parent)
     if not inherited:
-        inherited = {"license_id": "Unknown", "license_status": "restricted"}
+        inherited = {"license_status": "intake"}
     inherited["content_type"] = content_type
     inherited["sha256"] = image_sha256
     if modifications:

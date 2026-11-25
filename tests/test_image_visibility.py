@@ -11,10 +11,15 @@ import pytest
 from fastapi.testclient import TestClient
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
-from rag.image_visibility import audit_log_path
+from rag.image_visibility import (
+    IMAGE_BINARY_DENIED_DETAIL,
+    audit_log_path,
+    image_binary_serving_allowed,
+)
 from rag.storage import RagStorage
 from tests.conftest import AUTH_HEADERS, patched_embeddings
 from tests.fixtures.pdf_factory import build_image_rich_pdf
+from tests.fixtures.pdf_figure_factory import build_figure_caption_pdf
 from tests.test_image_http import _ingest_fixture_pdf
 
 
@@ -229,3 +234,112 @@ def test_batch_visibility_patch(client: TestClient, rag_root: Path) -> None:
     assert lines
     last = json.loads(lines[-1])
     assert last.get("action") == "restrict"
+    assert "previous_license_status" in last
+
+
+def test_http_get_denies_copyright_even_when_published(client: TestClient) -> None:
+    """REST binary gate rejects ``Copyright`` per media-licence §6 (no published bypass)."""
+    doc_id, image_id = _ingest_fixture_pdf(client)
+    response = client.patch(
+        f"/documents/{doc_id}/metadata",
+        json={
+            "attribution_text": "fixture test",
+            "license_id": "Copyright",
+            "license_status": "published",
+        },
+    )
+    assert response.status_code == 200
+    denied = client.get(f"/images/{doc_id}/{image_id}")
+    assert denied.status_code == 403
+    assert IMAGE_BINARY_DENIED_DETAIL in denied.json().get("detail", "")
+
+
+def test_image_binary_serving_fail_closed_on_empty_status() -> None:
+    """Missing ``license_status`` must not allow binary delivery."""
+    assert image_binary_serving_allowed({}) is False
+    assert image_binary_serving_allowed({"license_id": "CC0-1.0"}) is False
+
+
+def test_image_binary_serving_denies_copyright_and_unknown_id() -> None:
+    """§6: ``Copyright`` / ``Unknown`` ``license_id`` blocks bytes even when published."""
+    assert (
+        image_binary_serving_allowed(
+            {"license_id": "Copyright", "license_status": "published"}
+        )
+        is False
+    )
+    assert (
+        image_binary_serving_allowed(
+            {"license_id": "Unknown", "license_status": "verified"}
+        )
+        is False
+    )
+
+
+def test_image_binary_serving_allows_intake_after_ingest_default() -> None:
+    """Figures from the #59 inherit path (``intake`` only) may serve authenticated bytes."""
+    assert image_binary_serving_allowed({"license_status": "intake"}) is True
+
+
+def test_visibility_audit_records_previous_on_unrestrict(client: TestClient) -> None:
+    """Audit lines carry prior status and operator fields for unrestrict."""
+    doc_id, image_id = _ingest_fixture_pdf(client)
+    _publish_document_for_hosting(client, doc_id)
+    _patch_restrict(client, doc_id, image_id)
+    restore = client.patch(
+        f"/images/{doc_id}/{image_id}/visibility",
+        json={
+            "restricted": False,
+            "license_status": "published",
+            "reason": "cleared",
+            "decided_by": "test-operator",
+        },
+    )
+    assert restore.status_code == 200
+    audit = audit_log_path(client.app.state.storage)
+    lines = audit.read_text(encoding="utf-8").strip().splitlines()
+    last = json.loads(lines[-1])
+    assert last.get("action") == "unrestrict"
+    assert last.get("previous_license_status") == "restricted"
+    assert last.get("decided_by") == "test-operator"
+    assert last.get("reason") == "cleared"
+
+
+def test_ingested_figure_serves_bytes_before_visibility_patch(
+    client: TestClient,
+    rag_root: Path,
+    fake_embed: Callable[[str], list[float]],
+) -> None:
+    """Fresh pdf_figure clips with ``intake`` provenance return bytes (no PATCH required)."""
+
+    def fake_many(texts: list[str], **_kwargs: object) -> list[list[float]]:
+        return [fake_embed(text) for text in texts]
+
+    with (
+        patch("rag.figure_index.get_ingest_embeddings", side_effect=fake_many),
+        patch(
+            "rag.pdf_figures.ocr_pil_image",
+            return_value=("", "", None, 0, "none"),
+        ),
+    ):
+        upload = client.post(
+            "/upload",
+            files={
+                "file": (
+                    "figure.pdf",
+                    build_figure_caption_pdf(),
+                    "application/pdf",
+                )
+            },
+        )
+    assert upload.status_code == 200
+    doc_id = upload.json()["doc_id"]
+    meta = client.get(f"/documents/{doc_id}").json()
+    meta_ids = {item["image_id"] for item in meta.get("images") or []}
+    images_dir = rag_root / "processed" / doc_id / "images"
+    on_disk = [path.stem for path in images_dir.glob("*") if path.is_file()]
+    figure_ids = [image_id for image_id in on_disk if image_id not in meta_ids]
+    assert figure_ids, f"expected figure PNG on disk; meta={meta_ids} disk={on_disk}"
+    response = client.get(f"/images/{doc_id}/{figure_ids[0]}")
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"].startswith("image/")

@@ -42,15 +42,6 @@ from rag.document_patch import (
     patch_document,
     patch_document_metadata,
 )
-from rag.image_visibility import (
-    IMAGE_BINARY_DENIED_DETAIL,
-    ImageNotFoundError,
-    ImageVisibilityError,
-    image_binary_serving_allowed,
-    patch_image_visibility,
-    patch_images_visibility_batch,
-    resolve_image_provenance,
-)
 from rag.document_replace import (
     DocumentReplaceError,
     DocumentVersionNotFoundError,
@@ -63,6 +54,15 @@ from rag.embeddings import embedding_provider_status, validate_embedding_configu
 from rag.google_oauth import current_user
 from rag.image_delivery import resolve_image_delivery
 from rag.image_embed import image_embedding_enabled
+from rag.image_visibility import (
+    IMAGE_BINARY_DENIED_DETAIL,
+    ImageNotFoundError,
+    ImageVisibilityError,
+    image_binary_serving_allowed,
+    patch_image_visibility,
+    patch_images_visibility_batch,
+    resolve_image_provenance,
+)
 from rag.ingest import ingest_bytes, meta_to_public
 from rag.logging_setup import get_logger
 from rag.nim import nvidia_nim_status

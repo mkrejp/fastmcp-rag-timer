@@ -240,12 +240,12 @@ def test_pdf_image_inherits_parent_provenance(
     assert payload.get("sha256") != doc_meta.sha256
 
 
-def test_pdf_image_without_parent_attribution_is_restricted(
+def test_pdf_image_without_parent_attribution_is_intake(
     rag_storage: RagStorage,
     qdrant_client: QdrantClient,
     fake_embed: Callable[[str], list[float]],
 ) -> None:
-    """Images extracted without parent attribution default to restricted (fail-closed)."""
+    """Images extracted without parent provenance default to intake (URLs fail-closed)."""
     from tests.fixtures.pdf_factory import build_image_rich_pdf
 
     with patch(
@@ -262,8 +262,8 @@ def test_pdf_image_without_parent_attribution_is_restricted(
         )
     doc_id = str(result["doc_id"])
     payload = _first_pdf_image_payload(qdrant_client, doc_id, limit=5)
-    assert payload.get("license_id") == "Unknown"
-    assert payload.get("license_status") == "restricted"
+    assert payload.get("license_id") is None
+    assert payload.get("license_status") == "intake"
     urls = build_image_delivery_urls(
         payload,
         doc_id=doc_id,

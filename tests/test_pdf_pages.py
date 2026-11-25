@@ -57,7 +57,9 @@ def test_page_render_caches_jpeg(client: TestClient, rag_root: Path) -> None:
     assert path2.stat().st_mtime == mtime
 
 
-def test_highlights_normalized_and_diacritics(client: TestClient, rag_root: Path) -> None:
+def test_highlights_normalized_and_diacritics(
+    client: TestClient, rag_root: Path
+) -> None:
     """Text-layer search returns normalized boxes; diacritic-insensitive fallback works."""
     doc_id = _ingest_pdf(client)
     storage = RagStorage(rag_root)
@@ -77,6 +79,15 @@ def test_highlights_normalized_and_diacritics(client: TestClient, rag_root: Path
 def test_page_image_http_route(client: TestClient) -> None:
     """HTTP image route accepts page composite ids."""
     doc_id = _ingest_pdf(client)
+    published = client.patch(
+        f"/documents/{doc_id}/metadata",
+        json={
+            "attribution_text": "fixture",
+            "license_id": "CC0-1.0",
+            "license_status": "published",
+        },
+    )
+    assert published.status_code == 200
     image_id = format_page_image_id(doc_id, 1)
     response = client.get(f"/images/{doc_id}/{image_id}")
     assert response.status_code == 200

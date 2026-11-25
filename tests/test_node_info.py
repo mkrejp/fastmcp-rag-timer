@@ -175,6 +175,18 @@ def test_is_http_write_request_covers_mutating_routes() -> None:
     assert is_http_write_request("GET", "/node-info") is False
     assert is_http_write_request("GET", "/documents") is False
     assert is_http_write_request("POST", "/mcp/") is False
+    assert (
+        is_http_write_request(
+            "PATCH", "/images/00000000-0000-0000-0000-000000000001/abc/visibility"
+        )
+        is True
+    )
+    assert (
+        is_http_write_request(
+            "PATCH", "/images/00000000-0000-0000-0000-000000000001/visibility"
+        )
+        is True
+    )
 
 
 @pytest.fixture()

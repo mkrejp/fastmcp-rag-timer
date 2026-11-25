@@ -85,8 +85,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--base-url",
-        default=os.environ.get("RAG_READER_URL") or os.environ.get("PUBLIC_BASE_URL"),
-        help="RAG HTTP base (RAG_READER_URL or PUBLIC_BASE_URL)",
+        default=os.environ.get("RAG_INGESTER_URL"),
+        help="Ingester RAG HTTP base (env RAG_INGESTER_URL); never default to reader",
     )
     parser.add_argument(
         "--token-env",
@@ -113,7 +113,7 @@ def main() -> None:
     )
     args = parser.parse_args()
     if not args.base_url:
-        raise SystemExit("--base-url or RAG_READER_URL / PUBLIC_BASE_URL required")
+        raise SystemExit("--base-url or RAG_INGESTER_URL required")
     token = os.environ.get(args.token_env)
     if not token:
         raise SystemExit(f"{args.token_env} is not set")
