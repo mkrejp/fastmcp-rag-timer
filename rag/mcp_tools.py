@@ -46,6 +46,11 @@ from rag.image_delivery import (
     locate_global_image,
     resolve_image_delivery,
 )
+from rag.image_visibility import (
+    IMAGE_BINARY_DENIED_DETAIL,
+    image_binary_serving_allowed,
+    resolve_image_provenance,
+)
 from rag.image_embed import embed_image_query, image_embedding_enabled
 from rag.ingest import ingest_bytes
 from rag.logging_setup import get_logger
@@ -235,13 +240,18 @@ def _image_meta_with_url(
     fallback: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Serialize ``image`` with provenance and delivery URLs when allowed."""
+    from rag.image_visibility import image_provenance_record
+
     payload = image.to_dict()
-    provenance = document_provenance_from_extra(fallback or {})
+    provenance = image_provenance_record(
+        image_row=payload,
+        document_extra=fallback or {},
+    )
     enriched = attach_image_api_fields(
         payload,
         doc_id=doc_id,
         image_id=image.image_id,
-        provenance=provenance or (fallback or {}),
+        provenance=provenance,
     )
     return attach_preferred_geo(enriched, fallback=fallback)
 
@@ -441,8 +451,26 @@ def register_mcp_tools(
                 return [TextContent(type="text", text=message)]
 
             doc_id, path, _mime = located
+            record, _, _ = resolve_image_provenance(
+                storage,
+                qdrant,
+                collection_name=collection_name,
+                doc_id=doc_id,
+                image_id=image_id,
+            )
+            if not image_binary_serving_allowed(record):
+                message = IMAGE_BINARY_DENIED_DETAIL
+                _record_mcp(
+                    tool="get_image",
+                    ok=False,
+                    request_chars=request_chars,
+                    response_chars=len(message),
+                    error=message,
+                )
+                return [TextContent(type="text", text=message)]
+
             size = path.stat().st_size if path.is_file() else 0
-            url = _image_public_url(doc_id, image_id)
+            url = _image_public_url(doc_id, image_id, record)
             if not path.is_file():
                 message = f"{MISSING_IMAGE_FILE_MESSAGE}: {image_id}"
                 _record_mcp(
@@ -510,6 +538,24 @@ def register_mcp_tools(
                 doc_id=doc_id,
                 image_id=image_id,
             )
+            record, _, _ = resolve_image_provenance(
+                storage,
+                qdrant,
+                collection_name=collection_name,
+                doc_id=doc_id,
+                image_id=image_id,
+            )
+            if not image_binary_serving_allowed(record):
+                message = IMAGE_BINARY_DENIED_DETAIL
+                _record_mcp(
+                    tool="get_page_image",
+                    ok=False,
+                    request_chars=request_chars,
+                    response_chars=len(message),
+                    error=message,
+                )
+                return [TextContent(type="text", text=message)]
+
             size = path.stat().st_size
             url = _page_image_public_url(doc_id, page)
             if size > MAX_MCP_IMAGE_BYTES:

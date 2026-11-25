@@ -92,9 +92,23 @@ def test_image_http_requires_auth(
             assert bad.status_code == 401
 
 
+def _publish_for_binary_serving(client: TestClient, doc_id: str) -> None:
+    """Set provenance so ingested images are not fail-closed on ``license_status``."""
+    response = client.patch(
+        f"/documents/{doc_id}/metadata",
+        json={
+            "attribution_text": "fixture test",
+            "license_id": "CC0-1.0",
+            "license_status": "published",
+        },
+    )
+    assert response.status_code == 200
+
+
 def test_image_http_success_with_auth(client: TestClient) -> None:
     """Authenticated clients should receive the image with a matching Content-Type."""
     doc_id, image_id = _ingest_fixture_pdf(client)
+    _publish_for_binary_serving(client, doc_id)
     response = client.get(f"/images/{doc_id}/{image_id}")
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("image/")
@@ -218,6 +232,7 @@ def test_image_http_serves_ingested_pdf_figure(
     assert figure_ids, f"expected figure PNG on disk; meta={meta_ids} disk={on_disk}"
 
     figure_id = figure_ids[0]
+    _publish_for_binary_serving(client, doc_id)
     response = client.get(f"/images/{doc_id}/{figure_id}")
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("image/")

@@ -48,6 +48,9 @@ HTTP_ROUTES = (
     "documents_supersede",
     "documents_unsupersede",
     "documents_delete",
+    "images_visibility_patch",
+    "images_visibility_batch",
+    "images_get",
     "health",
 )
 OUTBOUND_TARGETS = (
