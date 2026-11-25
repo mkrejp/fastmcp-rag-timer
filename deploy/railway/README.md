@@ -35,6 +35,8 @@ Ingester:
 
 - `APP_MODE=ingester`
 - `EMBEDDING_PROVIDER_INGEST=novita`
+- `NVIDIA_NIM_API` (hosted NVIDIA NIM for development/planning; not embeddings)
+- `OPENROUTER_API_KEY` (optional OpenRouter for development/planning; not embeddings)
 
 ## Volumes and publish/apply
 

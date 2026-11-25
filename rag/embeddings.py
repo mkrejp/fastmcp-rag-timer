@@ -191,7 +191,9 @@ def resolve_api_key() -> str | None:
     """Return the embedding API token from environment variables.
 
     Checks ``BGE_M3_NOVITA_API_KEY``, then ``NOVITA_API_KEY``, ``OPENAI_TOKEN``,
-    and ``OPENAI_API_KEY``.
+    and ``OPENAI_API_KEY``. ``NVIDIA_NIM_API`` and ``OPENROUTER_API_KEY`` are
+    not embedding credentials.
+
     """
     return (
         os.getenv("BGE_M3_NOVITA_API_KEY")

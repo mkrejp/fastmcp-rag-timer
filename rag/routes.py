@@ -56,7 +56,9 @@ from rag.image_delivery import resolve_image_delivery
 from rag.image_embed import image_embedding_enabled
 from rag.ingest import ingest_bytes, meta_to_public
 from rag.logging_setup import get_logger
+from rag.nim import nvidia_nim_status
 from rag.node_info import node_info_payload
+from rag.openrouter import openrouter_status
 from rag.page_ids import parse_page_image_id
 from rag.processing import is_supported_filename
 from rag.publish.release_state import read_release_state
@@ -484,6 +486,8 @@ def health(request: Request) -> dict[str, object]:
             "sync_enabled": sync_api_enabled(),
             "sync_push_on_ingest": sync_push_on_ingest_enabled(),
             "chat_helper": helper_public_status(),
+            "nvidia_nim": nvidia_nim_status(),
+            "openrouter": openrouter_status(),
         }
         _record_http(route="health", ok=True)
         return body
