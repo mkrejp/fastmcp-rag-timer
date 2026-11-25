@@ -355,7 +355,21 @@ def _mcp_bearer_json_response(
     return None
 
 
-class McpBearerAuth:
+class _AsgiHttpMiddleware:
+    """Shared ASGI boilerplate for HTTP-only middleware wrappers."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def _skip_non_http(self, scope: Scope, receive: Receive, send: Send) -> bool:
+        """Forward non-HTTP scopes. Return True when the request was forwarded."""
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return True
+        return False
+
+
+class McpBearerAuth(_AsgiHttpMiddleware):
     """ASGI wrapper requiring the bearer token on every ``/mcp`` request (fail closed).
 
     Accepts ``MCP_API_TOKEN`` (falling back to ``RAG_API_TOKEN``) for full access.
@@ -364,12 +378,8 @@ class McpBearerAuth:
     with a JSON-RPC error. ``MCP_READ_TOKEN`` is not used by embedding REST routes.
     """
 
-    def __init__(self, app: ASGIApp) -> None:
-        self.app = app
-
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http":
-            await self.app(scope, receive, send)
+        if await self._skip_non_http(scope, receive, send):
             return
         headers = _decode_request_headers(scope)
         denied = _mcp_bearer_json_response(
@@ -432,15 +442,11 @@ def _requires_http_read_auth(method: str, path: str) -> bool:
     return path == "/documents" or path.startswith("/documents/")
 
 
-class HttpReadAuthMiddleware:
+class HttpReadAuthMiddleware(_AsgiHttpMiddleware):
     """ASGI guard for catalog GET routes and FastAPI OpenAPI surfaces."""
 
-    def __init__(self, app: ASGIApp) -> None:
-        self.app = app
-
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http":
-            await self.app(scope, receive, send)
+        if await self._skip_non_http(scope, receive, send):
             return
         method = (scope.get("method") or "GET").upper()
         path = _http_path(scope)

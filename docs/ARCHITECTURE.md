@@ -690,7 +690,7 @@ Local run and pytest install lines: [README.md](../README.md#local-run).
 
 | Topic | What the code does |
 | --- | --- |
-| HTTP auth | `POST /ingest-json` needs Bearer `RAG_API_TOKEN` (503 if unset). Uploads, images, document PATCH/DELETE, content PUT, version restore: MCP/RAG bearer or Google session. Catalog GET (`/documents`, `/documents/*` read paths), `/openapi.json`, `/docs`, `/redoc`: MCP/RAG bearer or `MCP_READ_TOKEN` (503 if none configured). `/health`, `/node-info` unauthenticated. `APP_MODE=reader` returns 403 on HTTP writes. `RAG_ENFORCE_NODE_ROLE=1` can 403 writes for node modes on `all`/`ingester`. |
+| HTTP auth | `POST /ingest-json` needs Bearer `RAG_API_TOKEN` (503 if unset).<br>Uploads, images, document PATCH/DELETE, content PUT, version restore: MCP/RAG bearer or Google session.<br>Catalog GET, `/openapi.json`, `/docs`, `/redoc`: MCP/RAG or `MCP_READ_TOKEN` (503 if none configured).<br>`/health`, `/node-info` unauthenticated. Reader mode returns 403 on HTTP writes. |
 | MCP auth | Bearer on every `/mcp` request (`McpBearerAuth`): `MCP_API_TOKEN` / fallback `RAG_API_TOKEN` for full access; optional `MCP_READ_TOKEN` is read-only (filtered `tools/list`, write `tools/call` → JSON-RPC 403). Host allow-list via FastMCP `TransportSecuritySettings` (`MCP_ALLOWED_HOSTS`). |
 | Console auth | `/ui/` and `/api/admin/*` require Google OAuth (`GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET`) and optional email/domain allow-lists. Cookie session via `SESSION_SECRET`. |
 | Secrets | Embedding key from `BGE_M3_NOVITA_API_KEY`, then `NOVITA_API_KEY`, `OPENAI_TOKEN`, `OPENAI_API_KEY`; sent as `Authorization: Bearer` to Novita. Inbound tokens compared with `hmac.compare_digest`. Not read from a file or vault. |
@@ -729,7 +729,11 @@ Current gaps (not a history of old bugs):
    `chat_helper` Gateway phrasing and `FIGURE_SUMMARY_LLM` default off; figure summaries fall back to extractive text and do not write vectors.
    Trails street lines and visitor blurbs are extracted in Trails from `GET /documents/{id}` and `/text`.
    Development/hunting LLMs are Cursor-hosted Grok against **GitHub** ([inference roles](./adr/inference-roles.md)).
-5. **Railway tokens (names only).** Ingester `00001` and reader `00002` both need at least one of `MCP_API_TOKEN`, `RAG_API_TOKEN`, or `MCP_READ_TOKEN` so catalog GET and OpenAPI do not fail closed with 503. Prefer `MCP_READ_TOKEN` on the reader for Trails and other read-only HTTP clients; set `MCP_API_TOKEN` (or `RAG_API_TOKEN`) for MCP and write routes. Ingester: also `RAG_API_TOKEN` for `POST /ingest-json`. Sync: `RAG_SYNC_TOKEN` on reader, same value on ingester as `RAG_SYNC_TOKEN` when live push is enabled. Multipart `POST /upload` still has no size quota in code.
+5. **Railway tokens (names only).** Both nodes need at least one of `MCP_API_TOKEN`, `RAG_API_TOKEN`, or `MCP_READ_TOKEN` so catalog GET and OpenAPI do not return 503.
+   Prefer `MCP_READ_TOKEN` on reader `00002` for Trails and read-only HTTP clients; `MCP_API_TOKEN` (or `RAG_API_TOKEN`) for MCP and writes.
+   Ingester `00001`: also `RAG_API_TOKEN` for `POST /ingest-json`.
+   Live sync: `RAG_SYNC_TOKEN` on reader; same on ingester when push is enabled.
+   Multipart `POST /upload` still has no size quota in code.
 6. **`/upload-media`** returns **410** by default; when `RAG_UPLOAD_MEDIA_DEPRECATED=0`, it requires a write bearer, does not index, and caps uploads at 50 MiB.
 7. **No HTTP reindex** of PDF bytes — `PUT /documents/{doc_id}/content` replaces indexed text only (no image/figure re-extract). To replace a PDF file entirely, delete then re-upload.
 8. **No lockfile**; most Docker deps unpinned. CI runs Super Linter, pytest (Python 3.11), and the Docker image build.
