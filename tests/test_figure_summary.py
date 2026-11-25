@@ -8,10 +8,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from rag.config import (
-    resolve_figure_summary_llm,
-    resolve_figure_summary_llm_provider,
-)
+from rag.config import resolve_figure_summary_llm, resolve_figure_summary_llm_provider
 from rag.figure_summary import FigureLlmBudget, build_figure_summary
 from rag.openrouter import OPENROUTER_BASE_URL, OPENROUTER_FIGURE_MODEL
 
