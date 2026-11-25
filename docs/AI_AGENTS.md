@@ -196,6 +196,11 @@ TrailsAssemblage [#63](https://github.com/mkrejp/TrailsAssemblage/pull/63) and [
 
 Reader and ingester embeddings stay prepaid Novita. Caption ranking, when Trails sets ``TRAILS_CAPTION_EMBED=1``, is a Novita ``baai/bge-m3`` call inside Trails. Search and Ask do not call the caption route.
 
+**Cursor / Grok cloud agents:** helpers, secret names, BYOK vs chat, and what
+not to route through OpenRouter are in
+[openrouter-agents.md](./openrouter-agents.md). Import ``rag.openrouter`` and
+``rag.nim``; never log keys.
+
 ## Contribution verification note
 
 Attributions marked **Verified** were checked against this repository or public GitHub PR URLs. **Reported by operator** items are included as Marek supplied them and are **not** stored in this repository. No git commit in ``mkrejp/fastmcp-rag-timer`` names an agent unless noted (e.g. test fixtures). Merge commits are authored by **mkrejp**.
