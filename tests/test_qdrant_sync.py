@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 from qdrant_client import QdrantClient
 from qdrant_client.models import PointStruct
@@ -16,6 +17,7 @@ from rag.publish.diff import build_file_diff
 from rag.publish.qdrant_sync import (
     POINTS_REL_PATH,
     apply_qdrant_release,
+    apply_qdrant_release_with_client,
     export_points_for_docs,
     open_qdrant_for_sync,
     scroll_points_for_doc,
@@ -183,3 +185,47 @@ def test_delete_doc_removes_reader_points(tmp_path: Path) -> None:
     finally:
         client.close()
     assert left == []
+
+
+def test_metadata_only_apply_uses_set_payload_not_upsert(tmp_path: Path) -> None:
+    """Metadata-only sync merges payloads without vector upsert or delete."""
+    reader = tmp_path / "reader"
+    r = RagStorage(str(reader))
+    r.ensure_layout()
+    doc_id = "99999999-9999-9999-9999-999999999999"
+    client = open_qdrant_for_sync(r.qdrant_dir)
+    try:
+        _upsert_chunk(client, doc_id=doc_id, text="before")
+        points = scroll_points_for_doc(
+            client, collection_name=COLLECTION_NAME, doc_id=doc_id
+        )
+        point_id = str(points[0].id)
+        payload_records = [
+            {
+                "collection": COLLECTION_NAME,
+                "id": point_id,
+                "vector": None,
+                "payload": {
+                    "doc_id": doc_id,
+                    "text": "before",
+                    "reliability": 3,
+                },
+            }
+        ]
+        with patch.object(client, "upsert") as mock_upsert:
+            stats = apply_qdrant_release_with_client(
+                client,
+                upsert_doc_ids=[doc_id],
+                delete_doc_ids=[],
+                metadata_only_doc_ids=[doc_id],
+                records=payload_records,
+            )
+        mock_upsert.assert_not_called()
+        assert stats["points_upserted"] == 0
+        assert stats["points_payload_merged"] == 1
+        updated = scroll_points_for_doc(
+            client, collection_name=COLLECTION_NAME, doc_id=doc_id
+        )
+        assert updated[0].payload.get("reliability") == 3
+    finally:
+        client.close()

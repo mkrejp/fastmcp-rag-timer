@@ -125,11 +125,11 @@ class DiffPushClient:
 
     def get_catalog(self) -> dict[str, str]:
         """GET /sync/v1/catalog → doc_id→fingerprint map (documents only)."""
-        docs, _links = self.fetch_catalog()
+        docs, _content, _links = self.fetch_catalog()
         return docs
 
-    def fetch_catalog(self) -> tuple[dict[str, str], dict[str, str]]:
-        """GET /sync/v1/catalog → ``(documents, locality_links)`` fingerprints."""
+    def fetch_catalog(self) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
+        """GET /sync/v1/catalog → ``(documents, content, locality_links)``."""
         body = _request_json(
             "GET",
             self._url("sync/v1/catalog"),
@@ -137,9 +137,11 @@ class DiffPushClient:
             timeout=self.timeout,
         )
         docs = body.get("documents") or {}
+        content = body.get("documents_content") or {}
         links = body.get("locality_links") or {}
         return (
             {str(k): str(v) for k, v in docs.items()},
+            {str(k): str(v) for k, v in content.items()},
             {str(k): str(v) for k, v in links.items()},
         )
 
@@ -240,12 +242,13 @@ def build_and_push(
 
     watermark = push.get_watermark()
     parent = watermark.get("release_id")
-    reader_catalog, reader_locality = push.fetch_catalog()
+    reader_catalog, reader_content, reader_locality = push.fetch_catalog()
     writer_locality = locality_links_catalog_fingerprint(qdrant)
     manifest = build_file_diff(
         storage,
         parent_release_id=parent if isinstance(parent, str) else None,
         reader_catalog=reader_catalog,
+        reader_content_catalog=reader_content or None,
         reader_locality_catalog=reader_locality,
         writer_locality_catalog=writer_locality,
         writer_host=writer_host,
@@ -264,15 +267,28 @@ def build_and_push(
         and not manifest.catalog_doc_ids_upserted
         and not manifest.catalog_doc_ids_deleted
         and not manifest.locality_link_doc_ids_upserted
+        and not manifest.catalog_doc_ids_metadata_only
     ):
         logger.info("Live sync: nothing to push (empty diff)")
         return {**summary, "pushed": False, "reason": "empty_diff"}
 
+    metadata_only_set = set(manifest.catalog_doc_ids_metadata_only)
+    vector_doc_ids = [
+        doc_id
+        for doc_id in manifest.catalog_doc_ids_upserted
+        if doc_id not in metadata_only_set
+    ]
     records: list[dict[str, Any]] = []
     point_ids: list[str] = []
-    if manifest.catalog_doc_ids_upserted:
+    if vector_doc_ids:
+        exported, ids = export_points_for_docs(qdrant, vector_doc_ids)
+        records.extend(exported)
+        point_ids.extend(ids)
+    if metadata_only_set:
         exported, ids = export_points_for_docs(
-            qdrant, manifest.catalog_doc_ids_upserted
+            qdrant,
+            sorted(metadata_only_set),
+            payload_only=True,
         )
         records.extend(exported)
         point_ids.extend(ids)
