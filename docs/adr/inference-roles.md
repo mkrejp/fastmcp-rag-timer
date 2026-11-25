@@ -21,7 +21,8 @@
 | **Reader (ČTENÍ) search embeddings** | Novita `baai/bge-m3` (default) or Hugging Face ONNX FastEmbed `BAAI/bge-m3` | xAI, Vercel AI Gateway embeddings, Cursor Grok |
 | **Reader refined ranking** | Prepaid Novita `baai/bge-reranker-v2-m3` (`MCP chat_helper`) | Novita Coding Plan, dedicated GPU, Gateway embeddings |
 | **Reader helper phrasing** | Optional Gateway `vmc/cheap` (Novita DeepSeek flash BYOK), **off by default** | xAI, Grok, Coding Plan, Vercel provider fallback |
-| **Ingester (ZÁPIS) text embeddings** | Same Novita / FastEmbed BGE-M3 1024-dim family | A chat model writing vectors |
+| **Ingester (ZÁPIS) text embeddings** | Same Novita / FastEmbed BGE-M3 1024-dim family | A chat model writing vectors; OpenRouter embeddings |
+| **Optional figure-summary LLM** | Extractive by default; ``FIGURE_SUMMARY_LLM=novita`` or opt-in ``openrouter`` (Novita/NVIDIA BYOK, default **off**) | OpenRouter as the ingest embedding path; Tesseract replacement |
 | **Optional visual search** | Hugging Face CLIP `Qdrant/clip-ViT-B-32-*` when `IMAGE_EMBEDDING_ENABLED=true` | Grok vision as the image index |
 | **Trails web catalogue search** | Browser → Trails `GET /catalog/search` (**signed-in** session or Bearer). **RAG** typeahead = reader MCP `search_domain_knowledge`. **RAG Ask/chat** (later) = same Trails proxy → reader MCP `chat_helper` for **logged-in users only**. **GeoServer** = WFS `ILIKE` | Anonymous chat; browser calling RAG/GeoServer; Grok in the dialog; pointing Trails at the ingester |
 | **GeoServer** | WMS/WFS geometry and attribute filter (PostGIS). No embeddings | xAI, Novita chat, Hugging Face inference chat |
@@ -33,6 +34,8 @@ Indexed text is still embedded with Novita or local Hugging Face ONNX (1024-dim
 BGE-M3). A **bounded** reader exception is MCP `chat_helper`: retrieve, then
 prepaid Novita rerank, then optional `vmc/cheap` phrasing over those hits only
 (a short essay naming the objects and how they relate).
+A **bounded** ingester exception is optional `pdf_figure` LLM summaries
+(`FIGURE_SUMMARY_LLM=openrouter` or `novita`); they do not write vectors.
 Chat is **off by default** and daily-capped. Generation for hunting and coding
 still happens **outside** this process (Cursor), against **GitHub**.
 

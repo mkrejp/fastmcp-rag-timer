@@ -14,6 +14,7 @@ from rag.openrouter import (
     ensure_openrouter_byok_credential,
     list_openrouter_byok_providers,
     list_openrouter_models,
+    openrouter_chat_completion,
     openrouter_configured,
     openrouter_management_configured,
     openrouter_status,
@@ -254,3 +255,42 @@ def test_sync_openrouter_nvidia_novita_byok_creates_both(
     second_provider = mocked.call_args_list[1].args[0]
     assert first_provider == "nvidia"
     assert second_provider == "novita"
+
+
+def test_openrouter_chat_completion_pins_provider(
+    monkeypatch: MonkeyPatch, mocker: MockerFixture
+) -> None:
+    """Chat completions send ``provider.only``; the raw key is not asserted as output."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-project-key")
+    response = Mock()
+    response.status_code = 200
+    response.json.return_value = {"choices": [{"message": {"content": "pong"}}]}
+    mocked_post = mocker.patch("rag.openrouter.requests.post", return_value=response)
+
+    content = openrouter_chat_completion(
+        [{"role": "user", "content": "Reply with the single word pong."}],
+        model="z-ai/glm-4.6",
+        provider_only="nvidia",
+    )
+
+    assert content == "pong"
+    args, kwargs = mocked_post.call_args
+    assert args[0] == f"{OPENROUTER_BASE_URL}/chat/completions"
+    assert kwargs["json"]["provider"] == {"only": ["nvidia"]}
+    assert kwargs["headers"]["Authorization"] == "Bearer or-project-key"
+
+
+def test_openrouter_chat_completion_missing_key_returns_none(
+    mocker: MockerFixture,
+) -> None:
+    """Chat helper fails closed without posting when the inference key is unset."""
+    mocked_post = mocker.patch("rag.openrouter.requests.post")
+    assert (
+        openrouter_chat_completion(
+            [{"role": "user", "content": "hi"}],
+            model="z-ai/glm-4.6",
+            provider_only="novita",
+        )
+        is None
+    )
+    mocked_post.assert_not_called()

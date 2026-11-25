@@ -1,9 +1,10 @@
-"""OpenRouter client for Cloud Agent / ingester development.
+"""OpenRouter client for Cloud Agent development and optional figure LLM.
 
 This is **not** the production embedding or rerank path. Indexed text stays on
 prepaid Novita or local FastEmbed BGE-M3. OpenRouter is an OpenAI-compatible
 chat API keyed by ``OPENROUTER_API_KEY``. BYOK for ``nvidia`` and ``novita``
-uses ``OPENROUTER_MANAGEMENT_KEY``. Never log keys.
+uses ``OPENROUTER_MANAGEMENT_KEY``. Optional ``FIGURE_SUMMARY_LLM=openrouter``
+may call chat completions; ingest embeddings do not. Never log keys.
 """
 
 from __future__ import annotations
@@ -22,8 +23,11 @@ OPENROUTER_BYOK_PROVIDERS = (
     OPENROUTER_NVIDIA_PROVIDER,
     OPENROUTER_NOVITA_PROVIDER,
 )
+# Cheap OpenRouter catalog ID that Novita served on this account (figure LLM).
+OPENROUTER_FIGURE_MODEL = "z-ai/glm-4.6"
 _MODELS_TIMEOUT_SECONDS = 30
 _BYOK_TIMEOUT_SECONDS = 30
+_CHAT_TIMEOUT_SECONDS = 60
 
 ByokSyncStatus = Literal[
     "created",
@@ -112,6 +116,78 @@ def list_openrouter_models() -> list[str]:
             if isinstance(model_id, str) and model_id.strip():
                 ids.append(model_id.strip())
     return ids
+
+
+def openrouter_chat_completion(
+    messages: list[dict[str, str]],
+    *,
+    model: str,
+    provider_only: str | None = None,
+    temperature: float = 0.2,
+    max_tokens: int | None = None,
+) -> str | None:
+    """Return assistant text from OpenRouter chat, or ``None`` on failure.
+
+    Uses ``OPENROUTER_API_KEY`` (never the management key). The raw key is
+    not logged. Missing credentials, HTTP errors, and empty content return
+    ``None`` so callers can fall back to extractive summaries.
+
+    Args:
+        messages: OpenAI-style chat messages.
+        model: OpenRouter catalog ID.
+        provider_only: Optional BYOK slug (``novita`` or ``nvidia``).
+        temperature: Sampling temperature.
+        max_tokens: Optional completion cap.
+    """
+    key = resolve_openrouter_api_key()
+    if not key:
+        return None
+    catalog = model.strip()
+    if not catalog:
+        return None
+    payload: dict[str, Any] = {
+        "model": catalog,
+        "messages": messages,
+        "temperature": temperature,
+    }
+    if max_tokens is not None:
+        payload["max_tokens"] = max_tokens
+    if provider_only:
+        slug = provider_only.strip().lower()
+        if slug not in OPENROUTER_BYOK_PROVIDERS:
+            return None
+        payload["provider"] = {"only": [slug]}
+    try:
+        response = requests.post(
+            f"{OPENROUTER_BASE_URL}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "https://github.com/mkrejp/fastmcp-rag-timer",
+                "X-Title": "fastmcp-rag-timer-figure-llm",
+            },
+            json=payload,
+            timeout=_CHAT_TIMEOUT_SECONDS,
+        )
+        if response.status_code >= 400:
+            return None
+        body: Any = response.json()
+        choices = body.get("choices") if isinstance(body, dict) else None
+        if not isinstance(choices, list) or not choices:
+            return None
+        first = choices[0]
+        if not isinstance(first, dict):
+            return None
+        message = first.get("message")
+        if not isinstance(message, dict):
+            return None
+        content = message.get("content")
+        if not isinstance(content, str):
+            return None
+        stripped = content.strip()
+        return stripped or None
+    except requests.RequestException:
+        return None
 
 
 def _first_env(*names: str) -> str | None:

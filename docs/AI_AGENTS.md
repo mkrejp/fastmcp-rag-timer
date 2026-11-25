@@ -158,6 +158,8 @@ Hosted OpenRouter is for **development and planning** only. It does **not** embe
 
 Do not paste keys into chat or docs. Create the inference key at [openrouter.ai/keys](https://openrouter.ai/keys) and a management key on the same page. Optional ``OPENROUTER_MODEL`` may pin a catalog ID. ``GET /health`` reports ``openrouter.configured`` and ``openrouter.management_configured`` (booleans only). NVIDIA and Novita BYOK do **not** replace prepaid Novita embeddings or rerank.
 
+Optional ingester figure summaries may set ``FIGURE_SUMMARY_LLM=openrouter`` (default ``off``). That path uses ``OPENROUTER_API_KEY`` and ``FIGURE_SUMMARY_LLM_PROVIDER`` (``novita`` or ``nvidia``). Ingest embeddings stay Novita/FastEmbed BGE-M3. Do not enable this on Railway unless Marek turns it on; then set ``OPENROUTER_API_KEY`` on ``rag-timer-00001``.
+
 ## Contribution verification note
 
 Attributions marked **Verified** were checked against this repository or public GitHub PR URLs. **Reported by operator** items are included as Marek supplied them and are **not** stored in this repository. No git commit in ``mkrejp/fastmcp-rag-timer`` names an agent unless noted (e.g. test fixtures). Merge commits are authored by **mkrejp**.

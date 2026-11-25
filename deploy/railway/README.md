@@ -36,7 +36,9 @@ Ingester:
 - `APP_MODE=ingester`
 - `EMBEDDING_PROVIDER_INGEST=novita`
 - `NVIDIA_NIM_API` (hosted NVIDIA NIM for development/planning; not embeddings)
-- `OPENROUTER_API_KEY` (optional OpenRouter for development/planning; not embeddings)
+- `OPENROUTER_API_KEY` (optional OpenRouter for development/planning, and
+  only if `FIGURE_SUMMARY_LLM=openrouter`; not embeddings). Leave the figure
+  LLM off unless Marek enables it.
 - `OPENROUTER_MANAGEMENT_KEY` (optional; only if this service must attach NVIDIA / Novita BYOK)
 
 ## Volumes and publish/apply
