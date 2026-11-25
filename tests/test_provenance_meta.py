@@ -89,6 +89,24 @@ def test_inherit_provenance_sets_image_sha256() -> None:
     assert child["sha256"] != parent["sha256"]
 
 
+def test_attribution_denies_copyright_even_when_published() -> None:
+    """§6: ``Copyright``/``Unknown`` must not expose URLs even with ``published``."""
+    record = {
+        "license_id": "Copyright",
+        "license_status": "published",
+        "attribution_text": "© holder",
+    }
+    assert attribution_allows_public_urls(record) is False
+    urls = build_image_delivery_urls(
+        record,
+        doc_id="doc",
+        image_id="img",
+        public_base_url="https://rag.example",
+        media_public_base_url=None,
+    )
+    assert urls["url"] is None
+
+
 def test_fail_closed_without_attribution() -> None:
     """Missing ``attribution_text`` must not expose RAG or media URLs."""
     record = {"license_id": "CC0-1.0", "license_status": "published"}
