@@ -142,7 +142,7 @@ Hosted NVIDIA NIM is for **development and planning** only. It does **not** embe
 | Base URL | ``https://integrate.api.nvidia.com/v1`` |
 | Auth | ``Authorization: Bearer $NVIDIA_NIM_API`` |
 
-Do not paste the key into chat or docs. Generate it at [build.nvidia.com/settings](https://build.nvidia.com/settings). Optional ``NVIDIA_NIM_MODEL`` may pin a catalog id; otherwise pick a model from ``GET /v1/models``. ``GET /health`` reports ``nvidia_nim.configured`` (boolean only).
+Do not paste the key into chat or docs. Generate it at [build.nvidia.com/settings](https://build.nvidia.com/settings). Optional ``NVIDIA_NIM_MODEL`` may pin a catalog ID; otherwise pick a model from ``GET /v1/models``. ``GET /health`` reports ``nvidia_nim.configured`` (boolean only).
 
 ## OpenRouter (Cloud Agent development)
 
@@ -154,7 +154,7 @@ Hosted OpenRouter is for **development and planning** only. It does **not** embe
 | Base URL | ``https://openrouter.ai/api/v1`` |
 | Auth | ``Authorization: Bearer $OPENROUTER_API_KEY`` |
 
-Do not paste the key into chat or docs. Create it at [openrouter.ai/keys](https://openrouter.ai/keys). Optional ``OPENROUTER_MODEL`` may pin a catalog id. ``GET /health`` reports ``openrouter.configured`` (boolean only).
+Do not paste the key into chat or docs. Create it at [openrouter.ai/keys](https://openrouter.ai/keys). Optional ``OPENROUTER_MODEL`` may pin a catalog ID. ``GET /health`` reports ``openrouter.configured`` (boolean only).
 
 ## Contribution verification note
 
