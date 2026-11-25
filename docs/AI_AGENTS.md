@@ -151,10 +151,12 @@ Hosted OpenRouter is for **development and planning** only. It does **not** embe
 | Item | Value |
 | --- | --- |
 | Secret name | ``OPENROUTER_API_KEY`` (Cursor Cloud Agent environment secret). Never git or chat. Optional same-name Railway ``rag-timer-00001`` runtime if the ingester should call it. |
+| Management secret | ``OPENROUTER_MANAGEMENT_KEY`` (OpenRouter **management** key, not the inference key). Required to attach BYOK provider credentials. |
 | Base URL | ``https://openrouter.ai/api/v1`` |
 | Auth | ``Authorization: Bearer $OPENROUTER_API_KEY`` |
+| BYOK providers | ``nvidia`` (from ``NVIDIA_NIM_API`` / ``NVIDIA_NIM_APU`` / ``NVIDIA_API_KEY``) and ``novita`` (from ``BGE_M3_NOVITA_API_KEY`` / ``NOVITA_API_KEY``). Run ``python scripts/openrouter_byok_sync.py``. |
 
-Do not paste the key into chat or docs. Create it at [openrouter.ai/keys](https://openrouter.ai/keys). Optional ``OPENROUTER_MODEL`` may pin a catalog ID. ``GET /health`` reports ``openrouter.configured`` (boolean only).
+Do not paste keys into chat or docs. Create the inference key at [openrouter.ai/keys](https://openrouter.ai/keys) and a management key on the same page. Optional ``OPENROUTER_MODEL`` may pin a catalog ID. ``GET /health`` reports ``openrouter.configured`` and ``openrouter.management_configured`` (booleans only). NVIDIA and Novita BYOK do **not** replace prepaid Novita embeddings or rerank.
 
 ## Contribution verification note
 
