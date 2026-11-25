@@ -140,7 +140,7 @@ recall after provider changes (`scripts/golden_recall_smoke.py`).
 
 **Named vectors:** Qdrant collection `client_domain_knowledge` uses `text_vector` (BGE-M3 1024) and `image_vector` (CLIP `Qdrant/clip-ViT-B-32-vision`, 512). Collections with a single unnamed vector are recreated on startup; **re-ingest all documents** after that recreate. Enable visual search with `IMAGE_EMBEDDING_ENABLED=true` (lazy CLIP load; extra RAM on top of BGE-M3 — risky on 8GB hosts).
 
-The FastEmbed BGE-M3 ONNX download is ~2.3GB on first query or FastEmbed ingest (~4GB+ RAM peak; 8GB preferred for BGE-M3 alone). Query always uses FastEmbed, so the first search downloads the model even when ingest stays on Novita.
+The FastEmbed BGE-M3 ONNX download is ~2.3GB on the first FastEmbed query or FastEmbed ingest (~4GB+ RAM peak; 8GB preferred for BGE-M3 alone). A Novita query path does not download it. Production embeddings and `chat_helper` rerank stay prepaid Novita `baai/bge-m3` and `baai/bge-reranker-v2-m3`. `FIGURE_SUMMARY_LLM` defaults to `off` and does not write vectors.
 See [embedding provider](docs/embedding-provider.md).
 Keep Novita keys in runtime variables; never commit them.
 
@@ -364,8 +364,9 @@ Non-null patches apply full fields on text/image chunk points (including `verifi
 and page-image points receive only `figure_payload_fields` (flat keys; nested `verification[]` is not
 written there). New uploads also store these fields when the optional `metadata` JSON form field (or
 MCP `ingest_text` `metadata`) is provided; `reliability` defaults to `1`. `overeni_souhrn` is
-truncated to 300 characters and quotes to 500; the response includes `truncated` with every clipped
-field path. Each `verification[]` item may include `method`, `compared_value`, `found_value`,
+a GPS verification log, truncated to 300 characters; quotes are truncated to 500. The response
+includes `truncated` with every clipped field path. Trails visitor blurbs do not read
+`overeni_souhrn` ([Trails caption consumer](#trails-caption-consumer)). Each `verification[]` item may include `method`, `compared_value`, `found_value`,
 `threshold`, and `evidence_type`.
 
 **Deleting fields with JSON `null`.** Only these keys accept `null` (defined in code as
@@ -492,9 +493,31 @@ Original coordinates stay on the record (`lat`/`lon`, or a GeoJSON `geom` Point)
 
 `precision` is `municipality|cast_obce|street|building`. `status` is `overeno|zpresneno|priblizne|rozpor`. `confidence_level` is `high|medium|low`. Source `type` is `ruian_adresni_misto|wikidata_p625|commons_camera|nominatim|osm_building|manual`. `needs_refinement` defaults to true for medium/low or `rozpor`. `dry_run=true` (the default) returns old vs new without writing.
 
-Search hits, `list_image_records`, and `get_document_images` / `get_document_chunks` prefer `geo_refined` when present, else original, and expose both plus `geo_source: refined|original`. `list_image_records` and `search_images` accept optional `precision` and `needs_refinement` filters.
+`GeoRefined` (`rag/geo_refined.py`) sets `extra=forbid`. The object has `note` and the fields above. It has no `ulice` or `address` key. Trails may treat a street-like `note` as the street line when `precision` is `building` or `street`. Method notes (Wikidata P625) and Wikidata `Q…` ids are not streets.
+
+Search hits, `list_image_records`, and `get_document_images` / `get_document_chunks` prefer `geo_refined` when present, else original, and expose both plus `geo_source: refined|original`. `list_image_records` and `search_images` accept optional `precision` and `needs_refinement` filters. Those payloads stay coordinates and `geo_refined`. Street lines and visitor blurbs are Trails fields, derived after the document GET.
 
 Backfill after deploy: call `refine_geo_batch` in pages of ≤200 (try `dry_run=true` first). Same bearer auth as `link_locality`. Geo refinements are **not** forwarded to Trails.
+
+### Trails caption consumer
+
+Live on `https://trail.animarium.ai` (TrailsAssemblage [#63](https://github.com/mkrejp/TrailsAssemblage/pull/63) and [#64](https://github.com/mkrejp/TrailsAssemblage/pull/64)). Trails owns the caption columns. This service keeps the existing document and `geo_refined` shapes.
+
+Trails `POST /catalog/objects/captions` (Bearer `TRAILS_API_TOKEN` on the Trails host) reads the **reader**:
+
+- `GET /documents/{doc_id}`
+- `GET /documents/{doc_id}/text`
+
+Both routes are unauthenticated. Facades of one document share one text fetch. The call leaves RAG geometry, vectors, and catalog rows unchanged.
+
+| Trails display | Where Trails reads it |
+| --- | --- |
+| Street | `**Ulice:**` or `**Adresa:**` in the full text, or a street-like `geo_refined.note` when `precision` is `building` or `street`. Method notes (Wikidata P625) and Wikidata `Q…` ids are not streets. |
+| Short description | Trails-side extractive text: an explicit `**Popis:**` when present, then the first sentence under `## Shrnutí`, then `## Popisek` / `## Popis`, then the first other prose sentence. Optional Novita `baai/bge-m3` ranking runs in Trails when `TRAILS_CAPTION_EMBED=1`. |
+
+`overeni_souhrn` stays the GPS verification log on metadata PATCH (300 characters). It is the verification record, and Trails leaves it out of the visitor blurb.
+
+Search JSON (`format=json`) keeps `lat`, `lon`, `geo_source`, and `geo_refined`. `street_address` and `short_description` stay on the Trails catalog row. Production embeddings and rerank stay prepaid Novita. Caption generation is a Trails read of stored markdown.
 
 ### Frontend contract (`fastmcp-rag-timer-frontend`)
 
@@ -555,6 +578,7 @@ Default `format=text` leaves legacy `Source:` / `Content:` blocks unchanged and 
 - [Embedding connectivity](docs/CONNECTIVITY.md#embedding-connectivity) — Novita embeddings API, auth, egress, timeouts, privacy, and cost.
 - [Embedding provider](docs/embedding-provider.md) — split ingest/query providers, named vectors, and Qdrant layout.
 - [AI agents](docs/AI_AGENTS.md) — Marek's agent roles, cooperation rules, and [agents.json](docs/agents.json) for cloud agents.
+- [Trails caption consumer](#trails-caption-consumer) — reader `GET /documents/{id}` and `/text`; street and blurb stay on Trails.
 
 ## Package layout
 

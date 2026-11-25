@@ -223,7 +223,7 @@ From `rag/routes.py`, `rag/app.py`, `rag/google_oauth.py`, and `rag/admin_routes
 
 | Method | Path | Auth | Behavior |
 | --- | --- | --- | --- |
-| `GET` | `/health` | None | `status`, `rag_data_root`, `embeddings`, `image_embedding_enabled`, `app_mode`, `writes_enabled`, `mcp_write_tools`, `release_id` (from `{RAG_DATA_ROOT}/release.json` when present) |
+| `GET` | `/health` | None | `status`, `rag_data_root`, `embeddings`, `image_embedding_enabled`, `app_mode`, `writes_enabled`, `mcp_write_tools`, `release_id` (from `{RAG_DATA_ROOT}/release.json` when present), `chat_helper`, `nvidia_nim`, `openrouter` (configured flags and optional catalog `model`; no key material). Health does not call Novita, NVIDIA, or OpenRouter |
 | `GET` | `/node-info` | None | This instance (name, public URL, optional Railway service/region/environment), catalog of nodes with Czech roles (`ZÁPIS` / `ČTENÍ` / `STOP`). No secrets |
 | `POST` | `/upload` | Bearer MCP/RAG or Google | PDF, TXT, Markdown, JSON, or GeoJSON → persist + index |
 | `POST` | `/upload/init` | same as `/upload` | Start chunked session; returns `upload_id`, `chunk_size`, `chunk_count`, `expires_at` |
@@ -350,7 +350,9 @@ Tool behavior:
 - `ingest_text`: if the filename is not a supported suffix, appends `.txt`; calls `ingest_bytes`; returns JSON or `"Error ingesting text: ..."`
 - `update_document`: calls `patch_document`; empty `filename` leaves the name unchanged; `extra` merges custom keys (`null` removes). Missing ID or invalid fields return `"Error update_document: ..."`
 - `update_document_metadata`: calls `patch_document_metadata`; writes `reliability` /
-  `verification[]` / `qg_verze` / `overeni_souhrn` / `doc_status` / `correction_note`. JSON `null`
+  `verification[]` / `qg_verze` / `overeni_souhrn` / `doc_status` / `correction_note`.
+  `overeni_souhrn` is a GPS verification log (max 300 characters). Trails visitor blurbs
+  read `## Shrnutí` / `## Popisek` / prose instead. JSON `null`
   on a whitelist key deletes it (`deleted_fields`). `superseded_by` / `supersedes` are rejected.
   Response JSON includes `truncated` field paths when values were clipped.
   Missing ID or invalid fields return an error string.
@@ -374,15 +376,26 @@ Tool behavior:
 - `get_document_context` / `search_catalog_documents`: reader-local only (no embeddings); catalog substring search optionally wraps the same context bundle
 - `link_locality` / `verify_link`: when `TRAILS_API_URL` and `TRAILS_API_TOKEN` are set, forward to TrailsAssemblage `POST /locality-links` and `PATCH /locality-links/{id}/verify`. Failures retry with backoff then land in `{RAG_DATA_ROOT}/trails_outbox.json`; MCP tools still succeed. Unset env leaves tools unchanged.
 - `sync_links_to_trails`: idempotent backfill of all `locality_links` points; `dry_run` counts without HTTP.
-- `refine_geo`: validates a `geo_refined` object (Pydantic) and `set_payload`s it onto document metadata and/or Qdrant image/chunk points. Never writes original `lat`/`lon`. `dry_run=true` (default) returns old vs new. Repeat writes of the same object are idempotent; a changed object is appended to `geo_refined_history`. Same `/mcp` bearer as `link_locality`. Not forwarded to Trails.
+- `refine_geo`: validates a `geo_refined` object (Pydantic, `extra=forbid`) and `set_payload`s it onto document metadata and/or Qdrant image/chunk points. The model has `note` and the coordinate fields; it has no `ulice` or `address` key. Never writes original `lat`/`lon`. `dry_run=true` (default) returns old vs new. Repeat writes of the same object are idempotent; a changed object is appended to `geo_refined_history`. Same `/mcp` bearer as `link_locality`. Not forwarded to Trails. Trails may read a street-like `note` when `precision` is `building` or `street` ([caption consumer](#trails-caption-consumer)).
 - `refine_geo_batch`: pages of ≤200 `{doc_id, chunk_index?, image_id?, geo_refined}` items; per-item `ok` / `would_change` / `changed` / `error`. One invalid item does not abort the rest. Whole-call error if empty or oversize.
 - `list_geo_refinements`: scroll Qdrant + document catalog for stored `geo_refined`; filter precision/status/confidence_level/needs_refinement/verified/doc_id; `limit`/`offset` pagination.
 
 No stdio MCP entrypoint (`mcp.run()` is not called). Tests post JSON-RPC `initialize` / `tools/list` to `/mcp/`.
 
+### Trails caption consumer
+
+TrailsAssemblage [#63](https://github.com/mkrejp/TrailsAssemblage/pull/63) / [#64](https://github.com/mkrejp/TrailsAssemblage/pull/64), live on `https://trail.animarium.ai`, builds trail stop captions on the Trails side. `POST /catalog/objects/captions` GETs this process:
+
+- `GET /documents/{doc_id}` (catalog metadata, including `geo_refined` when stored)
+- `GET /documents/{doc_id}/text` (processed full text)
+
+Auth on those routes is none, so the reader can serve them with `RAG_READER_URL` and no MCP token. Street text is `**Ulice:**` / `**Adresa:**` in that markdown, or a street-like `geo_refined.note` when `precision` is `building` or `street`. Method notes (Wikidata P625) and Wikidata `Q…` ids are not streets. The short description is Trails-side extractive text from `## Shrnutí`, then `## Popisek` / `## Popis`, then the first prose sentence (`**Popis:**` wins when the markdown has it). `overeni_souhrn` stays the GPS verification log.
+
+Search hits keep `lat` / `lon` / `geo_source` / `geo_refined`. This repository does not add `street_address`, `short_description`, `ulice`, or `address` to hits or to `GeoRefined`. Optional Trails sentence ranking (`TRAILS_CAPTION_EMBED=1`) is a Novita `baai/bge-m3` call inside Trails. Search and Ask do not call the caption route. Detail: [README](../README.md#trails-caption-consumer).
+
 ## RAG pipeline
 
-There is **retrieval + embedding**, not generation. No chat/completions call exists. See [Embedding connectivity](./CONNECTIVITY.md#embedding-connectivity). Cursor-hosted Grok is used **outside** this process (GitHub PRs, hunting, ingester loads) — not on the reader, Trails search path, or GeoServer ([inference roles](./adr/inference-roles.md)).
+Indexed text is **retrieval + embedding**. Production embeddings and `chat_helper` rerank stay prepaid Novita (or local FastEmbed ONNX for embeddings). Two chat calls exist and stay off unless configured: Gateway `vmc/cheap` phrasing inside `chat_helper`, and ingester `pdf_figure` summaries (`FIGURE_SUMMARY_LLM`, default `off`). Neither call writes vectors. Trails captions are computed in Trails from the document GET above. See [Embedding connectivity](./CONNECTIVITY.md#embedding-connectivity). Cursor-hosted Grok is used **outside** this process (GitHub PRs, hunting, ingester loads). Reader search, Trails search, and GeoServer stay on Novita or Hugging Face ONNX ([inference roles](./adr/inference-roles.md)).
 
 ### Ingestion
 
@@ -437,6 +450,8 @@ See [Embedding connectivity](./CONNECTIVITY.md#embedding-connectivity) and [Embe
 - HTTP `_ingest_upload` maps any `ValueError` to **400** (filename/type checks and missing credentials).
 - Other ingest failures become HTTP **500** `"Ingest failed: ..."`.
 - MCP search and ingest tools catch exceptions and return error strings.
+
+**Figure summaries (ingest only).** `rag/figure_summary.py` builds extractive `pdf_figure` summaries when `FIGURE_SUMMARY_LLM=off` (the default). `novita` POSTs `https://api.novita.ai/openai/v1/chat/completions` with `NOVITA_API_KEY` (this path does not use the embedding key resolver). `openrouter` POSTs OpenRouter chat with `OPENROUTER_API_KEY`, `provider.only` set from `FIGURE_SUMMARY_LLM_PROVIDER` (`novita` or `nvidia`, default `novita`), and model `FIGURE_SUMMARY_LLM_MODEL`, else `OPENROUTER_MODEL`, else `z-ai/glm-4.6`. A missing key, HTTP error, or unparseable JSON returns the extractive summary. Summaries do not write vectors. [#68](https://github.com/mkrejp/fastmcp-rag-timer/pull/68) is lint-only on this path. Leave the flag `off` on the production ingester unless Marek enables it. Prepaid Novita `baai/bge-m3` remains the ingest/query embedding, and `baai/bge-reranker-v2-m3` remains `chat_helper` rerank. NVIDIA NIM (`NVIDIA_NIM_API`, fallback `NVIDIA_API_KEY` / `NVIDIA_NIM_APU`) and OpenRouter BYOK (`scripts/openrouter_byok_sync.py` with `OPENROUTER_MANAGEMENT_KEY`, providers `nvidia` and `novita`) are development credentials. They are not the embedding path.
 
 ### Vector store
 
@@ -666,9 +681,11 @@ Anyone who can reach the listen port can list/read processed catalog text, store
 - Application logger `rag.*` with StreamHandler plus an in-memory ring buffer (`rag/logging_setup.py`, 500 entries) exposed at `GET /api/admin/logs` (Google session).
 - Uvicorn default access/error logs.
 - `GET /health` returns liveness, data root, embedding provider status,
-  `app_mode` / `writes_enabled`, `release_id`, and `chat_helper` flags
-  (prepaid billing, rerank/chat configured); it does not probe Qdrant or
-  Novita.
+  `app_mode` / `writes_enabled`, `release_id`, `chat_helper` flags
+  (prepaid billing, rerank/chat configured), and `nvidia_nim` / `openrouter`
+  status objects (`configured`, optional catalog `model`; OpenRouter also
+  `management_configured`). It does not probe Qdrant, Novita, NVIDIA, or
+  OpenRouter, and it does not return key material.
 - `GET /node-info` returns the public node catalog and this instance's Railway identity fields; it does not include secrets.
 - MCP tool failures are returned as strings and recorded in accounting; they are also logged on the search path.
 - Accounting under `ACCNT_DATA_ROOT`: daily JSON rollups and JSONL events for embeddings, MCP tools, HTTP routes, and outbound fetches. No budgets or dollar conversion.
@@ -681,7 +698,7 @@ Current gaps (not a history of old bugs):
 1. **No timer/scheduler** despite the repository name. Upload TTL is enforced on session access and when a new upload is created, not by a background sweeper.
 2. **No MCP resources or prompts.**
 3. **No REST search** — similarity search is MCP-only.
-4. **No generator LLM in this process** — retrieval only; no answer synthesis. Development/hunting LLMs are Cursor-hosted Grok against **GitHub** application repositories; they must not back reader or GeoServer search ([inference roles](./adr/inference-roles.md)).
+4. **Generator calls are opt-in.** Production embeddings and rerank stay prepaid Novita. `chat_helper` Gateway phrasing and `FIGURE_SUMMARY_LLM` default off; figure summaries fall back to extractive text and do not write vectors. Trails street lines and visitor blurbs are extracted in Trails from `GET /documents/{id}` and `/text`. Development/hunting LLMs are Cursor-hosted Grok against **GitHub** ([inference roles](./adr/inference-roles.md)).
 5. **Catalog, fulltext, `/upload-media`, `/health`, `/node-info`, and OpenAPI have no inbound auth.** Multipart `POST /upload` has no size quota in code.
 6. **`/upload-media`** stores files but does not index them or add them to `index.json`.
 7. **No HTTP reindex** of PDF bytes — `PUT /documents/{doc_id}/content` replaces indexed text only (no image/figure re-extract). To replace a PDF file entirely, delete then re-upload.

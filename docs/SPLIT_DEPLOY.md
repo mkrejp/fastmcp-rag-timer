@@ -33,11 +33,13 @@ Coolify/VPS contract below stays valid for later migration; **do not** provision
 - Defaults `EMBEDDING_PROVIDER_QUERY` to `novita` when unset (no local BGE-M3 in `Dockerfile.reader`).
 - Prefer `IMAGE_EMBEDDING_ENABLED=false` (CLIP is heavy).
 - Keeps serving reads/MCP while the ingester is stopped.
+- Unauthenticated `GET /documents/{doc_id}` and `GET /documents/{doc_id}/text` are what Trails `POST /catalog/objects/captions` reads (`RAG_READER_URL` on the Trails host). Trails reads the street from `**Ulice:**` / `**Adresa:**`, or from a street-like `geo_refined.note` when precision is `building` or `street` (Wikidata P625 method notes and `Q…` ids are verification notes). The short description is Trails-side extractive text from `## Shrnutí` / `## Popisek` / the first prose. The reader stores `geo_refined` as implemented (`extra=forbid`, no `ulice` / `address`) and keeps `overeni_souhrn` as the GPS verification log. Search hits stay coordinates plus `geo_refined`. Query embeddings and `chat_helper` rerank stay prepaid Novita.
 
 **Ingester**
 
 - Defaults role to ZÁPIS+ČTENÍ when `RAG_NODE_ROLE` unset.
 - Runs upload/ingest/OCR; builds incremental releases via `scripts/rag-publish.py`.
+- `FIGURE_SUMMARY_LLM` stays `off` unless Marek enables it. `openrouter` needs `OPENROUTER_API_KEY` and pins `FIGURE_SUMMARY_LLM_PROVIDER` to `novita` or `nvidia`. `novita` chat uses `NOVITA_API_KEY`. Either mode falls back to extractive text and does not write vectors. Ingest embeddings stay `EMBEDDING_PROVIDER_INGEST=novita` (`baai/bge-m3`). `NVIDIA_NIM_API` and `OPENROUTER_MANAGEMENT_KEY` are development credentials (BYOK script `scripts/openrouter_byok_sync.py`). Embed and rerank stay direct prepaid Novita.
 
 **All**
 
@@ -243,7 +245,7 @@ Set `RAG_NODES` so `write_nodes` in the 403 body points at the ingest URL (even 
 
 ### Railway env (names only)
 
-Same tables as Coolify §4 below. Reader must have: `APP_MODE=reader`, `RAG_DATA_ROOT`, `MCP_API_TOKEN` or `RAG_API_TOKEN`, Novita key if query is Novita, `PUBLIC_BASE_URL`, `MCP_ALLOWED_HOSTS`, `RAG_NODES`, `IMAGE_EMBEDDING_ENABLED=false`, `EMBEDDING_PROVIDER_QUERY=novita`.
+Same tables as Coolify §4 below. Reader must have: `APP_MODE=reader`, `RAG_DATA_ROOT`, `MCP_API_TOKEN` or `RAG_API_TOKEN`, Novita key if query is Novita, `PUBLIC_BASE_URL`, `MCP_ALLOWED_HOSTS`, `RAG_NODES`, `IMAGE_EMBEDDING_ENABLED=false`, `EMBEDDING_PROVIDER_QUERY=novita`. The reader does not need `OPENROUTER_API_KEY` or `NVIDIA_NIM_API`. Trails caption GETs use the public document routes on this reader.
 
 ### Railway cutover / standby notes
 
@@ -316,7 +318,10 @@ Public hostname: **`art-nouveau-rag.animarium.ai`** → Coolify reader. Ingester
 | `OPENAI_TOKEN` / `OPENAI_API_KEY` | optional | **yes** | Last-resort embedding fallbacks |
 | `SESSION_SECRET` | recommended | **yes** | Cookie sessions |
 | `GOOGLE_CLIENT_SECRET` | if Google UI | **yes** | With `GOOGLE_CLIENT_ID` |
-| `TRAILS_API_TOKEN` | if Trails sync | **yes** | With `TRAILS_API_URL` |
+| `TRAILS_API_TOKEN` | if Trails sync | **yes** | With `TRAILS_API_URL`. Trails caption backfill uses this on the **Trails** host, then GETs the reader with no RAG bearer |
+| `NVIDIA_NIM_API` | optional (dev) | **yes** | Hosted NIM. Fallback names `NVIDIA_NIM_APU`, `NVIDIA_API_KEY`. Not embeddings |
+| `OPENROUTER_API_KEY` | optional | **yes** | Development chat, and figure summaries only when `FIGURE_SUMMARY_LLM=openrouter`. Not embeddings |
+| `OPENROUTER_MANAGEMENT_KEY` | optional (dev) | **yes** | BYOK script only (`nvidia` and `novita` providers). Not chat and not embeddings |
 
 **Non-secret:**
 
@@ -342,7 +347,11 @@ Public hostname: **`art-nouveau-rag.animarium.ai`** → Coolify reader. Ingester
 | `RAG_SYNC_URL` | ingester (live push) | reader origin URL | |
 | `RAG_SYNC_PUSH_ENABLED` / `RAG_SYNC_PUSH_ON_INGEST` | ingester optional | default **off**; set `1` to opt in | |
 | `RAG_SYNC_NIGHTLY_OFFLINE` | ingester optional | `1` suppresses push | |
-| `RAG_SYNC_DRY_RUN_ONLY` | reader optional | force dry-run commits | |
+| `RAG_SYNC_DRY_RUN_ONLY` | reader optional | force dry-run commits |
+| `FIGURE_SUMMARY_LLM` | ingester optional | `off` | `off` (default), `novita`, or `openrouter`. Does not change BGE-M3 embeddings |
+| `FIGURE_SUMMARY_LLM_PROVIDER` | when OpenRouter figure LLM | `novita` | `novita` or `nvidia` |
+| `FIGURE_SUMMARY_LLM_MODEL` | optional | unset | OpenRouter default model `z-ai/glm-4.6` when unset in OpenRouter mode |
+| `NVIDIA_NIM_MODEL` / `OPENROUTER_MODEL` | optional dev | unset | Catalog ids for development calls | |
 
 ### Domain / clients (when DNS is created)
 
@@ -395,6 +404,8 @@ Compact index; full sync env tables are in §(b) and Coolify §4 above.
 | `MCP_READ_TOKEN` | optional read-only `/mcp` | optional read-only `/mcp` | optional |
 | `RAG_ENFORCE_NODE_ROLE` | implicit (always on) | optional extra guard | optional |
 | `PUBLIC_BASE_URL` / `MCP_ALLOWED_HOSTS` | reader hostname | ingester hostname | service URL |
+| `FIGURE_SUMMARY_LLM` | `off` (no PDF ingest) | `off` unless Marek enables `novita` or `openrouter` | `off` |
+| `NVIDIA_NIM_API` / `OPENROUTER_*` | unset | optional development secrets; not embed/rerank | optional dev |
 
 Shared: `RAG_DATA_ROOT`, volume at `/data`, `RAG_NODES` catalog (writer + reader URLs).
 
