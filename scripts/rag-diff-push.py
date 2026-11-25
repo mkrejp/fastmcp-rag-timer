@@ -42,6 +42,11 @@ def main() -> int:
         help="Force a full baseline publish against the reader catalog",
     )
     parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Begin/commit with dry_run (reader validates only, no mutations)",
+    )
+    parser.add_argument(
         "--no-mark-published",
         action="store_true",
         help="Do not write release.json on the writer after a successful push",
@@ -58,6 +63,7 @@ def main() -> int:
             writer_host=args.writer_host.strip() or None,
             mark_published=not args.no_mark_published,
             force_baseline=bool(args.force_baseline),
+            dry_run=bool(args.dry_run),
         )
     except DiffPushError as exc:
         print(json.dumps({"ok": False, "error": str(exc)}), file=sys.stderr)
