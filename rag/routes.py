@@ -22,7 +22,7 @@ from qdrant_client import QdrantClient
 
 from rag.accounting import accounting_source, get_global_store
 from rag.app_mode import app_mode_status
-from rag.auth import require_api_token, require_embed_access
+from rag.auth import require_api_token, require_embed_access, require_read_access
 from rag.chat_helper import helper_public_status
 from rag.chunked_upload import (
     ChunkConflictError,
@@ -82,6 +82,7 @@ from rag.storage import RagStorage
 from rag.verification_meta import DocumentMetadataError
 
 MAX_IMAGE_HTTP_BYTES = 50 * 1024 * 1024
+MAX_UPLOAD_MEDIA_BYTES = 50 * 1024 * 1024
 
 router = APIRouter()
 logger = get_logger("rag.routes")
@@ -785,7 +786,7 @@ def ingest_json_url(
 UPLOAD_MEDIA_DEPRECATION_MESSAGE = (
     "POST /upload-media is closed. Upload images with provenance to the geo-media "
     "service (POST /v1/assets). Set RAG_UPLOAD_MEDIA_DEPRECATED=0 to temporarily "
-    "re-enable the legacy unauthenticated store."
+    "re-enable the legacy store (Bearer write token required)."
 )
 
 
@@ -793,7 +794,7 @@ UPLOAD_MEDIA_DEPRECATION_MESSAGE = (
 async def upload_media(
     request: Request, file: UploadFile = File(...)
 ) -> dict[str, Any]:
-    """Deprecated unauthenticated store; use geo-media ``POST /v1/assets`` instead."""
+    """Deprecated store; requires write bearer. Use geo-media ``POST /v1/assets``."""
     if upload_media_deprecated():
         _record_http(route="upload_media", ok=False, error="gone")
         raise HTTPException(
@@ -804,8 +805,12 @@ async def upload_media(
                 "media_service": "geo-media POST /v1/assets",
             },
         )
+    require_embed_access(request)
     filename = file.filename or "media.bin"
     data = await file.read()
+    if len(data) > MAX_UPLOAD_MEDIA_BYTES:
+        _record_http(route="upload_media", ok=False, error="too large")
+        raise HTTPException(status_code=413, detail="Upload too large")
     try:
         doc_id = str(uuid.uuid4())
         path = _storage(request).save_original(doc_id, filename, data)
@@ -1032,7 +1037,7 @@ def replace_document_content_http(
 
 @router.get(
     "/documents/{doc_id}/versions",
-    dependencies=[Depends(require_embed_access)],
+    dependencies=[Depends(require_read_access)],
 )
 def list_document_versions_http(
     doc_id: str,

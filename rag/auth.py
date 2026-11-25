@@ -399,6 +399,89 @@ class McpBearerAuth:
         await self.app(scope, replay, send)
 
 
+def _http_path(scope: Scope) -> str:
+    """Normalized request path without trailing slash (except ``/``)."""
+    path = scope.get("path") or ""
+    if path != "/" and path.endswith("/"):
+        return path.rstrip("/")
+    return path
+
+
+def _requires_http_read_auth(method: str, path: str) -> bool:
+    """Return whether the HTTP request needs a read/write bearer token."""
+    if path in {"/openapi.json", "/docs", "/redoc"} or path.startswith("/docs/"):
+        return True
+    if method.upper() != "GET":
+        return False
+    return path == "/documents" or path.startswith("/documents/")
+
+
+class HttpReadAuthMiddleware:
+    """ASGI guard for catalog GET routes and FastAPI OpenAPI surfaces."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        method = (scope.get("method") or "GET").upper()
+        path = _http_path(scope)
+        if not _requires_http_read_auth(method, path):
+            await self.app(scope, receive, send)
+            return
+        if not mcp_auth_configured():
+            _log.warning(
+                "MCP_API_TOKEN/RAG_API_TOKEN/MCP_READ_TOKEN not set; "
+                "rejecting %s %s",
+                method,
+                path,
+            )
+            response = JSONResponse(
+                {"detail": "Read token is not configured"},
+                status_code=503,
+            )
+            await response(scope, receive, send)
+            return
+        headers = {
+            k.decode("latin-1").lower(): v.decode("latin-1")
+            for k, v in scope.get("headers", [])
+        }
+        if classify_mcp_bearer(headers.get("authorization")) is None:
+            response = JSONResponse(
+                {"detail": "Missing or invalid bearer token"},
+                status_code=401,
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+            await response(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
+
+
+def require_read_access(request: Request) -> None:
+    """Allow catalog and OpenAPI HTTP reads for a valid write or read-only bearer.
+
+    Accepts ``MCP_API_TOKEN`` / ``RAG_API_TOKEN`` or ``MCP_READ_TOKEN`` (same
+    classification as ``/mcp``). Fails closed when no bearer env is configured.
+    """
+    if not mcp_auth_configured():
+        _log.warning(
+            "MCP_API_TOKEN/RAG_API_TOKEN/MCP_READ_TOKEN not set; "
+            "rejecting protected read request"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Read token is not configured",
+        )
+    if classify_mcp_bearer(request.headers.get("authorization")) is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing or invalid bearer token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+
 def require_embed_access(request: Request) -> None:
     """Allow embedding REST routes for a signed-in Google user or a valid bearer token.
 

@@ -17,7 +17,7 @@ from rag.accounting import AccountingStore, set_global_store
 from rag.admin_routes import router as admin_router
 from rag.app_mode import mcp_include_write_tools, resolve_app_mode
 from rag.asgi_shutdown import CompleteResponseOnExit
-from rag.auth import McpBearerAuth
+from rag.auth import HttpReadAuthMiddleware, McpBearerAuth
 from rag.chunked_upload import ChunkedUploadStore
 from rag.config import (
     COLLECTION_NAME,
@@ -185,6 +185,7 @@ def create_app(
     )
     # Outer guard; no-ops unless RAG_ENFORCE_NODE_ROLE is enabled.
     app.add_middleware(NodeWriteGuard)
+    app.add_middleware(HttpReadAuthMiddleware)
     app.state.storage = storage
     app.state.chunked_uploads = chunked_uploads
     app.state.qdrant = qdrant
