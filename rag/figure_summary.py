@@ -20,8 +20,8 @@ from rag.config import (
     resolve_figure_summary_top_k,
     resolve_rag_data_root,
 )
-from rag.openrouter import OPENROUTER_FIGURE_MODEL, openrouter_chat_completion
 from rag.logging_setup import get_logger
+from rag.openrouter import OPENROUTER_FIGURE_MODEL, openrouter_chat_completion
 
 logger = get_logger("rag.figure_summary")
 
@@ -303,19 +303,22 @@ def build_figure_summary(
         except (OSError, json.JSONDecodeError):
             pass
 
+    llm_result: list[dict[str, Any]] | None
+    model: str | None
     if mode == "openrouter":
-        llm_sentences = _llm_summary_openrouter(
+        llm_result = _llm_summary_openrouter(
             span_texts, related_text_refs=related_text_refs
         )
         model = _resolve_openrouter_figure_model()
     else:
-        llm_sentences = _llm_summary_novita(
+        llm_result = _llm_summary_novita(
             span_texts, related_text_refs=related_text_refs
         )
         model = resolve_figure_summary_llm_model() or None
-    if not llm_sentences:
+    if llm_result is None:
         return extractive_summary, extractive_sentences, "extractive", None
-    summary = " ".join(str(s["text"]) for s in llm_sentences).strip()
+    llm_sentences: list[dict[str, Any]] = llm_result
+    summary = " ".join(str(item["text"]) for item in llm_sentences).strip()
     try:
         cache_file.write_text(
             json.dumps(
