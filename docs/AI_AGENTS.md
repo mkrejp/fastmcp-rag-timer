@@ -160,6 +160,11 @@ Do not paste keys into chat or docs. Create the inference key at [openrouter.ai/
 
 Optional ingester figure summaries may set ``FIGURE_SUMMARY_LLM=openrouter`` (default ``off``). That path uses ``OPENROUTER_API_KEY`` and ``FIGURE_SUMMARY_LLM_PROVIDER`` (``novita`` or ``nvidia``). Ingest embeddings stay Novita/FastEmbed BGE-M3. Do not enable this on Railway unless Marek turns it on; then set ``OPENROUTER_API_KEY`` on ``rag-timer-00001``.
 
+**Cursor / Grok cloud agents:** helpers, secret names, BYOK vs chat, and what
+not to route through OpenRouter are in
+[openrouter-agents.md](./openrouter-agents.md). Import ``rag.openrouter`` and
+``rag.nim``; never log keys.
+
 ## Contribution verification note
 
 Attributions marked **Verified** were checked against this repository or public GitHub PR URLs. **Reported by operator** items are included as Marek supplied them and are **not** stored in this repository. No git commit in ``mkrejp/fastmcp-rag-timer`` names an agent unless noted (e.g. test fixtures). Merge commits are authored by **mkrejp**.
