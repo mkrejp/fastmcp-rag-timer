@@ -7,10 +7,7 @@ from unittest.mock import MagicMock
 
 from _pytest.monkeypatch import MonkeyPatch
 
-from rag.publish.diff import (
-    catalog_fingerprint,
-    document_content_fingerprint,
-)
+from rag.publish.diff import catalog_fingerprint, document_content_fingerprint
 from rag.publish.diff_push import (
     DiffPushClient,
     build_and_push,
