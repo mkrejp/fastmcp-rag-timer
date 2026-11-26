@@ -24,6 +24,7 @@ from rag.trails_layer_objects import (
     enqueue_objects_outbox,
     geo_qualifies,
     has_secese_signal,
+    layer_object_display_name,
     maybe_forward_layer_objects,
     object_fingerprint,
     objects_outbox_lock,
@@ -199,6 +200,52 @@ def test_has_secese_signal_top_level_tags_without_extra_mapping() -> None:
         {},
         meta_root={"tags": ["secese"], "extra": {}},
     )
+
+
+def test_hlavni_prvek_from_markdown_not_filename_stem(tmp_path: Path) -> None:
+    """Wikidata-style filename stem defers to markdown heading for Trails title."""
+    doc_id = "doc-markdown-title"
+    processed = tmp_path / doc_id
+    processed.mkdir(parents=True, exist_ok=True)
+    fulltext_path = processed / "fulltext.txt"
+    fulltext_path.write_text(
+        "# Obchodní dům U Černé Matky Boží\n\n**Název:** jiný\n",
+        encoding="utf-8",
+    )
+    meta = _meta(
+        tmp_path,
+        doc_id=doc_id,
+        tags=["secese"],
+        geo=_geo(),
+    )
+    meta.filename = "secese_stavba_Q23817763.md"
+    meta.fulltext_path = str(fulltext_path)
+    ops = build_layer_object_ops(meta, previously_acked={})
+    building = next(op for op in ops if op.get("rag_image_id") is None)
+    assert building["hlavni_prvek"] == "Obchodní dům U Černé Matky Boží"
+    assert building["hlavni_prvek"] != "secese_stavba_Q23817763"
+
+
+def test_hlavni_prvek_metadata_czech_title_prefers_cs(tmp_path: Path) -> None:
+    """Czech title wins over English when metadata stores a language map."""
+    meta = _meta(tmp_path, tags=["secese"], geo=_geo())
+    meta.filename = "secese_stavba_Q1.md"
+    meta.extra = {
+        "tags": ["secese"],
+        "doc_status": "active",
+        "title": {"en": "Art Nouveau house", "cs": "Secesní dům v Praze"},
+    }
+    assert layer_object_display_name(meta) == "Secesní dům v Praze"
+    ops = build_layer_object_ops(meta, previously_acked={})
+    assert ops[0]["hlavni_prvek"] == "Secesní dům v Praze"
+
+
+def test_hlavni_prvek_missing_title_falls_back_to_doc_id(tmp_path: Path) -> None:
+    """Placeholder-only filenames fall back to doc_id, not Wikidata slug text."""
+    meta = _meta(tmp_path, tags=["secese"], geo=_geo(), doc_id="doc-fallback")
+    meta.filename = "secese_stavba_Q999.md"
+    meta.fulltext_path = str(tmp_path / "missing-fulltext.txt")
+    assert layer_object_display_name(meta) == "doc-fallback"
 
 
 def test_build_ops_title_only_no_tags(tmp_path: Path) -> None:
