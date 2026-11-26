@@ -44,7 +44,7 @@ def main() -> int:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Begin/commit with dry_run (reader validates only, no mutations)",
+        help="Read-only trial: GET watermark/catalog, compute diff locally; no push",
     )
     parser.add_argument(
         "--no-mark-published",
@@ -70,6 +70,25 @@ def main() -> int:
         return 1
     finally:
         client.close()
+
+    if result.get("dry_run"):
+        print(
+            "DRY-RUN (read-only): "
+            f"upserts={result.get('docs_upserted', 0)} "
+            f"metadata_only={result.get('docs_upserted_metadata_only', 0)} "
+            f"full={result.get('docs_upserted_full', 0)} "
+            f"deletes={result.get('docs_deleted', 0)}",
+            file=sys.stderr,
+        )
+        for label, key in (
+            ("upserted", "sample_doc_ids_upserted"),
+            ("metadata_only", "sample_doc_ids_metadata_only"),
+            ("full", "sample_doc_ids_upserted_full"),
+            ("deleted", "sample_doc_ids_deleted"),
+        ):
+            sample = result.get(key) or []
+            if sample:
+                print(f"  sample_{label}: {', '.join(sample)}", file=sys.stderr)
 
     print(json.dumps({"ok": True, **result}, ensure_ascii=False, indent=2))
     return 0

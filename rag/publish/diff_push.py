@@ -36,9 +36,18 @@ from rag.storage import RagStorage
 
 logger = get_logger("rag.publish.diff_push")
 
+_DRY_RUN_SAMPLE_SIZE = 10
+
 
 class DiffPushError(RuntimeError):
     """Raised when a live sync push fails."""
+
+
+def _sample_doc_ids(
+    doc_ids: list[str], *, limit: int = _DRY_RUN_SAMPLE_SIZE
+) -> list[str]:
+    """Return the first ``limit`` doc ids for operator previews."""
+    return list(doc_ids[:limit])
 
 
 def sync_push_enabled() -> bool:
@@ -273,11 +282,43 @@ def build_and_push(
         return {**summary, "pushed": False, "reason": "empty_diff"}
 
     metadata_only_set = set(manifest.catalog_doc_ids_metadata_only)
-    vector_doc_ids = [
+    full_upsert_ids = [
         doc_id
         for doc_id in manifest.catalog_doc_ids_upserted
         if doc_id not in metadata_only_set
     ]
+    if dry_run:
+        preview: dict[str, Any] = {
+            **summary,
+            "pushed": False,
+            "dry_run": True,
+            "reason": "dry_run_preview",
+            "parent_release_id": parent,
+            "docs_upserted_full": len(full_upsert_ids),
+            "docs_upserted_metadata_only": len(metadata_only_set),
+            "docs_deleted": len(manifest.catalog_doc_ids_deleted),
+            "locality_link_docs": len(manifest.locality_link_doc_ids_upserted),
+            "sample_doc_ids_upserted": _sample_doc_ids(
+                manifest.catalog_doc_ids_upserted
+            ),
+            "sample_doc_ids_upserted_full": _sample_doc_ids(full_upsert_ids),
+            "sample_doc_ids_metadata_only": _sample_doc_ids(
+                manifest.catalog_doc_ids_metadata_only
+            ),
+            "sample_doc_ids_deleted": _sample_doc_ids(manifest.catalog_doc_ids_deleted),
+            "writer_catalog_count": len(catalog_fingerprint(storage)),
+        }
+        logger.info(
+            "Live sync dry-run preview upserts=%s metadata_only=%s full=%s "
+            "deletes=%s files_added=%s",
+            preview["docs_upserted"],
+            preview["docs_upserted_metadata_only"],
+            preview["docs_upserted_full"],
+            preview["docs_deleted"],
+            preview["files_added"],
+        )
+        return preview
+    vector_doc_ids = full_upsert_ids
     records: list[dict[str, Any]] = []
     point_ids: list[str] = []
     if vector_doc_ids:
@@ -292,7 +333,7 @@ def build_and_push(
         )
         records.extend(exported)
         point_ids.extend(ids)
-        manifest.qdrant_point_ids_deleted = list(manifest.catalog_doc_ids_deleted)
+    manifest.qdrant_point_ids_deleted = list(manifest.catalog_doc_ids_deleted)
     # Link-only docs: payload-only export (no knowledge vectors) for memory safety.
     catalog_set = set(manifest.catalog_doc_ids_upserted)
     link_only = [
@@ -318,7 +359,7 @@ def build_and_push(
                 ordered.append(pid)
         manifest.qdrant_point_ids_upserted = ordered
 
-    push.begin(manifest, dry_run=dry_run)
+    push.begin(manifest, dry_run=False)
 
     root = Path(storage.root)
     blob_files: list[tuple[str, bytes, str]] = []
