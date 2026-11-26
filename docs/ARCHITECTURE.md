@@ -232,13 +232,13 @@ From `rag/routes.py`, `rag/app.py`, `rag/google_oauth.py`, and `rag/admin_routes
 | `POST` | `/upload/{upload_id}/complete` | same | Verify whole-file SHA-256, assemble, ingest, delete staging |
 | `DELETE` | `/upload/{upload_id}` | same | Abort staging; `204` or `404` |
 | `POST` | `/upload-pdf` | same as `/upload` | PDF-only alias |
-| `POST` | `/upload-media` | **None** | Store bytes under `originals/{uuid}/`; **not** extracted or indexed |
+| `POST` | `/upload-media` | Bearer MCP/RAG (410 by default) | Legacy store under `originals/{uuid}/`; **not** indexed; 50 MiB cap when enabled |
 | `POST` | `/ingest-json` | Bearer `RAG_API_TOKEN` | Body `{"url": "..."}`; fetch remote GeoJSON/JSON and index feature attributes (coordinates skipped) |
-| `GET` | `/documents` | **None** | Catalog from `index.json` |
-| `GET` | `/documents/{doc_id}` | **None** | Metadata |
-| `GET` | `/documents/{doc_id}/text` | **None** | Processed full text from disk (no re-parse, no embedding call) |
+| `GET` | `/documents` | Bearer MCP/RAG or `MCP_READ_TOKEN` | Catalog from `index.json`; 401/503 without token |
+| `GET` | `/documents/{doc_id}` | same | Metadata |
+| `GET` | `/documents/{doc_id}/text` | same | Processed full text from disk (no re-parse, no embedding call) |
 | `PUT` | `/documents/{doc_id}/content` | same as `/upload` | Replace indexed text in place (same `doc_id`), archive previous version, re-chunk/re-embed. Required `reason`. `dry_run` previews. Identical content is a no-op. `200` / `400` / `404`; `401`/`503` |
-| `GET` | `/documents/{doc_id}/versions` | same as `/upload` | List archived versions (no full text unless `include_text=true`). `200` / `404`; `401`/`503` |
+| `GET` | `/documents/{doc_id}/versions` | Bearer MCP/RAG or `MCP_READ_TOKEN` | List archived versions (no full text unless `include_text=true`). `200` / `404`; `401`/`503` |
 | `POST` | `/documents/{doc_id}/versions/{n}/restore` | same as `/upload` | Restore version `n` via the same safe replace path (archives current first). Required `reason`. `200` / `400` / `404`; `401`/`503` |
 | `PATCH` | `/documents/{doc_id}` | same as `/upload` | In-place metadata edit (`filename`, `extra`). Catalog + Qdrant `set_payload` only. `200` updated; `400`/`404`; `401`/`503` |
 | `PATCH` | `/documents/{doc_id}/metadata` | same as `/upload` | Verification fields (`set_payload` / JSON `null` delete). Lifecycle field is `doc_status` (catalog ingest `status` stays `ready`). Link fields are **400**. `doc_status` null/`active` while linked is **400**. `200` includes `updated_fields`, `deleted_fields`, `truncated`; `400`/`404`; `401`/`503` |
@@ -690,18 +690,18 @@ Local run and pytest install lines: [README.md](../README.md#local-run).
 
 | Topic | What the code does |
 | --- | --- |
-| HTTP auth | `POST /ingest-json` needs Bearer `RAG_API_TOKEN` (503 if unset). Uploads, images, document PATCH/DELETE, content PUT, version restore: MCP/RAG bearer or Google session. Catalog, `/health`, `/node-info` unauthenticated. `APP_MODE=reader` returns 403 on HTTP writes. `RAG_ENFORCE_NODE_ROLE=1` can 403 writes for node modes on `all`/`ingester`. |
+| HTTP auth | `POST /ingest-json` needs Bearer `RAG_API_TOKEN` (503 if unset).<br>Uploads, images, document PATCH/DELETE, content PUT, version restore: MCP/RAG bearer or Google session.<br>Catalog GET, `/openapi.json`, `/docs`, `/redoc`: MCP/RAG or `MCP_READ_TOKEN` (503 if none configured).<br>`/health`, `/node-info` unauthenticated. Reader mode returns 403 on HTTP writes. |
 | MCP auth | Bearer on every `/mcp` request (`McpBearerAuth`): `MCP_API_TOKEN` / fallback `RAG_API_TOKEN` for full access; optional `MCP_READ_TOKEN` is read-only (filtered `tools/list`, write `tools/call` → JSON-RPC 403). Host allow-list via FastMCP `TransportSecuritySettings` (`MCP_ALLOWED_HOSTS`). |
 | Console auth | `/ui/` and `/api/admin/*` require Google OAuth (`GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET`) and optional email/domain allow-lists. Cookie session via `SESSION_SECRET`. |
 | Secrets | Embedding key from `BGE_M3_NOVITA_API_KEY`, then `NOVITA_API_KEY`, `OPENAI_TOKEN`, `OPENAI_API_KEY`; sent as `Authorization: Bearer` to Novita. Inbound tokens compared with `hmac.compare_digest`. Not read from a file or vault. |
 | TLS | Not implemented in-app. uvicorn `proxy_headers=True` + `forwarded_allow_ips=*`. |
 | Upload path | Originals use `Path(filename).name` (directory components stripped). |
-| Upload size / type | `/upload` allows PDF/TXT/Markdown/JSON/GeoJSON. `/upload-pdf` requires `.pdf`. `/upload-media` accepts any upload with no size quota in code. Chunked uploads cap per-chunk and whole-file size via env. `/ingest-json` caps remote body size and rejects private/loopback URLs. No multipart size quota on `POST /upload`. |
+| Upload size / type | `/upload` allows PDF/TXT/Markdown/JSON/GeoJSON. `/upload-pdf` requires `.pdf`. `/upload-media` is 410 by default; when re-enabled, write bearer and 50 MiB cap. Chunked uploads cap per-chunk and whole-file size via env. `/ingest-json` caps remote body size and rejects private/loopback URLs. No multipart size quota on `POST /upload`. |
 | Bind address | `0.0.0.0`. |
 | Container user | Default root of `python:3.11-slim-bookworm`. |
 | Dependency supply chain | Unpinned packages except `mcp[cli]<2` and `qdrant-client>=1.12,<2`; `uv:latest`. |
 
-Anyone who can reach the listen port can list/read processed catalog text, store unindexed media, and open OpenAPI. Ingest, delete, MCP, and image bytes require a token or Google session.
+Unauthenticated callers can still hit `/health` and `/node-info` (no document bodies). Catalog text, OpenAPI UI, ingest, delete, MCP, and image bytes require a bearer or Google session where applicable.
 
 ## Observability
 
@@ -729,8 +729,12 @@ Current gaps (not a history of old bugs):
    `chat_helper` Gateway phrasing and `FIGURE_SUMMARY_LLM` default off; figure summaries fall back to extractive text and do not write vectors.
    Trails street lines and visitor blurbs are extracted in Trails from `GET /documents/{id}` and `/text`.
    Development/hunting LLMs are Cursor-hosted Grok against **GitHub** ([inference roles](./adr/inference-roles.md)).
-5. **Catalog, fulltext, `/upload-media`, `/health`, `/node-info`, and OpenAPI have no inbound auth.** Multipart `POST /upload` has no size quota in code.
-6. **`/upload-media`** stores files but does not index them or add them to `index.json`.
+5. **Railway tokens (names only).** Both nodes need at least one of `MCP_API_TOKEN`, `RAG_API_TOKEN`, or `MCP_READ_TOKEN` so catalog GET and OpenAPI do not return 503.
+   Prefer `MCP_READ_TOKEN` on reader `00002` for Trails and read-only HTTP clients; `MCP_API_TOKEN` (or `RAG_API_TOKEN`) for MCP and writes.
+   Ingester `00001`: also `RAG_API_TOKEN` for `POST /ingest-json`.
+   Live sync: `RAG_SYNC_TOKEN` on reader; same on ingester when push is enabled.
+   Multipart `POST /upload` still has no size quota in code.
+6. **`/upload-media`** returns **410** by default; when `RAG_UPLOAD_MEDIA_DEPRECATED=0`, it requires a write bearer, does not index, and caps uploads at 50 MiB.
 7. **No HTTP reindex** of PDF bytes — `PUT /documents/{doc_id}/content` replaces indexed text only (no image/figure re-extract). To replace a PDF file entirely, delete then re-upload.
 8. **No lockfile**; most Docker deps unpinned. CI runs Super Linter, pytest (Python 3.11), and the Docker image build.
 9. **No Docker HEALTHCHECK** despite `curl` and `/health`.

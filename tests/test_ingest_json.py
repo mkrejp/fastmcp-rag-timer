@@ -10,7 +10,7 @@ from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 
-from tests.conftest import patched_embeddings
+from tests.conftest import AUTH_HEADERS, patched_embeddings
 
 KRAJE_SAMPLE = {
     "type": "FeatureCollection",
@@ -50,7 +50,7 @@ def auth_client(
         from rag.app import create_app
 
         app = create_app(str(rag_root), accnt_data_root=str(accnt_root))
-        with TestClient(app) as test_client:
+        with TestClient(app, headers=AUTH_HEADERS) as test_client:
             yield test_client
 
 

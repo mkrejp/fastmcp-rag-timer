@@ -63,7 +63,7 @@ def _ingest_fixture_pdf_with_headers(
         )
     assert upload.status_code == 200
     doc_id = upload.json()["doc_id"]
-    meta = client.get(f"/documents/{doc_id}").json()
+    meta = client.get(f"/documents/{doc_id}", headers=headers).json()
     image_id = meta["images"][0]["image_id"]
     return doc_id, image_id
 
