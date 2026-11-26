@@ -79,6 +79,7 @@ SECESE_GATE_TERMS: tuple[str, ...] = (
     "art-nouveau",
     "artnouveau",
     "jugendstil",
+    "sezession",
 )
 _ACK_SEP = "\x1f"
 
@@ -205,12 +206,23 @@ def _fold(text: str) -> str:
     return stripped.casefold()
 
 
+_TAG_FIELD_KEYS = (
+    "tags",
+    "tag",
+    "labels",
+    "categories",
+    "category",
+    "kind",
+    "type",
+)
+
+
 def _iter_tag_strings(extra: Mapping[str, Any] | None) -> list[str]:
-    """Collect string tags / labels from document or image ``extra``."""
+    """Collect string tags / labels from ``extra`` or a top-level meta mapping."""
     if not isinstance(extra, Mapping):
         return []
     out: list[str] = []
-    for key in ("tags", "tag", "labels", "categories", "category", "kind", "type"):
+    for key in _TAG_FIELD_KEYS:
         value = extra.get(key)
         if isinstance(value, str) and value.strip():
             out.append(value)
@@ -253,6 +265,7 @@ def _text_matches_secese_terms(text: str) -> bool:
 
 def has_secese_signal(
     *extras: Mapping[str, Any] | None,
+    meta_root: Mapping[str, Any] | None = None,
     title: str | None = None,
     filename: str | None = None,
 ) -> bool:
@@ -260,6 +273,8 @@ def has_secese_signal(
     blobs: list[str] = []
     for extra in extras:
         blobs.extend(_iter_tag_strings(extra))
+    if meta_root is not None:
+        blobs.extend(_iter_tag_strings(meta_root))
     if blobs:
         tag_blob = " ".join(_fold(item) for item in blobs)
         if _text_matches_secese_terms(tag_blob):
@@ -409,8 +424,10 @@ def build_layer_object_ops(
     wanted: dict[str, dict[str, Any]] = {}
     if meta is not None and not _doc_hidden(meta):
         doc_extra = meta.extra if isinstance(meta.extra, dict) else {}
+        doc_root = meta.to_dict()
         secese_doc = has_secese_signal(
             doc_extra,
+            meta_root=doc_root,
             title=_extra_title(doc_extra),
             filename=meta.filename,
         )
@@ -430,6 +447,7 @@ def build_layer_object_ops(
                 and has_secese_signal(
                     img_extra,
                     doc_extra,
+                    meta_root={**doc_root, **image.to_dict()},
                     title=_extra_title(img_extra) or _extra_title(doc_extra),
                     filename=image.file_path,
                 )

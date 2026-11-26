@@ -49,6 +49,33 @@ def _geo(**overrides: object) -> dict[str, Any]:
     return payload
 
 
+def _meta_dict(
+    tmp_path: Path,
+    *,
+    doc_id: str = "doc-1",
+    geo: dict[str, Any] | None = None,
+    **overrides: Any,
+) -> dict[str, Any]:
+    """Minimal ``meta.json`` shape with optional top-level overrides."""
+    payload: dict[str, Any] = {
+        "doc_id": doc_id,
+        "filename": "plain.pdf",
+        "mime": "application/pdf",
+        "sha256": "abc",
+        "uploaded_at": "2026-01-01T00:00:00+00:00",
+        "chunk_count": 1,
+        "status": "ready",
+        "original_path": str(tmp_path / doc_id / "original.pdf"),
+        "fulltext_path": str(tmp_path / doc_id / "fulltext.txt"),
+        "chunks_path": str(tmp_path / doc_id / "chunks.json"),
+        "images": [],
+        "extra": {},
+        "geo_refined": geo or _geo(),
+    }
+    payload.update(overrides)
+    return payload
+
+
 def _meta(
     tmp_path: Path,
     *,
@@ -146,6 +173,32 @@ def test_has_secese_signal() -> None:
     assert not has_secese_signal({"tags": ["funkcionalismus"]})
     assert not has_secese_signal({"tags": []}, title="Gotická kaple")
     assert not has_secese_signal({}, filename="brutalism-monograph.pdf")
+    assert has_secese_signal(meta_root={"tags": ["sezession"]})
+    assert has_secese_signal(meta_root={"tags": ["Architektura", "SEZESSION"]})
+
+
+def test_build_ops_top_level_tags_empty_extra(tmp_path: Path) -> None:
+    """RAG stores tags on meta.json root; ``extra`` is often empty on disk."""
+    meta = DocumentMeta.from_dict(
+        _meta_dict(
+            tmp_path,
+            doc_id="doc-root-tags",
+            tags=["sezession"],
+            extra={},
+        )
+    )
+    ops = build_layer_object_ops(meta, previously_acked={})
+    assert any(
+        op["op"] == "upsert" and op["pr_stav_nazev"] == PR_STAV_BUDOVA for op in ops
+    )
+
+
+def test_has_secese_signal_top_level_tags_without_extra_mapping() -> None:
+    """Top-level tags count even when the explicit ``extra`` mapping is empty."""
+    assert has_secese_signal(
+        {},
+        meta_root={"tags": ["secese"], "extra": {}},
+    )
 
 
 def test_build_ops_title_only_no_tags(tmp_path: Path) -> None:
