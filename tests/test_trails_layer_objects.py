@@ -135,10 +135,63 @@ def test_geo_qualifies_gate() -> None:
 
 
 def test_has_secese_signal() -> None:
-    """Secese / art-nouveau tags must match."""
+    """Secese gate: tags, title, or filename (folded, diacritic-insensitive)."""
     assert has_secese_signal({"tags": ["secese", "praha"]})
     assert has_secese_signal({"tags": ["Art Nouveau"]})
+    assert has_secese_signal({"tags": []}, title="Secesní budova Praha")
+    assert has_secese_signal({"tags": []}, filename="report-Jugendstil-scan.pdf")
+    assert has_secese_signal({}, title="SECESE", filename="plain.pdf")
+    assert has_secese_signal({}, filename="facade-art-nouveau-photo.jpg")
+    assert has_secese_signal({"tags": ["praha"]}, filename="artnouveau-plans.pdf")
     assert not has_secese_signal({"tags": ["funkcionalismus"]})
+    assert not has_secese_signal({"tags": []}, title="Gotická kaple")
+    assert not has_secese_signal({}, filename="brutalism-monograph.pdf")
+
+
+def test_build_ops_title_only_no_tags(tmp_path: Path) -> None:
+    """Building qualifies when title matches secese gate without tags."""
+    meta = _meta(tmp_path, tags=[], geo=_geo())
+    meta.extra = {"tags": [], "doc_status": "active", "title": "Secesní nároží"}
+    ops = build_layer_object_ops(meta, previously_acked={})
+    assert any(op["pr_stav_nazev"] == PR_STAV_BUDOVA for op in ops)
+
+
+def test_build_ops_filename_only_no_tags(tmp_path: Path) -> None:
+    """Building qualifies when filename matches secese gate without tags."""
+    meta = _meta(tmp_path, doc_id="doc-fn", tags=[], geo=_geo())
+    meta.filename = "Jugendstil-Haus-Brno.pdf"
+    meta.extra = {"tags": [], "doc_status": "active"}
+    ops = build_layer_object_ops(meta, previously_acked={})
+    assert any(op["pr_stav_nazev"] == PR_STAV_BUDOVA for op in ops)
+
+
+def test_build_ops_secese_term_but_geo_fails(tmp_path: Path) -> None:
+    """Title match without qualifying geo does not upsert."""
+    meta = _meta(tmp_path, tags=[], geo=_geo(confidence=0.5))
+    meta.extra = {"tags": [], "doc_status": "active", "title": "art-nouveau"}
+    ops = build_layer_object_ops(meta, previously_acked={})
+    assert not any(op["op"] == "upsert" for op in ops)
+
+
+def test_build_ops_facade_filename_only(tmp_path: Path) -> None:
+    """Facade qualifies via image file name when geo and doc title lack secese."""
+    image = ImageMeta(
+        image_id="img-fn",
+        sha256="img",
+        file_path="figures/SECESE-detail-east.jpg",
+        page_number=1,
+        width=10,
+        height=10,
+        mime="image/jpeg",
+        geo_refined=_geo(lat=50.1, lon=14.5),
+        extra={"tags": []},
+    )
+    meta = _meta(tmp_path, tags=[], geo=_geo(), images=[image])
+    meta.filename = "plain.pdf"
+    meta.extra = {"tags": [], "doc_status": "active"}
+    ops = build_layer_object_ops(meta, previously_acked={})
+    kinds = {op.get("rag_image_id") for op in ops if op["op"] == "upsert"}
+    assert "img-fn" in kinds
 
 
 def test_build_ops_building_and_facade(tmp_path: Path) -> None:

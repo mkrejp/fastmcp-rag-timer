@@ -73,15 +73,12 @@ TRAILS_OBJECTS_DISABLED: dict[str, Any] = {"enabled": False}
 _GEO_OK_STATUS = frozenset({"overeno", "zpresneno"})
 _GEO_OK_PRECISION = frozenset({"building", "street"})
 _MIN_CONFIDENCE = 0.8
-_SECESE_NEEDLES = (
+SECESE_GATE_TERMS: tuple[str, ...] = (
     "secese",
-    "secesni",
-    "secession",
-    "sezession",
-    "jugendstil",
-    "artnouveau",
+    "art nouveau",
     "art-nouveau",
-    "art_nouveau",
+    "artnouveau",
+    "jugendstil",
 )
 _ACK_SEP = "\x1f"
 
@@ -202,9 +199,10 @@ def _http_request(
 
 
 def _fold(text: str) -> str:
-    """ASCII-fold lowercase for tag matching."""
+    """Strip diacritics and casefold for gate term matching."""
     normalized = unicodedata.normalize("NFKD", text)
-    return "".join(ch for ch in normalized if not unicodedata.combining(ch)).lower()
+    stripped = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+    return stripped.casefold()
 
 
 def _iter_tag_strings(extra: Mapping[str, Any] | None) -> list[str]:
@@ -223,18 +221,54 @@ def _iter_tag_strings(extra: Mapping[str, Any] | None) -> list[str]:
     return out
 
 
-def has_secese_signal(*extras: Mapping[str, Any] | None) -> bool:
-    """Return True when tags/labels mention secese / art nouveau."""
+def _extra_title(extra: Mapping[str, Any] | None) -> str | None:
+    """Return a human title from document or image ``extra``."""
+    if not isinstance(extra, Mapping):
+        return None
+    for key in ("title", "name", "caption", "label", "hlavni_prvek"):
+        value = extra.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _text_matches_secese_terms(text: str) -> bool:
+    """Return True when ``text`` contains a :data:`SECESE_GATE_TERMS` substring."""
+    folded = _fold(text)
+    if not folded:
+        return False
+    compact = folded.replace(" ", "").replace("_", "").replace("-", "")
+    words = folded.replace("-", " ").replace("_", " ").split()
+    for needle in SECESE_GATE_TERMS:
+        nfold = _fold(needle)
+        ncompact = nfold.replace(" ", "").replace("_", "").replace("-", "")
+        if ncompact in compact or nfold in folded:
+            return True
+        if nfold == "secese":
+            for word in words:
+                if word.startswith("seces") and len(word) >= 5:
+                    return True
+    return False
+
+
+def has_secese_signal(
+    *extras: Mapping[str, Any] | None,
+    title: str | None = None,
+    filename: str | None = None,
+) -> bool:
+    """Return True when tags, ``title``, or ``filename`` mention secese / art nouveau."""
     blobs: list[str] = []
     for extra in extras:
         blobs.extend(_iter_tag_strings(extra))
-    haystack = " ".join(_fold(item) for item in blobs)
-    if not haystack:
-        return False
-    compact = haystack.replace(" ", "").replace("_", "").replace("-", "")
-    for needle in _SECESE_NEEDLES:
-        folded = needle.replace("-", "").replace("_", "")
-        if folded in compact or needle in haystack:
+    if blobs:
+        tag_blob = " ".join(_fold(item) for item in blobs)
+        if _text_matches_secese_terms(tag_blob):
+            return True
+    if title and title.strip() and _text_matches_secese_terms(title):
+        return True
+    if filename and str(filename).strip():
+        name = Path(str(filename).strip()).name
+        if _text_matches_secese_terms(name):
             return True
     return False
 
@@ -375,7 +409,11 @@ def build_layer_object_ops(
     wanted: dict[str, dict[str, Any]] = {}
     if meta is not None and not _doc_hidden(meta):
         doc_extra = meta.extra if isinstance(meta.extra, dict) else {}
-        secese_doc = has_secese_signal(doc_extra)
+        secese_doc = has_secese_signal(
+            doc_extra,
+            title=_extra_title(doc_extra),
+            filename=meta.filename,
+        )
         if geo_qualifies(meta.geo_refined) and secese_doc:
             body = _upsert_body(
                 meta=meta,
@@ -389,7 +427,12 @@ def build_layer_object_ops(
             img_extra = image.extra if isinstance(image.extra, dict) else {}
             if not (
                 geo_qualifies(image.geo_refined)
-                and has_secese_signal(img_extra, doc_extra)
+                and has_secese_signal(
+                    img_extra,
+                    doc_extra,
+                    title=_extra_title(img_extra) or _extra_title(doc_extra),
+                    filename=image.file_path,
+                )
             ):
                 continue
             body = _upsert_body(
