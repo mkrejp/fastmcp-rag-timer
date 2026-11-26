@@ -67,7 +67,12 @@ def apply_file_release(
         )
         has_points = candidate.is_file()
         points_path: Path | None = candidate if has_points else None
-        if not has_points and manifest.catalog_doc_ids_upserted:
+        vector_upserts = {
+            doc_id
+            for doc_id in manifest.catalog_doc_ids_upserted
+            if doc_id not in set(manifest.catalog_doc_ids_metadata_only)
+        }
+        if not has_points and vector_upserts:
             logger.warning(
                 "Release %s has upserted docs but no %s; "
                 "file/catalog applied without vector upsert",
@@ -75,16 +80,20 @@ def apply_file_release(
                 POINTS_REL_PATH,
             )
         # Only purge upserted docs when we also have replacement points.
+        metadata_only = set(manifest.catalog_doc_ids_metadata_only)
         upsert_ids = list(manifest.catalog_doc_ids_upserted) if has_points else []
+        if not has_points and metadata_only:
+            upsert_ids = list(manifest.catalog_doc_ids_upserted)
         delete_ids = list(manifest.catalog_doc_ids_deleted)
         link_ids = list(manifest.locality_link_doc_ids_upserted)
-        if upsert_ids or delete_ids or link_ids or has_points:
+        if upsert_ids or delete_ids or link_ids or has_points or metadata_only:
             storage = RagStorage(str(root))
             storage.ensure_layout()
             qdrant_stats = apply_qdrant_release(
                 storage.qdrant_dir,
                 upsert_doc_ids=upsert_ids,
                 delete_doc_ids=delete_ids,
+                metadata_only_doc_ids=sorted(metadata_only),
                 locality_link_doc_ids=link_ids,
                 points_jsonl=points_path,
                 client=client,

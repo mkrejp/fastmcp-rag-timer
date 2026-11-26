@@ -7,8 +7,9 @@ from unittest.mock import MagicMock
 
 from _pytest.monkeypatch import MonkeyPatch
 
-from rag.publish.diff import catalog_fingerprint
+from rag.publish.diff import catalog_fingerprint, document_content_fingerprint
 from rag.publish.diff_push import (
+    DiffPushClient,
     build_and_push,
     maybe_push_after_ingest,
     sync_push_enabled,
@@ -85,7 +86,7 @@ def test_build_and_push_empty_diff_on_catalog_parity(
 
     client = MagicMock()
     client.get_watermark.return_value = {"release_id": "rel-parent"}
-    client.fetch_catalog.return_value = (writer_fp, {})
+    client.fetch_catalog.return_value = (writer_fp, writer_fp, {})
     monkeypatch.setattr(
         "rag.publish.diff_push.locality_links_catalog_fingerprint",
         lambda _q: {},
@@ -99,6 +100,107 @@ def test_build_and_push_empty_diff_on_catalog_parity(
     client.begin.assert_not_called()
     client.put_chunk.assert_not_called()
     client.commit.assert_not_called()
+
+
+def test_dry_run_http_only_uses_get(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    """Dry-run must not invoke POST/PUT/PATCH/DELETE on the reader sync API."""
+    monkeypatch.delenv("RAG_SYNC_NIGHTLY_OFFLINE", raising=False)
+    root = tmp_path / "rag"
+    storage = RagStorage(str(root))
+    storage.ensure_layout()
+    doc_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    storage.save_original(doc_id, "a.txt", b"a")
+    storage.write_processed(
+        doc_id=doc_id,
+        filename="a.txt",
+        mime="text/plain",
+        sha256="aaa",
+        fulltext="a",
+        chunks=[{"index": 0, "page": 0, "text": "a"}],
+        images=[],
+        status="ready",
+    )
+    meta = storage.read_meta(doc_id)
+    assert meta is not None
+    content_fp = document_content_fingerprint(meta)
+    methods: list[str] = []
+
+    def _track_request_json(method: str, url: str, **kwargs: object) -> object:
+        methods.append(method.upper())
+        if "watermark" in url:
+            return {"release_id": "rel-parent"}
+        if "catalog" in url:
+            return {
+                "documents": {doc_id: "reader-stale"},
+                "documents_content": {doc_id: content_fp},
+                "locality_links": {},
+            }
+        raise AssertionError(f"unexpected URL in dry-run: {url}")
+
+    monkeypatch.setattr("rag.publish.diff_push._request_json", _track_request_json)
+    monkeypatch.setattr(
+        "rag.publish.diff_push.locality_links_catalog_fingerprint",
+        lambda _q: {},
+    )
+    client = DiffPushClient("https://reader.example.com", token="t")
+    result = build_and_push(storage, qdrant=MagicMock(), client=client, dry_run=True)
+    assert result["dry_run"] is True
+    assert methods
+    assert set(methods) == {"GET"}
+
+
+def test_build_and_push_dry_run_is_read_only(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """CLI dry-run must only call reader GETs (no begin/chunk/commit)."""
+    monkeypatch.delenv("RAG_SYNC_NIGHTLY_OFFLINE", raising=False)
+    root = tmp_path / "rag"
+    storage = RagStorage(str(root))
+    storage.ensure_layout()
+    doc_id = "ffffffff-ffff-ffff-ffff-ffffffffffff"
+    storage.save_original(doc_id, "f.txt", b"foo")
+    storage.write_processed(
+        doc_id=doc_id,
+        filename="f.txt",
+        mime="text/plain",
+        sha256="fff",
+        fulltext="foo",
+        chunks=[{"index": 0, "page": 0, "text": "foo"}],
+        images=[],
+        status="ready",
+    )
+    meta = storage.read_meta(doc_id)
+    assert meta is not None
+    content_fp = document_content_fingerprint(meta)
+    reader_fp = {doc_id: "stale-fingerprint"}
+
+    client = MagicMock()
+    client.get_watermark.return_value = {"release_id": "rel-parent"}
+    client.fetch_catalog.return_value = (reader_fp, {doc_id: content_fp}, {})
+    monkeypatch.setattr(
+        "rag.publish.diff_push.locality_links_catalog_fingerprint",
+        lambda _q: {},
+    )
+    export_mock = MagicMock()
+    monkeypatch.setattr(
+        "rag.publish.diff_push.export_points_for_docs",
+        export_mock,
+    )
+
+    result = build_and_push(storage, qdrant=MagicMock(), client=client, dry_run=True)
+    assert result["dry_run"] is True
+    assert result["pushed"] is False
+    assert result["reason"] == "dry_run_preview"
+    assert doc_id in result["sample_doc_ids_upserted"]
+    assert result["docs_upserted_metadata_only"] == 1
+    assert result["docs_upserted_full"] == 0
+    client.get_watermark.assert_called_once()
+    client.fetch_catalog.assert_called_once()
+    client.begin.assert_not_called()
+    client.put_chunk.assert_not_called()
+    client.commit.assert_not_called()
+    client.abort.assert_not_called()
+    export_mock.assert_not_called()
 
 
 def test_build_and_push_ignores_index_json_only_manifest(
@@ -122,7 +224,7 @@ def test_build_and_push_ignores_index_json_only_manifest(
 
     client = MagicMock()
     client.get_watermark.return_value = {"release_id": "rel-parent"}
-    client.fetch_catalog.return_value = ({"doc": "fp"}, {})
+    client.fetch_catalog.return_value = ({"doc": "fp"}, {"doc": "fp"}, {})
     monkeypatch.setattr(
         "rag.publish.diff_push.locality_links_catalog_fingerprint",
         lambda _q: {},

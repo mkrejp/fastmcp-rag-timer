@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any
 
 from rag.publish.manifest import FileChange, ReleaseManifest, new_release_id
 from rag.storage import DocumentMeta, RagStorage, utc_now_iso
@@ -32,6 +33,16 @@ _FINGERPRINT_META_KEYS = (
     "source_axis",
     "verification_checks",
     "evidence_source_type",
+    "tags",
+)
+
+# Document-level fields stored on ``meta.json`` (not only ``extra``) that affect
+# reader catalog parity and search filters.
+_FINGERPRINT_TOP_LEVEL_KEYS = (
+    "lat",
+    "lon",
+    "geo_refined",
+    "geo_refined_history",
 )
 
 
@@ -84,6 +95,13 @@ def _meta_fingerprint_payload(meta: DocumentMeta) -> dict[str, Any]:
         "sha256": str(meta.sha256 or ""),
         "filename": str(meta.filename or ""),
     }
+    for key in _FINGERPRINT_TOP_LEVEL_KEYS:
+        value = getattr(meta, key, None)
+        if key == "geo_refined_history":
+            if value:
+                payload[key] = value
+        elif value is not None:
+            payload[key] = value
     for key in _FINGERPRINT_META_KEYS:
         if key in {"sha256", "filename"}:
             continue
@@ -109,12 +127,24 @@ def document_catalog_fingerprint(meta: DocumentMeta) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def catalog_fingerprint(storage: RagStorage) -> dict[str, str]:
-    """Map ``doc_id`` → composite catalog fingerprint.
+def _legacy_content_sha_fingerprint(sha: str) -> str:
+    """Hash index ``sha256`` when ``meta.json`` is missing."""
+    return hashlib.sha256(
+        json.dumps(
+            {"sha256": sha},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
 
-    Prefer ``meta.json`` (includes verification / lifecycle extras). Fall back
-    to the index ``sha256`` only when meta is missing.
-    """
+
+def _fingerprint_map_for_storage(
+    storage: RagStorage,
+    *,
+    from_meta: Callable[[DocumentMeta], str],
+) -> dict[str, str]:
+    """Build doc_id→fingerprint using ``from_meta`` on each ``meta.json``."""
     out: dict[str, str] = {}
     for doc in storage.list_documents():
         doc_id = str(doc.get("doc_id") or "")
@@ -122,20 +152,81 @@ def catalog_fingerprint(storage: RagStorage) -> dict[str, str]:
             continue
         meta = storage.read_meta(doc_id)
         if meta is not None:
-            out[doc_id] = document_catalog_fingerprint(meta)
+            out[doc_id] = str(from_meta(meta))
             continue
         sha = str(doc.get("sha256") or "")
         if sha:
-            # Legacy fallback: content digest alone (no meta on disk).
-            out[doc_id] = hashlib.sha256(
-                json.dumps(
-                    {"sha256": sha},
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                ).encode("utf-8")
-            ).hexdigest()
+            out[doc_id] = _legacy_content_sha_fingerprint(sha)
     return out
+
+
+def document_content_fingerprint(meta: DocumentMeta) -> str:
+    """Return a content-only digest (processed bytes ``sha256``).
+
+    Used with the reader ``documents_content`` catalog map to detect
+    metadata-only drift without re-shipping embedding vectors.
+    """
+    sha = str(meta.sha256 or "")
+    canonical = json.dumps(
+        {"sha256": sha},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def content_catalog_fingerprint(storage: RagStorage) -> dict[str, str]:
+    """Map ``doc_id`` → content-only fingerprint."""
+    return _fingerprint_map_for_storage(
+        storage,
+        from_meta=document_content_fingerprint,
+    )
+
+
+def catalog_fingerprint(storage: RagStorage) -> dict[str, str]:
+    """Map ``doc_id`` → composite catalog fingerprint.
+
+    Prefer ``meta.json`` (includes verification / lifecycle extras). Fall back
+    to the index ``sha256`` only when meta is missing.
+    """
+    return _fingerprint_map_for_storage(
+        storage,
+        from_meta=document_catalog_fingerprint,
+    )
+
+
+def _metadata_only_doc_ids(
+    storage: RagStorage,
+    upserted: Sequence[str],
+    *,
+    reader_catalog: Mapping[str, str],
+    reader_content_catalog: Mapping[str, str] | None,
+) -> list[str]:
+    """Return upserted docs whose processed content digest already matches the reader."""
+    if not upserted or not reader_content_catalog:
+        return []
+    writer_content = content_catalog_fingerprint(storage)
+    out: list[str] = []
+    for doc_id in upserted:
+        if doc_id not in reader_catalog:
+            continue
+        reader_digest = reader_content_catalog.get(doc_id)
+        writer_digest = writer_content.get(doc_id)
+        if reader_digest and writer_digest and reader_digest == writer_digest:
+            out.append(doc_id)
+    return sorted(out)
+
+
+def _paths_for_metadata_only_doc(root: Path, doc_id: str) -> list[Path]:
+    """Return minimal on-disk artifacts needed for a metadata-only publish."""
+    paths: list[Path] = []
+    proc = root / "processed" / doc_id
+    for name in ("meta.json", "chunks.json"):
+        candidate = proc / name
+        if candidate.is_file():
+            paths.append(candidate)
+    return paths
 
 
 def build_file_diff(
@@ -143,6 +234,7 @@ def build_file_diff(
     *,
     parent_release_id: str | None,
     reader_catalog: Mapping[str, str] | None = None,
+    reader_content_catalog: Mapping[str, str] | None = None,
     reader_locality_catalog: Mapping[str, str] | None = None,
     writer_locality_catalog: Mapping[str, str] | None = None,
     writer_host: str | None = None,
@@ -170,6 +262,17 @@ def build_file_diff(
         if baseline or reader_fp.get(doc_id) != digest
     )
     deleted = sorted(doc_id for doc_id in reader_fp if doc_id not in writer_fp)
+    metadata_only = (
+        []
+        if baseline
+        else _metadata_only_doc_ids(
+            storage,
+            upserted,
+            reader_catalog=reader_fp,
+            reader_content_catalog=reader_content_catalog,
+        )
+    )
+    metadata_only_set = set(metadata_only)
 
     writer_links = dict(writer_locality_catalog or {})
     reader_links = dict(reader_locality_catalog or {})
@@ -211,6 +314,14 @@ def build_file_diff(
                     FileChange(path="index.json", sha256=digest, size=size, doc_id=None)
                 )
         for doc_id in upserted:
+            if doc_id in metadata_only_set:
+                for path in _paths_for_metadata_only_doc(root, doc_id):
+                    rel = _rel_posix(root, path)
+                    digest, size = _sha256_file(path)
+                    files_added.append(
+                        FileChange(path=rel, sha256=digest, size=size, doc_id=doc_id)
+                    )
+                continue
             for prefix in ("originals", "processed", "versions"):
                 base = root / prefix / doc_id
                 if not base.exists():
@@ -235,6 +346,7 @@ def build_file_diff(
         files_deleted=files_deleted,
         catalog_doc_ids_upserted=upserted,
         catalog_doc_ids_deleted=deleted,
+        catalog_doc_ids_metadata_only=sorted(metadata_only),
         locality_link_doc_ids_upserted=link_docs,
         full_baseline=baseline,
     )
@@ -258,6 +370,7 @@ def summarize_diff(manifest: ReleaseManifest) -> dict[str, Any]:
         "files_added": len(manifest.files_added),
         "files_deleted": len(manifest.files_deleted),
         "docs_upserted": len(manifest.catalog_doc_ids_upserted),
+        "docs_metadata_only": len(manifest.catalog_doc_ids_metadata_only),
         "docs_deleted": len(manifest.catalog_doc_ids_deleted),
         "locality_link_docs": len(manifest.locality_link_doc_ids_upserted),
         "qdrant_points_upserted": len(manifest.qdrant_point_ids_upserted),

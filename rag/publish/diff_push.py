@@ -36,9 +36,18 @@ from rag.storage import RagStorage
 
 logger = get_logger("rag.publish.diff_push")
 
+_DRY_RUN_SAMPLE_SIZE = 10
+
 
 class DiffPushError(RuntimeError):
     """Raised when a live sync push fails."""
+
+
+def _sample_doc_ids(
+    doc_ids: list[str], *, limit: int = _DRY_RUN_SAMPLE_SIZE
+) -> list[str]:
+    """Return the first ``limit`` doc ids for operator previews."""
+    return list(doc_ids[:limit])
 
 
 def sync_push_enabled() -> bool:
@@ -125,11 +134,11 @@ class DiffPushClient:
 
     def get_catalog(self) -> dict[str, str]:
         """GET /sync/v1/catalog → doc_id→fingerprint map (documents only)."""
-        docs, _links = self.fetch_catalog()
+        docs, _content, _links = self.fetch_catalog()
         return docs
 
-    def fetch_catalog(self) -> tuple[dict[str, str], dict[str, str]]:
-        """GET /sync/v1/catalog → ``(documents, locality_links)`` fingerprints."""
+    def fetch_catalog(self) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
+        """GET /sync/v1/catalog → ``(documents, content, locality_links)``."""
         body = _request_json(
             "GET",
             self._url("sync/v1/catalog"),
@@ -137,9 +146,11 @@ class DiffPushClient:
             timeout=self.timeout,
         )
         docs = body.get("documents") or {}
+        content = body.get("documents_content") or {}
         links = body.get("locality_links") or {}
         return (
             {str(k): str(v) for k, v in docs.items()},
+            {str(k): str(v) for k, v in content.items()},
             {str(k): str(v) for k, v in links.items()},
         )
 
@@ -240,12 +251,13 @@ def build_and_push(
 
     watermark = push.get_watermark()
     parent = watermark.get("release_id")
-    reader_catalog, reader_locality = push.fetch_catalog()
+    reader_catalog, reader_content, reader_locality = push.fetch_catalog()
     writer_locality = locality_links_catalog_fingerprint(qdrant)
     manifest = build_file_diff(
         storage,
         parent_release_id=parent if isinstance(parent, str) else None,
         reader_catalog=reader_catalog,
+        reader_content_catalog=reader_content or None,
         reader_locality_catalog=reader_locality,
         writer_locality_catalog=writer_locality,
         writer_host=writer_host,
@@ -264,19 +276,64 @@ def build_and_push(
         and not manifest.catalog_doc_ids_upserted
         and not manifest.catalog_doc_ids_deleted
         and not manifest.locality_link_doc_ids_upserted
+        and not manifest.catalog_doc_ids_metadata_only
     ):
         logger.info("Live sync: nothing to push (empty diff)")
         return {**summary, "pushed": False, "reason": "empty_diff"}
 
+    metadata_only_set = set(manifest.catalog_doc_ids_metadata_only)
+    full_upsert_ids = [
+        doc_id
+        for doc_id in manifest.catalog_doc_ids_upserted
+        if doc_id not in metadata_only_set
+    ]
+    if dry_run:
+        preview: dict[str, Any] = {
+            **summary,
+            "pushed": False,
+            "dry_run": True,
+            "reason": "dry_run_preview",
+            "parent_release_id": parent,
+            "docs_upserted_full": len(full_upsert_ids),
+            "docs_upserted_metadata_only": len(metadata_only_set),
+            "docs_deleted": len(manifest.catalog_doc_ids_deleted),
+            "locality_link_docs": len(manifest.locality_link_doc_ids_upserted),
+            "sample_doc_ids_upserted": _sample_doc_ids(
+                manifest.catalog_doc_ids_upserted
+            ),
+            "sample_doc_ids_upserted_full": _sample_doc_ids(full_upsert_ids),
+            "sample_doc_ids_metadata_only": _sample_doc_ids(
+                manifest.catalog_doc_ids_metadata_only
+            ),
+            "sample_doc_ids_deleted": _sample_doc_ids(manifest.catalog_doc_ids_deleted),
+            "writer_catalog_count": len(catalog_fingerprint(storage)),
+        }
+        logger.info(
+            "Live sync dry-run preview upserts=%s metadata_only=%s full=%s "
+            "deletes=%s files_added=%s",
+            preview["docs_upserted"],
+            preview["docs_upserted_metadata_only"],
+            preview["docs_upserted_full"],
+            preview["docs_deleted"],
+            preview["files_added"],
+        )
+        return preview
+    vector_doc_ids = full_upsert_ids
     records: list[dict[str, Any]] = []
     point_ids: list[str] = []
-    if manifest.catalog_doc_ids_upserted:
+    if vector_doc_ids:
+        exported, ids = export_points_for_docs(qdrant, vector_doc_ids)
+        records.extend(exported)
+        point_ids.extend(ids)
+    if metadata_only_set:
         exported, ids = export_points_for_docs(
-            qdrant, manifest.catalog_doc_ids_upserted
+            qdrant,
+            sorted(metadata_only_set),
+            payload_only=True,
         )
         records.extend(exported)
         point_ids.extend(ids)
-        manifest.qdrant_point_ids_deleted = list(manifest.catalog_doc_ids_deleted)
+    manifest.qdrant_point_ids_deleted = list(manifest.catalog_doc_ids_deleted)
     # Link-only docs: payload-only export (no knowledge vectors) for memory safety.
     catalog_set = set(manifest.catalog_doc_ids_upserted)
     link_only = [
@@ -302,7 +359,7 @@ def build_and_push(
                 ordered.append(pid)
         manifest.qdrant_point_ids_upserted = ordered
 
-    push.begin(manifest, dry_run=dry_run)
+    push.begin(manifest, dry_run=False)
 
     root = Path(storage.root)
     blob_files: list[tuple[str, bytes, str]] = []

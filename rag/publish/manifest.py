@@ -38,6 +38,9 @@ class ReleaseManifest:
     files_deleted: list[str] = field(default_factory=list)
     catalog_doc_ids_upserted: list[str] = field(default_factory=list)
     catalog_doc_ids_deleted: list[str] = field(default_factory=list)
+    # Subset of ``catalog_doc_ids_upserted``: same content digest on reader;
+    # apply copies catalog files and uses Qdrant ``set_payload`` only.
+    catalog_doc_ids_metadata_only: list[str] = field(default_factory=list)
     # Docs whose locality_links fingerprint changed (may be link-only; no files).
     locality_link_doc_ids_upserted: list[str] = field(default_factory=list)
     qdrant_point_ids_upserted: list[str] = field(default_factory=list)
@@ -67,6 +70,9 @@ class ReleaseManifest:
             ],
             catalog_doc_ids_deleted=[
                 str(i) for i in data.get("catalog_doc_ids_deleted") or []
+            ],
+            catalog_doc_ids_metadata_only=[
+                str(i) for i in data.get("catalog_doc_ids_metadata_only") or []
             ],
             locality_link_doc_ids_upserted=[
                 str(i) for i in data.get("locality_link_doc_ids_upserted") or []

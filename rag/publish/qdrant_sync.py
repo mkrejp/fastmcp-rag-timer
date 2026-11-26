@@ -11,8 +11,9 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any
 
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
@@ -143,6 +144,7 @@ def export_points_for_docs(
     doc_ids: Sequence[str],
     *,
     collections: Sequence[str] = DEFAULT_SYNC_COLLECTIONS,
+    payload_only: bool = False,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Export all points for ``doc_ids`` across ``collections``.
 
@@ -156,11 +158,14 @@ def export_points_for_docs(
         if not doc_id:
             continue
         for collection_name in collections:
+            with_vectors = (
+                not payload_only and collection_name != LOCALITY_LINKS_COLLECTION
+            )
             for point in scroll_points_for_doc(
                 client,
                 collection_name=collection_name,
                 doc_id=doc_id,
-                with_vectors=collection_name != LOCALITY_LINKS_COLLECTION,
+                with_vectors=with_vectors,
             ):
                 record = serialize_point_record(collection_name, point)
                 records.append(record)
@@ -330,6 +335,42 @@ def _point_struct_from_record(
     )
 
 
+def apply_payload_only_records(
+    client: QdrantClient,
+    records: Sequence[Mapping[str, Any]],
+) -> int:
+    """Merge payloads onto existing points via ``set_payload`` (no vector I/O).
+
+    Records must include ``collection``, ``id``, and ``payload``. Missing points
+    are skipped (logged at debug). Returns the number of points touched.
+    """
+    written = 0
+    for record in records:
+        collection = str(record.get("collection") or COLLECTION_NAME)
+        if not client.collection_exists(collection):
+            continue
+        payload = record.get("payload")
+        if not isinstance(payload, Mapping) or not payload:
+            continue
+        point_id = _coerce_point_id(record["id"])
+        try:
+            client.set_payload(
+                collection_name=collection,
+                payload=dict(payload),
+                points=[point_id],
+                wait=True,
+            )
+            written += 1
+        except Exception:
+            logger.debug(
+                "set_payload skipped collection=%s id=%s",
+                collection,
+                record.get("id"),
+                exc_info=True,
+            )
+    return written
+
+
 def upsert_point_records(
     client: QdrantClient,
     records: Sequence[Mapping[str, Any]],
@@ -365,6 +406,7 @@ def apply_qdrant_release_with_client(
     *,
     upsert_doc_ids: Sequence[str],
     delete_doc_ids: Sequence[str],
+    metadata_only_doc_ids: Sequence[str] = (),
     locality_link_doc_ids: Sequence[str] = (),
     points_jsonl: Path | str | None = None,
     records: Sequence[Mapping[str, Any]] | None = None,
@@ -385,10 +427,12 @@ def apply_qdrant_release_with_client(
         loaded = read_points_jsonl(points_jsonl)
     else:
         loaded = ()
-    full_ids = sorted(
-        {str(d) for d in list(upsert_doc_ids) + list(delete_doc_ids) if d}
+    metadata_only_set = {str(d) for d in metadata_only_doc_ids if d}
+    vector_upsert_ids = sorted(
+        {str(d) for d in upsert_doc_ids if d and str(d) not in metadata_only_set}
     )
-    full_set = set(full_ids)
+    full_ids = sorted({str(d) for d in vector_upsert_ids + list(delete_doc_ids) if d})
+    full_set = set(full_ids) | metadata_only_set
     link_only = sorted(
         {str(d) for d in locality_link_doc_ids if d and str(d) not in full_set}
     )
@@ -399,7 +443,25 @@ def apply_qdrant_release_with_client(
             link_only,
             collections=(LOCALITY_LINKS_COLLECTION,),
         )
-    written = upsert_point_records(client, loaded) if loaded else 0
+    if loaded and metadata_only_set:
+        meta_ids = metadata_only_set
+        vector_records = [
+            rec
+            for rec in loaded
+            if str((rec.get("payload") or {}).get("doc_id") or "") not in meta_ids
+        ]
+        payload_records = [
+            rec
+            for rec in loaded
+            if str((rec.get("payload") or {}).get("doc_id") or "") in meta_ids
+        ]
+    else:
+        vector_records = list(loaded)
+        payload_records = []
+    written = upsert_point_records(client, vector_records) if vector_records else 0
+    payload_merged = (
+        apply_payload_only_records(client, payload_records) if payload_records else 0
+    )
     # Re-denormalize obec lists onto knowledge payloads from applied links
     # without re-shipping embedding vectors.
     link_payloads = [
@@ -427,7 +489,9 @@ def apply_qdrant_release_with_client(
         "docs_touched": touch_count,
         "points_deleted": deleted,
         "points_upserted": written,
+        "points_payload_merged": payload_merged,
         "records_in_bundle": len(loaded),
+        "metadata_only_docs": len(metadata_only_set),
         "locality_link_docs": len(link_only),
         "chunks_denormalized": chunks_updated,
     }
@@ -438,6 +502,7 @@ def apply_qdrant_release(
     *,
     upsert_doc_ids: Sequence[str],
     delete_doc_ids: Sequence[str],
+    metadata_only_doc_ids: Sequence[str] = (),
     locality_link_doc_ids: Sequence[str] = (),
     points_jsonl: Path | str | None,
     client: QdrantClient | None = None,
@@ -456,6 +521,7 @@ def apply_qdrant_release(
             client,
             upsert_doc_ids=upsert_doc_ids,
             delete_doc_ids=delete_doc_ids,
+            metadata_only_doc_ids=metadata_only_doc_ids,
             locality_link_doc_ids=locality_link_doc_ids,
             points_jsonl=points_jsonl,
         )
@@ -465,6 +531,7 @@ def apply_qdrant_release(
             owned,
             upsert_doc_ids=upsert_doc_ids,
             delete_doc_ids=delete_doc_ids,
+            metadata_only_doc_ids=metadata_only_doc_ids,
             locality_link_doc_ids=locality_link_doc_ids,
             points_jsonl=points_jsonl,
         )

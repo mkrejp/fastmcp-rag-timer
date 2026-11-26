@@ -34,7 +34,7 @@ from rag.app_mode import is_reader_mode
 from rag.config import accepted_sync_tokens, sync_api_enabled, sync_dry_run_only
 from rag.logging_setup import get_logger
 from rag.publish.apply import apply_file_release
-from rag.publish.diff import catalog_fingerprint
+from rag.publish.diff import catalog_fingerprint, content_catalog_fingerprint
 from rag.publish.manifest import ReleaseManifest
 from rag.publish.qdrant_sync import POINTS_REL_PATH, locality_links_catalog_fingerprint
 from rag.publish.release_state import read_release_state
@@ -191,7 +191,12 @@ def _assemble_session(
         raise ValueError(f"missing assembled blobs: {missing[:10]}")
 
     points_path = assemble_points_jsonl(point_chunks, assembled / POINTS_REL_PATH)
-    if manifest.catalog_doc_ids_upserted and points_path is None:
+    needs_vectors = [
+        doc_id
+        for doc_id in manifest.catalog_doc_ids_upserted
+        if doc_id not in set(manifest.catalog_doc_ids_metadata_only)
+    ]
+    if needs_vectors and points_path is None:
         raise ValueError("manifest upserts docs but no points chunks were received")
 
     return manifest, blob_root, points_path, written_paths, len(point_chunks)
@@ -249,9 +254,11 @@ def get_catalog(
     """
     storage = _storage(request)
     fp = catalog_fingerprint(storage)
+    content_fp = content_catalog_fingerprint(storage)
     links = locality_links_catalog_fingerprint(_qdrant(request))
     return {
         "documents": fp,
+        "documents_content": content_fp,
         "count": len(fp),
         "locality_links": links,
         "locality_links_count": len(links),

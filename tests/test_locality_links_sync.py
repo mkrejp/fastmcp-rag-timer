@@ -167,9 +167,11 @@ def test_build_and_push_link_only_exports_locality(
             def get_watermark(self) -> dict:
                 return {"release_id": "rel-parent"}
 
-            def fetch_catalog(self) -> tuple[dict[str, str], dict[str, str]]:
+            def fetch_catalog(
+                self,
+            ) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
                 # Catalog parity; reader has no links yet.
-                return writer_fp, {}
+                return writer_fp, writer_fp, {}
 
             def begin(
                 self, manifest: ReleaseManifest, *, dry_run: bool = False
