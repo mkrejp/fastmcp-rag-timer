@@ -11,6 +11,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import threading
 import time
 import unicodedata
@@ -233,15 +234,112 @@ def _iter_tag_strings(extra: Mapping[str, Any] | None) -> list[str]:
     return out
 
 
+_HEADING_RE = re.compile(r"^#\s+(.+)$", re.MULTILINE)
+_NAZEV_RE = re.compile(r"\*\*Název:\*\*\s*(.+)", re.IGNORECASE)
+_WIKIDATA_ID_RE = re.compile(r"^Q\d+$", re.IGNORECASE)
+_SECESE_FILENAME_PREFIXES = ("secese_stavba_", "secese_", "secese-")
+_TITLE_LANG_PREF = ("cs", "cz", "ces", "czech", "sk", "en", "de", "fr")
+
+
+def _title_from_multilingual(value: object) -> str | None:
+    """Return a display string from a plain title or a language-keyed map."""
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    if isinstance(value, Mapping):
+        for lang in _TITLE_LANG_PREF:
+            item = value.get(lang)
+            if isinstance(item, str) and item.strip():
+                return item.strip()
+        for item in value.values():
+            if isinstance(item, str) and item.strip():
+                return item.strip()
+    return None
+
+
+def _is_wikidata_stem_placeholder(text: str) -> bool:
+    """Return True when ``text`` is only a Wikidata Q-id style slug."""
+    label = _sanitize_filename_stem_label(
+        Path(text.strip()).stem if "." in text else text.strip()
+    )
+    compact = label.replace(" ", "")
+    if not compact:
+        return True
+    return _WIKIDATA_ID_RE.match(compact) is not None
+
+
+def _sanitize_filename_stem_label(stem: str) -> str:
+    """Strip building-ingest prefixes and underscores from a basename stem."""
+    name = stem.strip()
+    lowered = name.lower()
+    for prefix in _SECESE_FILENAME_PREFIXES:
+        if lowered.startswith(prefix):
+            name = name[len(prefix) :]
+            break
+    if name.lower().endswith(".md"):
+        name = name[:-3]
+    name = name.replace("_", " ").strip()
+    while "  " in name:
+        name = name.replace("  ", " ")
+    return name
+
+
+def _read_document_fulltext(meta: DocumentMeta) -> str | None:
+    """Load stored markdown/plain full text for title extraction."""
+    path_text = str(meta.fulltext_path or "").strip()
+    if not path_text:
+        return None
+    path = Path(path_text)
+    if not path.is_file():
+        return None
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        logger.warning("Trails title: unreadable fulltext for doc %s", meta.doc_id)
+        return None
+
+
+def _title_from_markdown(text: str) -> str | None:
+    """Return the first markdown ``# heading`` or ``**Název:**`` line."""
+    heading = _HEADING_RE.search(text)
+    if heading:
+        candidate = heading.group(1).strip()
+        if candidate and not _is_wikidata_stem_placeholder(candidate):
+            return candidate[:500]
+    nazev = _NAZEV_RE.search(text)
+    if nazev:
+        candidate = nazev.group(1).strip()
+        if candidate and not _is_wikidata_stem_placeholder(candidate):
+            return candidate[:500]
+    return None
+
+
+def _metadata_display_title(mapping: Mapping[str, Any] | None) -> str | None:
+    """Pick the best human title from document/image metadata (Czech preferred)."""
+    if not isinstance(mapping, Mapping):
+        return None
+    for key in ("hlavni_prvek", "title", "name", "caption", "label"):
+        if key in ("title", "name"):
+            resolved = _title_from_multilingual(mapping.get(key))
+        else:
+            raw = mapping.get(key)
+            resolved = raw.strip() if isinstance(raw, str) and raw.strip() else None
+        if resolved and not _is_wikidata_stem_placeholder(resolved):
+            return resolved[:500]
+    for key in ("titles", "names"):
+        resolved = _title_from_multilingual(mapping.get(key))
+        if resolved and not _is_wikidata_stem_placeholder(resolved):
+            return resolved[:500]
+    parent = mapping.get("parent_document")
+    if isinstance(parent, str) and parent.strip():
+        parent_label = _sanitize_filename_stem_label(Path(parent.strip()).stem)
+        if parent_label and not _is_wikidata_stem_placeholder(parent_label):
+            return parent_label[:500]
+    return None
+
+
 def _extra_title(extra: Mapping[str, Any] | None) -> str | None:
     """Return a human title from document or image ``extra``."""
-    if not isinstance(extra, Mapping):
-        return None
-    for key in ("title", "name", "caption", "label", "hlavni_prvek"):
-        value = extra.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    return None
+    return _metadata_display_title(extra)
 
 
 def _text_matches_secese_terms(text: str) -> bool:
@@ -322,22 +420,36 @@ def _doc_hidden(meta: DocumentMeta) -> bool:
 
 
 def _label_for(meta: DocumentMeta, image: ImageMeta | None = None) -> str:
-    """Best-effort ``hlavni_prvek`` label."""
+    """Best-effort Trails ``hlavni_prvek`` (display title / map label)."""
     if image is not None:
         img_extra = image.extra if isinstance(image.extra, dict) else {}
-        for key in ("title", "name", "caption", "label"):
-            value = img_extra.get(key)
-            if isinstance(value, str) and value.strip():
-                return value.strip()
+        from_image = _metadata_display_title(img_extra)
+        if from_image:
+            return from_image
     extra = meta.extra if isinstance(meta.extra, dict) else {}
-    for key in ("title", "name", "label", "hlavni_prvek"):
-        value = extra.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    stem = Path(str(meta.filename or "")).stem.strip()
-    if stem:
-        return stem
+    from_extra = _metadata_display_title(extra)
+    if from_extra:
+        return from_extra
+    from_root = _metadata_display_title(meta.to_dict())
+    if from_root:
+        return from_root
+    fulltext = _read_document_fulltext(meta)
+    if fulltext:
+        from_markdown = _title_from_markdown(fulltext)
+        if from_markdown:
+            return from_markdown
+    stem = _sanitize_filename_stem_label(Path(str(meta.filename or "")).stem)
+    if stem and not _is_wikidata_stem_placeholder(stem):
+        return stem[:500]
     return str(meta.doc_id)
+
+
+def layer_object_display_name(
+    meta: DocumentMeta,
+    image: ImageMeta | None = None,
+) -> str:
+    """Public helper: display name sent as Trails ``hlavni_prvek``."""
+    return _label_for(meta, image)
 
 
 def ack_key(rag_doc_id: str, rag_image_id: str | None = None) -> str:
